@@ -1,0 +1,14 @@
+{
+  "name": "afterframe",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --use-system-ca --env-file-if-exists=data/metadata-pg.env --env-file-if-exists=.env server.mjs"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  }
+}
