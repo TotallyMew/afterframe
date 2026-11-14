@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0c0d12">
+  <meta name="theme-color" content="#101111">
   <meta name="description" content="Find your next film or episode and watch it in Afterframe.">
   <link rel="icon" href="/art/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
@@ -16,23 +16,23 @@
     <div class="topbar-inner">
       <a class="brand" href="#home" aria-label="Afterframe home"><span class="brand-mark" aria-hidden="true"></span>afterframe</a>
       <nav class="navigation" id="navigation" aria-label="Main navigation"></nav>
-      <form id="search-form" class="search-box" role="search">
-        <span data-icon="search"></span>
-        <input id="search" type="text" inputmode="search" enterkeyhint="search" role="combobox" aria-autocomplete="list" aria-controls="search-suggestions" aria-expanded="false" placeholder="Search titles" aria-label="Search movies and TV shows" autocomplete="off" maxlength="180">
-        <button class="search-clear" type="button" data-action="clear-search" aria-label="Clear search" hidden><span data-icon="close"></span></button>
-        <kbd aria-hidden="true" title="Press / or Ctrl+K to search">/</kbd>
-        <div id="search-suggestions" class="search-suggestions" role="listbox" aria-label="Title suggestions" hidden></div>
-      </form>
-      <div class="header-actions">
-        <button class="header-settings icon-button" type="button" data-action="settings" aria-label="Settings" title="Settings"><span data-icon="settings"></span></button>
-        <button class="account-button" id="account-button" type="button" data-action="account" aria-label="Sign in"><span data-icon="user"></span><span class="account-name">Sign in</span></button>
+      <div class="header-utilities" role="group" aria-label="Search, settings, and account">
+        <form id="search-form" class="search-box" role="search">
+          <span data-icon="search"></span>
+          <input id="search" type="text" inputmode="search" enterkeyhint="search" role="combobox" aria-autocomplete="list" aria-controls="search-suggestions" aria-expanded="false" aria-keyshortcuts="/" placeholder="Search titles" aria-label="Search movies and TV shows" autocomplete="off" maxlength="180">
+          <button class="search-clear" type="button" data-action="clear-search" aria-label="Clear search" hidden><span data-icon="close"></span></button>
+          <button class="search-shortcut" type="button" data-action="focus-search" aria-label="Focus search" title="Focus search (/)"><kbd aria-hidden="true">/</kbd></button>
+          <div id="search-suggestions" class="search-suggestions" role="listbox" aria-label="Title suggestions" hidden></div>
+          <span id="search-status" class="sr-only" role="status"></span>
+        </form>
+        <button class="header-settings utility-button" type="button" data-action="settings"><span data-icon="settings"></span><span>Settings</span></button>
+        <button class="account-button utility-button" id="account-button" type="button" data-action="account" aria-label="Sign in"><span data-icon="user"></span><span class="account-name">Sign in</span></button>
       </div>
     </div>
   </header>
   <main id="main" class="content" tabindex="-1"></main>
 
   <main id="title-page" class="title-page" aria-labelledby="title-heading" hidden></main>
-  <input id="local-video" type="file" accept="video/*,.mp4,.webm,.ogv,.m4v,.mov" hidden>
   <dialog id="account-dialog" class="small-dialog" aria-labelledby="account-heading">
     <div class="dialog-bar"><h2 id="account-heading">Your account</h2><button class="icon-button" data-action="close" aria-label="Close account"><span data-icon="close"></span></button></div>
     <div class="dialog-body" id="account-body"></div>
@@ -42,7 +42,27 @@
     <div class="dialog-body settings-body">
       <section class="settings-section" aria-labelledby="playback-heading">
         <h3 id="playback-heading">Playback</h3>
-        <label class="toggle-row" for="auto-skip"><span><strong>Skip intros and recaps</strong><small>Automatically skip when timestamps are available.</small></span><input id="auto-skip" type="checkbox" role="switch"></label>
+        <p>CineSrc applies auto-next and combined intro and recap skipping when an episode opens. For CineSrc, turn on both skip options to enable automatic skipping.</p>
+        <label class="toggle-row"><span>Automatically skip intros</span><input data-preference="intro" type="checkbox" role="switch"></label>
+        <label class="toggle-row"><span>Automatically skip recaps</span><input data-preference="recap" type="checkbox" role="switch"></label>
+        <label class="toggle-row"><span>Automatically skip credits<small>Afterframe player, when matched timings are available.</small></span><input data-preference="credits" type="checkbox" role="switch"></label>
+        <label class="toggle-row"><span>Automatically play next episode</span><input data-preference="autoplay" type="checkbox" role="switch"></label>
+        <label class="toggle-row"><span>Resume where I left off</span><input data-preference="resume" type="checkbox" role="switch"></label>
+        <label class="toggle-row"><span>Remember volume</span><input data-preference="volume" type="checkbox" role="switch"></label>
+        <label class="toggle-row"><span>Remember subtitles<small>For videos with captions controlled by Afterframe.</small></span><input data-preference="subtitles" type="checkbox" role="switch"></label>
+        <label class="setting-field" for="preferred-quality"><span>Preferred quality<small>Requested when a CineSrc video opens.</small></span><select id="preferred-quality"><option value="">Auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option></select></label>
+      </section>
+      <section class="settings-section">
+        <h3>Spoiler protection</h3>
+        <p>Unwatched episodes follow these preferences. You can reveal each item individually.</p>
+        <label class="toggle-row"><span>Blur unwatched episode thumbnails</span><input data-preference="blur" type="checkbox" role="switch"></label>
+        <label class="toggle-row"><span>Hide unwatched episode descriptions</span><input data-preference="hideSynopsis" type="checkbox" role="switch"></label>
+      </section>
+      <section class="settings-section">
+        <h3>Interface</h3>
+        <label class="toggle-row"><span>Always reduce motion<small>When off, Afterframe follows your system preference.</small></span><input data-preference="reducedMotion" type="checkbox" role="switch"></label>
+        <label class="toggle-row"><span>Compact episode list</span><input data-preference="compact" type="checkbox" role="switch"></label>
+        <label class="toggle-row"><span>Confirm removals and resets in My Library</span><input data-preference="confirmRemoval" type="checkbox" role="switch"></label>
       </section>
       <section class="settings-section" aria-labelledby="availability-heading">
         <h3 id="availability-heading">Availability</h3>

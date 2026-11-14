@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { preferenceDefaults } from './public/playback.js';
 
 const directory = new URL('./data/', import.meta.url);
 mkdirSync(directory, { recursive: true });
@@ -57,7 +58,7 @@ function currentAccount(request) {
 }
 
 function readLibrary(id) {
-  const result = { saved: Object.create(null), progress: Object.create(null), ratings: Object.create(null), skips: Object.create(null) };
+  const result = { saved: Object.create(null), progress: Object.create(null), ratings: Object.create(null), skips: Object.create(null), watched: Object.create(null), preferences: Object.create(null) };
   for (const row of listLibrary.all(id)) result[row.kind][row.key] = JSON.parse(row.value);
   return result;
 }
@@ -68,8 +69,20 @@ function status(code, error) {
 
 function libraryValue(kind, value, key) {
   if (value === null) return null;
+  if (kind === 'preferences') {
+    if (Object.hasOwn(preferenceDefaults, key) && typeof value === 'boolean') return value;
+    if (key === 'level' && Number.isFinite(value) && value >= 0 && value <= 1) return value;
+    if (['muted', 'captions'].includes(key) && typeof value === 'boolean') return value;
+    if (key === 'quality' && ['', '1080', '720', '480'].includes(value)) return value;
+    return undefined;
+  }
   if (kind === 'saved') return value?.key === key && typeof value.title === 'string' && ['movie', 'tv'].includes(value.type) ? value : undefined;
   if (kind === 'ratings') return Number.isInteger(value?.score) && value.score >= 1 && value.score <= 5 && value.item?.key === key && typeof value.item.title === 'string' && ['movie', 'tv'].includes(value.item.type) ? value : undefined;
+  if (kind === 'watched') {
+    const item = value?.item;
+    return Number.isFinite(value?.updated) && typeof item?.key === 'string' && typeof item.title === 'string'
+      && ['movie', 'tv'].includes(item.type) && (item.key === key || key.startsWith(`${item.key}/`)) ? value : undefined;
+  }
   if (kind === 'progress') return Number.isFinite(value?.time) && value.time >= 0 && Number.isFinite(value.duration) && value.duration > value.time && Number.isFinite(value.updated) ? value : undefined;
   if (kind === 'skips') {
     if (!Array.isArray(value) || value.length > 3) return undefined;
@@ -101,7 +114,7 @@ export async function accountApi(request, response, path, body) {
     if (!account) return status(401, 'Sign in to update this library.');
     const { accountId, kind, key, value } = body || {};
     if (account.id !== accountId) return status(409, 'The signed-in account changed. Reload to update the library.');
-    if (!['saved', 'ratings', 'progress', 'skips'].includes(kind) || typeof key !== 'string' || !/^[a-z0-9][\w.-]*(?:\/[\w-]+)?$/i.test(key) || key.length > 145) return status(400, 'Invalid library entry.');
+    if (!['saved', 'ratings', 'progress', 'skips', 'watched', 'preferences'].includes(kind) || typeof key !== 'string' || !/^[a-z0-9][\w.-]*(?:\/[\w-]+)?$/i.test(key) || key.length > 145) return status(400, 'Invalid library entry.');
     const entry = libraryValue(kind, value, key);
     if (entry === undefined) return status(400, 'Invalid library entry.');
     if (entry === null) removeEntry.run(account.id, kind, key);

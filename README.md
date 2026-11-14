@@ -1,8 +1,8 @@
 # Afterframe
 
-Afterframe is a personal movie and TV library that runs on localhost. Browse trending titles, new releases, top-rated films, hidden gems, and anime, or search for a specific movie or episode. Genre and decade filters help narrow the catalog.
+Afterframe is a personal film archive that runs on localhost. Browse a featured film, trending titles, new releases, top films on TMDb, and anime, or search for a specific movie or series. The catalog supports genre, release year, IMDb rating, and runtime filters. The IMDb filter checks scores as each page loads. TMDb determines the top-rated ranking, and title cards display IMDb scores from OMDb.
 
-Movies and shows have dedicated pages with artwork, cast, ratings, and episode lists. Local profiles keep separate watchlists, personal ratings, playback history, and skip timestamps. Guests can browse and play titles, with their library saved in the browser.
+Movies and shows have dedicated records with artwork, cast and crew, ratings, related titles, and episode lists. Local profiles keep separate watchlists, watched titles and episodes, personal ratings, playback history, and preferences. Guest activity and preferences are saved in the browser.
 
 ## Run locally
 
@@ -19,15 +19,19 @@ Open [localhost:4173](http://localhost:4173/). The server listens on the loopbac
 ## Configure the catalog
 
 - **TMDb** supplies titles, artwork, cast, release dates, external IMDb IDs, and regional JustWatch listings. Paste an [API Read Access Token](https://www.themoviedb.org/settings/api) into Settings, or set `TMDB_READ_TOKEN` or `TMDB_API_KEY` in `afterframe/.env` to persist the connection across restarts.
-- **OMDb** optionally supplies IMDb scores and vote counts. Set `OMDB_API_KEY` in `afterframe/.env` to enable it. Cards use cached IMDb scores when available and show labeled TMDb scores otherwise.
+- **OMDb** supplies IMDb scores and vote counts when `OMDB_API_KEY` is configured in `afterframe/.env`. Afterframe displays a score when OMDb has a usable IMDb rating for the title.
 - **PostgreSQL** is optional. Set `DATABASE_URL` in `afterframe/.env` to persist the metadata cache. Afterframe creates its cache table on first use and periodically refreshes recently expired records. It also reads `afterframe/data/metadata-pg.env` when present. Without PostgreSQL, metadata is cached in memory.
 
 Accounts, personal ratings, and viewing history are stored in `afterframe/data/accounts.sqlite`. Environment files and the app's data directory are excluded from Git.
 
+Afterframe uses Inter for interface text and Instrument Sans for display text. The display font stack also accepts Founders Grotesk when it is available in the browser.
+
 ## Playback
 
-Select **Watch now** on a movie or choose an episode from its season. Playback for TMDb catalog titles depends on [CineSrc](https://cinesrc.st/docs) having a working source. Selected public-domain and Creative Commons editions are available through the Internet Archive or Wikimedia Commons. To use a video from your computer, choose **Other ways to watch → Play local file**.
+Select **Watch now** on a movie or choose an episode from its season. Playback for TMDb catalog titles depends on [CineSrc](https://cinesrc.st/docs) having a working source. Selected public-domain and Creative Commons editions are available through the Internet Archive or Wikimedia Commons.
 
-The player saves progress per movie and episode. It can mark intros, recaps, and credits using bundled timestamps, matching [TheIntroDB](https://theintrodb.org/) data, or times you enter in **Skip settings**. Enable automatic intro and recap skipping in Settings.
+Afterframe saves the position and ranges you watched per movie or episode. Once you've watched enough of a title to complete it, it leaves **Continue Watching** and stays in **My Library → Watched**. CineSrc episodes use the embedded episode menu and next-episode prompt. Afterframe updates the episode in place when CineSrc advances, and reconnects the same frame if the playback API stops reporting the new episode. Direct streams use the Afterframe player's episode buttons and cancellable 10-second countdown.
 
-Press **/** to search or **Ctrl+K / ⌘K** for quick navigation. On the watch page, use **Space** to play or pause, **← / →** to seek, **F** for fullscreen, and **S** to skip an available segment.
+The Afterframe player uses bundled or [TheIntroDB](https://theintrodb.org/) timings to show and skip known intros, recaps, and credits. Gaps between credits segments are preserved for mid-credit and post-credit scenes. For CineSrc episodes, Afterframe passes the auto-next setting and enables CineSrc's combined intro and recap skip when both options are on. CineSrc manages its subtitle, quality, and source menus and accepts a preferred starting quality. Changes to CineSrc auto-next and auto-skip apply when the player is opened again.
+
+Press **/** to search or **Ctrl+K / ⌘K** for quick navigation. Click the video picture to play or pause, or double-click it to toggle fullscreen. With the watch page focused, use **Space** to play or pause, **← / →** to seek, **F** for fullscreen, and **S** to skip an available segment. On touch devices, CineSrc handles its own gestures.

@@ -47,7 +47,15 @@ async function tmdb(path, params = {}, token = tmdbToken) {
 async function discover(type, page, filters, collection) {
   const params = { language: 'en-US', page, include_adult: 'false', ...discoverParams(type, filters, collection) };
   const data = await cacheMetadata(`discover:${type}:${JSON.stringify(params)}`, 30 * 60000, () => tmdb(`/discover/${type}`, params));
-  return { results: data.results.filter(item => !item.adult).map(item => ({ ...item, media_type: type })), nextPage: page < Math.min(data.total_pages, 500) ? page + 1 : null };
+  let results = data.results.filter(item => !item.adult).map(item => ({ ...item, media_type: type }));
+  if (filters.imdb) {
+    const facts = await catalogFacts(results.map(item => `${type}:${item.id}`));
+    results = results.flatMap(item => {
+      const info = facts[`${type}-${item.id}`];
+      return info?.rating?.score >= filters.imdb ? [{ ...item, catalog_facts: info }] : [];
+    });
+  }
+  return { results, total: filters.imdb ? null : data.total_results, nextPage: page < Math.min(data.total_pages, 500) ? page + 1 : null };
 }
 
 function titleMetadata(type, id, season, refresh = false) {
@@ -55,6 +63,28 @@ function titleMetadata(type, id, season, refresh = false) {
   return cacheMetadata(`title:${type}:${id}:${season ?? ''}`, 12 * 3600000, () => season && type === 'tv'
     ? tmdb(`${path}/season/${season}`, { language: 'en-US' })
     : tmdb(path, { language: 'en-US', append_to_response: 'watch/providers,external_ids,credits' }), refresh);
+}
+
+async function catalogFacts(keys) {
+  const cached = await cachedRatings(keys);
+  const facts = {};
+  for (let index = 0; index < keys.length; index += 5) {
+    await Promise.all(keys.slice(index, index + 5).map(async key => {
+      const [type, id] = key.split(':');
+      const cardKey = `${type}-${id}`;
+      try {
+        const details = type === 'tv' || !cached[cardKey] ? await titleMetadata(type, id) : null;
+        const external = details?.external_ids?.imdb_id || details?.imdb_id;
+        facts[cardKey] = {
+          rating: cached[cardKey] || await imdbRating(external),
+          seasons: details?.number_of_seasons, status: details?.status,
+        };
+      } catch {
+        if (cached[cardKey]) facts[cardKey] = { rating: cached[cardKey] };
+      }
+    }));
+  }
+  return facts;
 }
 
 async function handleApi(request, response, url) {
@@ -103,6 +133,16 @@ async function handleApi(request, response, url) {
     const keys = [...new Set((searchParams.get('titles') || '').split(','))].filter(key => /^(movie|tv):[1-9]\d{0,9}$/.test(key)).slice(0, 100);
     return json(response, 200, { ratings: keys.length ? await cachedRatings(keys) : {} });
   }
+  if (pathname === '/api/catalog/facts') {
+    const keys = [...new Set((searchParams.get('titles') || '').split(','))].filter(key => /^(movie|tv):[1-9]\d{0,9}$/.test(key)).slice(0, 20);
+    return json(response, 200, { facts: keys.length && (tmdbToken || tmdbKey) ? await catalogFacts(keys) : {} });
+  }
+  const related = pathname.match(/^\/api\/(movie|tv)\/([1-9]\d{0,9})\/related$/);
+  if (related && (tmdbToken || tmdbKey)) {
+    const [, type, id] = related;
+    const data = await cacheMetadata(`related:${type}:${id}`, 12 * 3600000, () => tmdb(`/${type}/${id}/recommendations`, { language: 'en-US', page: 1 }));
+    return json(response, 200, { results: data.results.filter(item => !item.adult).slice(0, 8).map(item => ({ ...item, media_type: type })) });
+  }
   if (pathname === '/api/segments') {
     const id = searchParams.get('id') || '';
     const type = searchParams.get('type');
@@ -121,12 +161,17 @@ async function handleApi(request, response, url) {
     const data = await result.json();
     if (data.type !== type || !Number.isFinite(data.group_duration_ms) || Math.abs(data.group_duration_ms - duration) > 2500) return json(response, 200, { segments: [] });
     const segments = ['intro', 'recap', 'credits'].flatMap(kind => {
-      const match = (Array.isArray(data[kind]) ? data[kind] : []).filter(entry => (entry.confidence ?? 0) >= .5)
-        .sort((a, b) => b.confidence - a.confidence)[0];
-      if (!match) return [];
-      const start = (match.start_ms ?? 0) / 1000;
-      const end = (match.end_ms ?? duration) / 1000;
-      return start >= 0 && end > start && end <= duration / 1000 ? [{ kind, start, end }] : [];
+      const candidates = (Array.isArray(data[kind]) ? data[kind] : []).filter(entry => Number.isFinite(entry?.confidence) && entry.confidence >= .5)
+        .sort((a, b) => b.confidence - a.confidence);
+      const matched = candidates.flatMap(entry => {
+        if (entry.start_ms != null && !Number.isFinite(entry.start_ms)) return [];
+        if (!Number.isFinite(entry.end_ms) && (kind !== 'credits' || entry.end_ms !== null)) return [];
+        const start = (entry.start_ms ?? 0) / 1000;
+        const end = (entry.end_ms === null ? Number(duration) : Math.min(entry.end_ms, duration)) / 1000;
+        return start >= 0 && end > start && (kind !== 'credits' || start >= duration / 2000)
+          ? [{ kind, start, end }] : [];
+      });
+      return kind === 'credits' ? matched.sort((a, b) => a.start - b.start) : matched.slice(0, 1);
     });
     return json(response, 200, { segments });
   }
@@ -177,7 +222,6 @@ async function handleApi(request, response, url) {
       ['newMovies', 'movie', 'newest', 'new', ''],
       ['newTV', 'tv', 'newest', 'new', ''],
       ['top', 'movie', 'top', '', ''],
-      ['gems', 'movie', 'top', 'gems', ''],
       ['anime', 'tv', 'popular', '', 'Anime'],
     ];
     const sections = await Promise.allSettled(collections.map(([, type, sort, collection, category]) =>
