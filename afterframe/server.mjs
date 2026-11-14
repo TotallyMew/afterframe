@@ -7,9 +7,9 @@ import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { archiveCatalog, archiveFileUrl } from './public/catalog.js';
 import { archiveEdition, archiveIdPattern, searchArchive } from './archive.mjs';
-import { accountApi } from './accounts.mjs';
+import { accountApi, providerCredential, saveProviderCredential } from './accounts.mjs';
 import { catalogFilters, discoverParams, matchesCatalog } from './public/discover.js';
-import { cacheMetadata, cachedRatings, imdbRating, refreshMetadataPeriodically } from './metadata.mjs';
+import { cacheMetadata, cachedRatings, hasOmdbKey, imdbRating, refreshMetadataPeriodically, setOmdbKey, validateOmdbKey } from './metadata.mjs';
 
 const port = Number(process.env.PORT || 4173);
 const publicDirectory = fileURLToPath(new URL('./public/', import.meta.url));
@@ -21,20 +21,27 @@ const mime = {
   '.vtt': 'text/vtt; charset=utf-8', '.woff2': 'font/woff2',
 };
 const contentPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://image.tmdb.org https://archive.org https://*.archive.org; media-src 'self' blob: https://archive.org https://*.archive.org https://upload.wikimedia.org; frame-src https://cinesrc.st; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
-let tmdbToken = process.env.TMDB_READ_TOKEN?.trim() || '';
-const tmdbKey = process.env.TMDB_API_KEY?.trim() || '';
+const tmdbKeyPattern = /^[a-f0-9]{32}$/i;
+let tmdbCredential = providerCredential('tmdb') || process.env.TMDB_READ_TOKEN?.trim() || process.env.TMDB_API_KEY?.trim();
+const savedOmdbKey = providerCredential('omdb');
+if (savedOmdbKey) setOmdbKey(savedOmdbKey);
+
+function connectionStatus() {
+  return { connected: Boolean(tmdbCredential), omdbConnected: hasOmdbKey() };
+}
 
 function json(response, status, body) {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
   response.end(JSON.stringify(body));
 }
 
-async function tmdb(path, params = {}, token = tmdbToken) {
+async function tmdb(path, params = {}, credential = tmdbCredential) {
   const url = new URL(`https://api.themoviedb.org/3${path}`);
   url.search = new URLSearchParams(params);
-  if (!token && tmdbKey) url.searchParams.set('api_key', tmdbKey);
+  const apiKey = tmdbKeyPattern.test(credential);
+  if (apiKey) url.searchParams.set('api_key', credential);
   const response = await fetch(url, {
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), Accept: 'application/json' },
+    headers: { ...(credential && !apiKey ? { Authorization: `Bearer ${credential}` } : {}), Accept: 'application/json' },
     signal: AbortSignal.timeout(12000),
   });
   if (!response.ok) {
@@ -89,7 +96,7 @@ async function catalogFacts(keys) {
 
 async function handleApi(request, response, url) {
   const { pathname, searchParams } = url;
-  if (pathname === '/api/status' && request.method === 'GET') return json(response, 200, { connected: Boolean(tmdbToken || tmdbKey) });
+  if (pathname === '/api/status' && request.method === 'GET') return json(response, 200, connectionStatus());
 
   if (pathname === '/api/account' || pathname.startsWith('/api/account/')) {
     let body;
@@ -115,16 +122,32 @@ async function handleApi(request, response, url) {
     let body = '';
     for await (const chunk of request) {
       body += chunk;
-      if (body.length > 4096) return json(response, 413, { error: 'The supplied token is too long.' });
+      if (body.length > 4096) return json(response, 413, { error: 'The supplied credential is too long.' });
     }
-    let candidate;
-    try { candidate = JSON.parse(body)?.token; } catch { return json(response, 400, { error: 'Invalid request.' }); }
-    if (typeof candidate !== 'string' || !/^[\w.-]{20,2048}$/.test(candidate.trim())) {
-      return json(response, 400, { error: 'Enter your TMDB API Read Access Token.' });
+    let submitted;
+    try { submitted = JSON.parse(body); } catch { return json(response, 400, { error: 'Invalid request.' }); }
+    const provider = submitted?.provider ?? 'tmdb';
+    const value = submitted?.credential ?? submitted?.token;
+    const candidate = typeof value === 'string' ? value.trim() : '';
+    if (provider === 'tmdb') {
+      if (!/^[\w.-]{20,2048}$/.test(candidate)) {
+        return json(response, 400, { error: 'Enter your TMDb API Read Access Token or API key.' });
+      }
+      await tmdb('/authentication', {}, candidate);
+      saveProviderCredential(provider, candidate);
+      tmdbCredential = candidate;
+    } else if (provider === 'omdb') {
+      if (!/^[\w-]{1,128}$/.test(candidate)) {
+        return json(response, 400, { error: 'Enter your OMDb API key.' });
+      }
+      const failure = await validateOmdbKey(candidate).catch(() => ({ status: 502, error: 'OMDb is temporarily unavailable. Try again later.' }));
+      if (failure) return json(response, failure.status, { error: failure.error });
+      saveProviderCredential(provider, candidate);
+      setOmdbKey(candidate);
+    } else {
+      return json(response, 400, { error: 'Choose TMDb or OMDb.' });
     }
-    await tmdb('/authentication', {}, candidate.trim());
-    tmdbToken = candidate.trim();
-    return json(response, 200, { connected: true });
+    return json(response, 200, connectionStatus());
   }
 
   if (request.method !== 'GET') return json(response, 405, { error: 'Method unavailable.' });
@@ -135,10 +158,10 @@ async function handleApi(request, response, url) {
   }
   if (pathname === '/api/catalog/facts') {
     const keys = [...new Set((searchParams.get('titles') || '').split(','))].filter(key => /^(movie|tv):[1-9]\d{0,9}$/.test(key)).slice(0, 20);
-    return json(response, 200, { facts: keys.length && (tmdbToken || tmdbKey) ? await catalogFacts(keys) : {} });
+    return json(response, 200, { facts: keys.length && tmdbCredential ? await catalogFacts(keys) : {} });
   }
   const related = pathname.match(/^\/api\/(movie|tv)\/([1-9]\d{0,9})\/related$/);
-  if (related && (tmdbToken || tmdbKey)) {
+  if (related && tmdbCredential) {
     const [, type, id] = related;
     const data = await cacheMetadata(`related:${type}:${id}`, 12 * 3600000, () => tmdb(`/${type}/${id}/recommendations`, { language: 'en-US', page: 1 }));
     return json(response, 200, { results: data.results.filter(item => !item.adult).slice(0, 8).map(item => ({ ...item, media_type: type })) });
@@ -192,7 +215,7 @@ async function handleApi(request, response, url) {
 
   const route = pathname.match(/^\/api\/(movie|tv)\/(\d{1,10})(?:\/season\/(\d{1,4}))?$/);
   if (!route && !['/api/search', '/api/trending', '/api/browse', '/api/home'].includes(pathname)) return json(response, 404, { error: 'Not found.' });
-  if (!(tmdbToken || tmdbKey)) return json(response, 503, { error: 'Connect TMDB in Settings to use the full catalog.' });
+  if (!tmdbCredential) return json(response, 503, { error: 'Connect TMDb in Settings to use the full catalog.' });
 
   const page = Number(searchParams.get('page') || 1);
   if (!Number.isInteger(page) || page < 1 || page > 500) return json(response, 400, { error: 'That TMDB page is unavailable.' });
@@ -306,7 +329,7 @@ const server = createServer(async (request, response) => {
     if (response.destroyed) return;
     if (response.headersSent) return response.destroy();
     const status = error.upstreamStatus;
-    if (status === 401 || status === 403) return json(response, 401, { error: 'TMDB rejected the Read Access Token.' });
+    if (status === 401 || status === 403) return json(response, 401, { error: 'TMDb rejected the API credential.' });
     if (status === 404) return json(response, 404, { error: 'TMDB could not find this title.' });
     if (status === 429) return json(response, 429, { error: 'TMDB is rate limiting requests. Try again shortly.' });
     return json(response, 502, { error: 'The source is temporarily unavailable.' });
@@ -315,6 +338,6 @@ const server = createServer(async (request, response) => {
 
 refreshMetadataPeriodically(async key => {
   const match = key.match(/^title:(movie|tv):(\d{1,10}):(\d{0,4})$/);
-  if (match && (tmdbToken || tmdbKey)) await titleMetadata(match[1], match[2], match[3], true);
+  if (match && tmdbCredential) await titleMetadata(match[1], match[2], match[3], true);
 });
 server.listen(port, '127.0.0.1', () => console.log(`Afterframe is ready at http://localhost:${port}`));

@@ -64,8 +64,7 @@ const creditsDialog = document.querySelector('#credits-dialog');
 const accountDialog = document.querySelector('#account-dialog');
 const accountButton = document.querySelector('#account-button');
 const accountBody = document.querySelector('#account-body');
-const connectionForm = document.querySelector('#connection-form');
-const connectionStatus = document.querySelector('#connection-status');
+const connectionForms = [...settingsDialog.querySelectorAll('[data-provider]')];
 const toast = document.querySelector('#toast');
 const titles = new Map(archiveCatalog.map(item => [item.key, item]));
 const archiveById = new Map(archiveCatalog.filter(item => item.id).map(item => [`${item.type}-${item.id}`, item]));
@@ -111,7 +110,7 @@ useLibrary();
 const defaultRegion = navigator.language.match(/-([A-Z]{2})\b/)?.[1];
 const savedRegion = read('region', defaultRegion);
 const state = {
-  page: 'home', query: '', filter: 'all', connected: false,
+  page: 'home', query: '', filter: 'all', connected: false, omdbConnected: false,
   region: countries.includes(savedRegion) ? savedRegion : 'LT', remote: [], loading: false, error: '',
   archive: [], archiveLoading: false, archiveError: '', archiveNext: null, remoteNext: null,
   collections: {}, total: null, filtersOpen: false, librarySort: 'recent',
@@ -328,8 +327,10 @@ async function syncCardRatings(root = main) {
       if (!items.size) break;
       for (const key of items.keys()) checkedRatings.add(key);
       const keys = [...items.values()].map(item => `${item.type}:${item.id}`).join(',');
+      const omdbConnected = state.omdbConnected;
       try {
         const { facts } = await api(`/api/catalog/facts?titles=${encodeURIComponent(keys)}`);
+        if (omdbConnected !== state.omdbConnected) continue;
         for (const item of items.values()) {
           const entry = facts[`${item.type}-${item.id}`];
           if (entry?.rating) imdbScores.set(item.key, entry.rating);
@@ -1314,12 +1315,7 @@ async function loadTitle(session) {
       const crew = details.credits.crew?.filter(person => ['Director', 'Writer', 'Screenplay', 'Director of Photography', 'Original Music Composer', 'Editor'].includes(person.job)).slice(0, 10) || [];
       cast.innerHTML = `<h2>Cast &amp; crew</h2><div class="cast-list">${(details.credits.cast || []).slice(0, 8).map(person => `<div class="cast-person">${person.profile_path ? `<img src="${imagePath(person.profile_path, 'w185')}" alt="" loading="lazy">` : `<span>${icon('user')}</span>`}<strong>${escape(person.name)}</strong><small>${escape(person.character)}</small></div>`).join('')}</div>${crew.length ? `<dl class="crew-list">${crew.map(person => `<div><dt>${escape(person.job)}</dt><dd>${escape(person.name)}</dd></div>`).join('')}</dl>` : ''}`;
     }
-    if (session.item.imdb) api(`/api/imdb?id=${encodeURIComponent(session.item.imdb)}`).then(({ rating }) => {
-      if (!rating) return;
-      imdbScores.set(session.item.imdb, rating);
-      imdbScores.set(session.item.key, rating);
-      if (active === session && facts) facts.innerHTML = titleFacts(session);
-    }).catch(() => {});
+    refreshTitleRating(session);
   }
   const about = titlePage.querySelector('.title-about');
   if (about && !session.item.description && session.details?.overview) {
@@ -2229,11 +2225,33 @@ function updateRegion() {
   if (state.page === 'search' && !state.connected) render();
 }
 
+function refreshTitleRating(session) {
+  const { imdb, key } = session.item;
+  if (!imdb) return;
+  api(`/api/imdb?id=${encodeURIComponent(imdb)}`).then(({ rating }) => {
+    if (!rating) return;
+    imdbScores.set(imdb, rating);
+    imdbScores.set(key, rating);
+    const facts = titlePage.querySelector('.title-facts');
+    if (active === session && facts) facts.innerHTML = titleFacts(session);
+  }).catch(() => {});
+}
+
+function updateConnectionForms(openDetails = false) {
+  for (const form of connectionForms) {
+    if (form.elements.credential.disabled) continue;
+    const connected = form.dataset.provider === 'tmdb' ? state.connected : state.omdbConnected;
+    const status = form.querySelector('.connection-status');
+    status.textContent = connected ? 'Configured' : 'Key needed';
+    status.dataset.connected = connected;
+    delete status.dataset.error;
+    if (openDetails) form.querySelector('details').open = !connected && form.dataset.provider === 'tmdb';
+  }
+}
+
 function openSettings() {
   syncPreferences();
-  connectionStatus.textContent = state.connected ? 'Connected' : 'Not connected';
-  connectionStatus.dataset.connected = state.connected;
-  document.querySelector('#connection-details').open = !state.connected;
+  updateConnectionForms(true);
   settingsDialog.showModal();
 }
 
@@ -2515,28 +2533,42 @@ settingsDialog.addEventListener('change', event => {
     else cancelCountdown(active);
   }
 });
-connectionForm.addEventListener('submit', async event => {
-  event.preventDefault();
-  const button = connectionForm.querySelector('button[type="submit"]');
-  const input = connectionForm.querySelector('#token');
-  button.disabled = true;
-  connectionStatus.dataset.connected = 'false';
-  connectionStatus.textContent = 'Connecting…';
-  try {
-    await api('/api/connection', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: input.value.trim() }),
-    });
-    input.value = '';
-    state.connected = true;
-    connectionStatus.dataset.connected = 'true';
-    connectionStatus.textContent = 'TMDB is connected.';
-    refreshCatalog();
-  } catch (error) {
-    connectionStatus.textContent = error.message;
-  } finally {
-    button.disabled = false;
-  }
-});
+for (const form of connectionForms) {
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    const provider = form.dataset.provider;
+    const button = form.querySelector('button[type="submit"]');
+    const input = form.elements.credential;
+    const status = form.querySelector('.connection-status');
+    if (input.disabled) return;
+    const credential = input.value.trim();
+    input.disabled = button.disabled = true;
+    delete status.dataset.error;
+    status.textContent = 'Checking key…';
+    try {
+      const { connected, omdbConnected } = await post('/api/connection', { provider, credential });
+      state.connected ||= connected;
+      state.omdbConnected ||= omdbConnected;
+      input.value = '';
+      status.dataset.connected = 'true';
+      status.textContent = 'Verified and saved';
+      if (provider === 'omdb') {
+        checkedRatings.clear();
+        if (active) {
+          refreshTitleRating(active);
+          const related = titlePage.querySelector('.related-section:not([hidden])');
+          if (related) syncCardRatings(related);
+        }
+      }
+      refreshCatalog();
+    } catch (error) {
+      status.textContent = error.message;
+      status.dataset.error = 'true';
+    } finally {
+      input.disabled = button.disabled = false;
+    }
+  });
+}
 
 document.querySelectorAll('[data-icon]').forEach(element => { element.innerHTML = icon(element.dataset.icon); });
 document.querySelector('#search-form').addEventListener('submit', event => {
@@ -2603,8 +2635,10 @@ updateRegion();
 syncPreferences();
 window.addEventListener('hashchange', route);
 window.addEventListener('pagehide', savePlayback);
-api('/api/status').then(({ connected }) => {
-  state.connected = connected;
+api('/api/status').then(({ connected, omdbConnected }) => {
+  state.connected ||= connected;
+  state.omdbConnected ||= omdbConnected;
+  if (settingsDialog.open) updateConnectionForms();
   if (connected) refreshCatalog();
 }).catch(() => { /* The local archive catalog works while the connection is unavailable. */ });
 accountButton.disabled = true;

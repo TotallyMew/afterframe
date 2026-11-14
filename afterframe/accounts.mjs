@@ -24,6 +24,9 @@ db.exec(`
     kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
     PRIMARY KEY (account_id, kind, key)
   );
+  CREATE TABLE IF NOT EXISTS provider_credentials (
+    provider TEXT PRIMARY KEY, credential TEXT NOT NULL
+  );
   DROP TABLE IF EXISTS kino_connections;
 `);
 
@@ -43,6 +46,17 @@ const sessionAccount = db.prepare('SELECT accounts.id, accounts.username FROM se
 const listLibrary = db.prepare('SELECT kind, key, value FROM library WHERE account_id = ? ORDER BY rowid');
 const setEntry = db.prepare('INSERT INTO library (account_id, kind, key, value) VALUES (?, ?, ?, ?) ON CONFLICT (account_id, kind, key) DO UPDATE SET value = excluded.value');
 const removeEntry = db.prepare('DELETE FROM library WHERE account_id = ? AND kind = ? AND key = ?');
+const readProviderCredential = db.prepare('SELECT credential FROM provider_credentials WHERE provider = ?');
+const writeProviderCredential = db.prepare(`INSERT INTO provider_credentials (provider, credential) VALUES (?, ?)
+  ON CONFLICT (provider) DO UPDATE SET credential = excluded.credential`);
+
+export function providerCredential(provider) {
+  return readProviderCredential.get(provider)?.credential;
+}
+
+export function saveProviderCredential(provider, credential) {
+  writeProviderCredential.run(provider, credential);
+}
 
 function hashToken(token) {
   return createHash('sha256').update(token).digest('hex');

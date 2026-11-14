@@ -3,7 +3,7 @@ import pg from 'pg';
 const database = process.env.DATABASE_URL?.trim();
 const pool = database ? new pg.Pool({ connectionString: database, max: 3, connectionTimeoutMillis: 2500, statement_timeout: 3500 }) : null;
 pool?.on('error', () => { /* Metadata remains available from TMDb. */ });
-const omdbKey = process.env.OMDB_API_KEY?.trim();
+let omdbKey = process.env.OMDB_API_KEY?.trim();
 const requests = new Map();
 const memory = new Map();
 let schema;
@@ -61,9 +61,7 @@ export async function imdbRating(id) {
     if (day !== quotaDay) { quotaDay = day; used = 0; }
     if (used >= 900) throw new Error('OMDb daily budget reached');
     used++;
-    const url = new URL('https://www.omdbapi.com/');
-    url.search = new URLSearchParams({ apikey: omdbKey, i: id });
-    const response = await fetch(url, { signal: AbortSignal.timeout(4000) });
+    const response = await requestOmdb(omdbKey, id);
     if (!response.ok) throw new Error('OMDb unavailable');
     const data = await response.json();
     if (data.Response !== 'True') {
@@ -74,6 +72,35 @@ export async function imdbRating(id) {
     const votes = Number(String(data.imdbVotes || '').replaceAll(',', ''));
     return score > 0 && score <= 10 && Number.isInteger(votes) && votes > 0 ? { score, votes } : null;
   }).catch(() => null);
+}
+
+function requestOmdb(key, id) {
+  const url = new URL('https://www.omdbapi.com/');
+  url.search = new URLSearchParams({ apikey: key, i: id });
+  return fetch(url, { signal: AbortSignal.timeout(4000) });
+}
+
+export function hasOmdbKey() {
+  return Boolean(omdbKey);
+}
+
+export function setOmdbKey(key) {
+  if (omdbKey === key) return;
+  omdbKey = key;
+  used = 0;
+}
+
+export async function validateOmdbKey(key) {
+  const response = await requestOmdb(key, 'tt0111161');
+  const data = await response.json().catch(() => null);
+  if (response.status === 429 || /limit/i.test(data?.Error || '')) {
+    return { status: 429, error: 'OMDb has reached its request limit. Try again later.' };
+  }
+  if (response.status === 401 || response.status === 403 || /key/i.test(data?.Error || '')) {
+    return { status: 401, error: 'OMDb rejected the API key.' };
+  }
+  if (response.ok && data?.Response === 'True') return null;
+  return { status: 502, error: 'OMDb could not verify the API key. Try again later.' };
 }
 
 export async function cachedRatings(keys) {

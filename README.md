@@ -18,11 +18,11 @@ Open [localhost:4173](http://localhost:4173/). The server listens on the loopbac
 
 ## Configure the catalog
 
-- **TMDb** supplies titles, artwork, cast, release dates, external IMDb IDs, and regional JustWatch listings. Paste an [API Read Access Token](https://www.themoviedb.org/settings/api) into Settings, or set `TMDB_READ_TOKEN` or `TMDB_API_KEY` in `afterframe/.env` to persist the connection across restarts.
-- **OMDb** supplies IMDb scores and vote counts when `OMDB_API_KEY` is configured in `afterframe/.env`. Afterframe displays a score when OMDb has a usable IMDb rating for the title.
+- **TMDb** supplies the full movie and TV catalog. Open **Settings → API keys** and save your API Read Access Token or v3 API key. [Get a TMDb key](https://www.themoviedb.org/settings/api)
+- **OMDb** is optional and supplies IMDb scores and vote counts. Save your OMDb API key in the same section. [Get an OMDb key](https://www.omdbapi.com/apikey.aspx)
 - **PostgreSQL** is optional. Set `DATABASE_URL` in `afterframe/.env` to persist the metadata cache. Afterframe creates its cache table on first use and periodically refreshes recently expired records. It also reads `afterframe/data/metadata-pg.env` when present. Without PostgreSQL, metadata is cached in memory.
 
-Accounts, personal ratings, and viewing history are stored in `afterframe/data/accounts.sqlite`. Environment files and the app's data directory are excluded from Git.
+API keys saved in Settings survive restarts and apply to all local profiles. They take precedence over `TMDB_READ_TOKEN`, `TMDB_API_KEY`, and `OMDB_API_KEY` in `afterframe/.env`. Accounts, API keys, personal ratings, and viewing history are stored in `afterframe/data/accounts.sqlite`. Git ignores the environment files and data directory.
 
 Afterframe uses Inter for interface text and Instrument Sans for display text. The display font stack also accepts Founders Grotesk when it is available in the browser.
 
