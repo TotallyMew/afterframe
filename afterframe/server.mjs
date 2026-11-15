@@ -15,12 +15,22 @@ const port = Number(process.env.PORT || 4173);
 const publicDirectory = fileURLToPath(new URL('./public/', import.meta.url));
 const catalog = new Map(archiveCatalog.map(item => [item.key, item]));
 const localHosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
+const verifiedCuts = {
+  // Slow Horses S5E2, checked against the 47:55 CineSrc cut.
+  'cinesrc/tv/95480/5/2': {
+    durationMs: 2875957,
+    segments: [
+      { kind: 'intro', start: 490, end: 533.5 },
+      { kind: 'credits', start: 2799.678, end: null },
+    ],
+  },
+};
 const mime = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml',
   '.vtt': 'text/vtt; charset=utf-8', '.woff2': 'font/woff2',
 };
-const contentPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://image.tmdb.org https://archive.org https://*.archive.org; media-src 'self' blob: https://archive.org https://*.archive.org https://upload.wikimedia.org; frame-src https://cinesrc.st; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+const contentPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://image.tmdb.org https://archive.org https://*.archive.org; media-src 'self' blob: https://archive.org https://*.archive.org https://upload.wikimedia.org; connect-src 'self' https://subs.bright67.online; frame-src https://cinesrc.st; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 const tmdbKeyPattern = /^[a-f0-9]{32}$/i;
 let tmdbCredential = providerCredential('tmdb') || process.env.TMDB_READ_TOKEN?.trim() || process.env.TMDB_API_KEY?.trim();
 const savedOmdbKey = providerCredential('omdb');
@@ -174,6 +184,10 @@ async function handleApi(request, response, url) {
     const episode = searchParams.get('episode') || '';
     if (!/^\d{1,10}$/.test(id) || !['movie', 'tv'].includes(type) || !Number.isInteger(duration) || duration < 60000 || duration > 86400000
       || (type === 'tv' && (!/^\d{1,4}$/.test(season) || !/^[1-9]\d{0,3}$/.test(episode)))) return json(response, 400, { error: 'Invalid playback coordinates.' });
+    const verified = verifiedCuts[`${searchParams.get('source')}/${type}/${id}/${season}/${episode}`];
+    if (verified && Math.abs(verified.durationMs - duration) <= 200) {
+      return json(response, 200, { segments: verified.segments.map(segment => ({ ...segment, end: segment.end ?? duration / 1000 })) });
+    }
     const upstream = new URL('https://api.theintrodb.org/v4/media');
     upstream.search = new URLSearchParams({ tmdb_id: id, type, duration_ms: duration, details: 'true', ...(type === 'tv' ? { season, episode } : {}) });
     const result = await fetch(upstream, { signal: AbortSignal.timeout(6000) });
@@ -184,8 +198,9 @@ async function handleApi(request, response, url) {
     const data = await result.json();
     if (data.type !== type || !Number.isFinite(data.group_duration_ms) || Math.abs(data.group_duration_ms - duration) > 2500) return json(response, 200, { segments: [] });
     const segments = ['intro', 'recap', 'credits'].flatMap(kind => {
-      const candidates = (Array.isArray(data[kind]) ? data[kind] : []).filter(entry => Number.isFinite(entry?.confidence) && entry.confidence >= .5)
-        .sort((a, b) => b.confidence - a.confidence);
+      const candidates = (Array.isArray(data[kind]) ? data[kind] : []).filter(entry => Number.isFinite(entry?.confidence) && entry.confidence >= .5);
+      // A tightly clustered timestamp can describe a different cut of nearly the same length.
+      if (kind !== 'credits') candidates.sort((a, b) => (b.submission_count ?? 0) - (a.submission_count ?? 0) || b.confidence - a.confidence);
       const matched = candidates.flatMap(entry => {
         if (entry.start_ms != null && !Number.isFinite(entry.start_ms)) return [];
         if (!Number.isFinite(entry.end_ms) && (kind !== 'credits' || entry.end_ms !== null)) return [];

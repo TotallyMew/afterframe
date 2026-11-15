@@ -1,11 +1,11 @@
 export const preferenceDefaults = {
   intro: true, recap: true, credits: true, autoplay: true, resume: true,
-  volume: true, subtitles: true, blur: true, hideSynopsis: false,
+  volume: true, subtitles: true, blur: true, hideSynopsis: true,
   reducedMotion: false, compact: false, confirmRemoval: true,
 };
 
 export function viewingSession(progress) {
-  return { sample: null, ranges: progress?.ranges || [], skipped: progress?.skipped || [] };
+  return { sample: null, ranges: Array.isArray(progress?.ranges) ? progress.ranges : [], skipped: Array.isArray(progress?.skipped) ? progress.skipped : [] };
 }
 
 export function mergeRanges(ranges, start, end) {
@@ -30,11 +30,15 @@ export function samplePlayback(tracking, position, now) {
   return true;
 }
 
+export function watchedSeconds(ranges, length) {
+  return ranges.reduce((sum, [start, end]) => sum + Math.max(0, Math.min(end, length) - start), 0);
+}
+
 export function completionReached(ranges, position, credits, ended = false, skipped = []) {
   const terminal = credits.find(segment => segment.end >= position.duration - .25 && segment.start >= position.duration * .65);
   const boundary = terminal ? terminal.start : position.duration * .9;
   const creditable = skipped.reduce((coverage, [start, end]) => mergeRanges(coverage, start, end), ranges);
-  const viewed = creditable.reduce((sum, [start, end]) => sum + Math.max(0, Math.min(end, boundary) - start), 0);
-  const watched = ranges.reduce((sum, [start, end]) => sum + Math.max(0, Math.min(end, boundary) - start), 0);
+  const viewed = watchedSeconds(creditable, boundary);
+  const watched = watchedSeconds(ranges, boundary);
   return position.currentTime >= boundary - .25 && watched >= boundary * .65 && viewed >= boundary * (ended ? .9 : .95);
 }
