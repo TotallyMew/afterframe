@@ -8,7 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { archiveCatalog, archiveFileUrl } from './public/catalog.js';
 import { archiveEdition, archiveIdPattern, searchArchive } from './archive.mjs';
 import { accountApi, providerCredential, saveProviderCredential } from './accounts.mjs';
-import { catalogFilters, discoverParams, matchesCatalog } from './public/discover.js';
+import { comicCoverResponse, comicPageResponse, comicsApi, reportComicPage } from './comics.mjs';
+import { animeSource } from './anime.mjs';
+import { catalogFilters, discoverParams, isAnime, matchesCatalog } from './public/discover.js';
 import { cacheMetadata, cachedRatings, hasOmdbKey, imdbRating, refreshMetadataPeriodically, setOmdbKey, validateOmdbKey } from './metadata.mjs';
 
 const port = Number(process.env.PORT || 4173);
@@ -30,7 +32,7 @@ const mime = {
   '.css': 'text/css; charset=utf-8', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml',
   '.vtt': 'text/vtt; charset=utf-8', '.woff2': 'font/woff2',
 };
-const contentPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://image.tmdb.org https://archive.org https://*.archive.org; media-src 'self' blob: https://archive.org https://*.archive.org https://upload.wikimedia.org; connect-src 'self' https://subs.bright67.online; frame-src https://cinesrc.st; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+const contentPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: https://image.tmdb.org https://archive.org https://*.archive.org https://uploads.mangadex.org; media-src 'self' blob: https://archive.org https://*.archive.org https://upload.wikimedia.org; connect-src 'self' https://subs.bright67.online https://uploads.mangadex.org https://*.mangadex.network; frame-src https://cinesrc.st https://ani.pm https://animeembed.com; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 const tmdbKeyPattern = /^[a-f0-9]{32}$/i;
 let tmdbCredential = providerCredential('tmdb') || process.env.TMDB_READ_TOKEN?.trim() || process.env.TMDB_API_KEY?.trim();
 const savedOmdbKey = providerCredential('omdb');
@@ -160,7 +162,30 @@ async function handleApi(request, response, url) {
     return json(response, 200, connectionStatus());
   }
 
+  if (pathname === '/api/comics/report' && request.method === 'POST') {
+    response.writeHead(await reportComicPage(request), { 'cache-control': 'no-store' });
+    return response.end();
+  }
   if (request.method !== 'GET') return json(response, 405, { error: 'Method unavailable.' });
+  if (pathname === '/api/comics' || pathname.startsWith('/api/comics/')) {
+    const result = await comicsApi(pathname, searchParams);
+    return json(response, result.status, result.body);
+  }
+  const anime = pathname.match(/^\/api\/anime\/(movie|tv)\/([1-9]\d{0,9})$/);
+  if (anime) {
+    const [, type, id] = anime;
+    const season = searchParams.get('s') || '';
+    const episode = searchParams.get('e') || '';
+    if (type === 'tv' && (!/^\d{1,4}$/.test(season) || !/^[1-9]\d{0,3}$/.test(episode))) return json(response, 400, { error: 'Invalid episode coordinates.' });
+    if (!tmdbCredential) return json(response, 503, { error: 'Connect TMDb in Settings.' });
+    const title = await titleMetadata(type, id);
+    if (!isAnime(title.original_language, title.genres?.map(genre => genre.id))) return json(response, 200, { source: null });
+    try {
+      return json(response, 200, { source: await animeSource(type, id, Number(season), type === 'tv' ? Number(episode) : 1) });
+    } catch {
+      return json(response, 502, { error: 'The anime player is temporarily unavailable.' });
+    }
+  }
   if (pathname === '/api/imdb') return json(response, 200, { rating: await imdbRating(searchParams.get('id')) });
   if (pathname === '/api/imdb/cached') {
     const keys = [...new Set((searchParams.get('titles') || '').split(','))].filter(key => /^(movie|tv):[1-9]\d{0,9}$/.test(key)).slice(0, 100);
@@ -338,6 +363,32 @@ const server = createServer(async (request, response) => {
     const url = new URL(request.url, 'http://localhost');
     if (url.pathname.startsWith('/api/')) return await handleApi(request, response, url);
     if (!['GET', 'HEAD'].includes(request.method)) return json(response, 405, { error: 'Method unavailable.' });
+    if (url.pathname.startsWith('/comic-page/')) {
+      const controller = new AbortController();
+      response.once('close', () => controller.abort());
+      const image = await comicPageResponse(url.pathname, controller.signal);
+      if (!image?.body) return json(response, 404, { error: 'Comic page unavailable.' });
+      response.writeHead(200, {
+        'content-type': image.headers.get('content-type'),
+        'cache-control': 'private, max-age=1800',
+        'cross-origin-resource-policy': 'same-origin',
+      });
+      if (request.method === 'HEAD') {
+        await image.body.cancel();
+        return response.end();
+      }
+      return await pipeline(Readable.fromWeb(image.body), response);
+    }
+    if (url.pathname.startsWith('/comic-cover/')) {
+      const cover = await comicCoverResponse(url.pathname);
+      if (!cover?.body) return json(response, 404, { error: 'Comic cover unavailable.' });
+      response.writeHead(200, { 'content-type': 'image/jpeg', 'cache-control': 'public, max-age=86400' });
+      if (request.method === 'HEAD') {
+        await cover.body.cancel();
+        return response.end();
+      }
+      return await pipeline(Readable.fromWeb(cover.body), response);
+    }
     if (/^\/stream\/[\w.-]+(?:\/[\w-]+)?$/.test(url.pathname)) return await relayArchive(request, response, url.pathname);
     await serveFile(request, response, url.pathname);
   } catch (error) {

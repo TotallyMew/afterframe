@@ -16,6 +16,10 @@ export const archiveCategories = {
 
 export const sortOptions = { popular: 'Popular', top: 'Top rated on TMDb', newest: 'Newest', oldest: 'Oldest' };
 export const browseGenres = { ...categories, Anime: [16] };
+
+export function isAnime(originalLanguage, genreIds) {
+  return ['ja', 'ko', 'zh'].includes(originalLanguage) && Boolean(genreIds?.includes(16));
+}
 export const runtimeRanges = {
   short: { max: 89, label: 'Under 90 min' },
   standard: { min: 90, max: 119, label: '90–119 min' },

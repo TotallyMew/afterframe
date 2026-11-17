@@ -1,6 +1,6 @@
 # Afterframe
 
-Afterframe is a personal film archive that runs on localhost. Browse a featured film, trending titles, new releases, top films on TMDb, and anime, or search for a specific movie or series. The catalog supports genre, release year, IMDb rating, and runtime filters. The IMDb filter checks scores as each page loads. TMDb determines the top-rated ranking, and title cards display IMDb scores from OMDb.
+Afterframe is a personal media archive that runs on localhost. Browse a featured film, trending titles, new releases, top films on TMDb, and anime, or search for a specific movie or series. The video catalog supports genre, release year, IMDb rating, and runtime filters. The IMDb filter checks scores as each page loads. TMDb determines the top-rated ranking, and title cards display IMDb scores from OMDb.
 
 Movies and shows have dedicated records with artwork, cast and crew, ratings, related titles, and episode lists. Local profiles keep separate watchlists, watched titles and episodes, personal ratings, playback history, and preferences. Guest activity and preferences are saved in the browser.
 
@@ -30,8 +30,22 @@ Afterframe uses Inter for interface text and Instrument Sans for display text. T
 
 Select **Watch now** on a movie or choose an episode from its season. Playback for TMDb catalog titles depends on [CineSrc](https://cinesrc.st/docs) having a working source. Selected public-domain and Creative Commons editions are available through the Internet Archive or Wikimedia Commons.
 
+Afterframe uses [AniBridge episode mappings](https://github.com/anibridge/anibridge-mappings) to translate TMDb seasons and episode numbers to AniList. [AnimeEmbed](https://animeembed.com/) plays mapped episodes inside Afterframe when a stream is available. The player can switch to [Ani.pm](https://ani.pm/developers) and CineSrc. Third-party players manage their own audio and subtitle controls and may show ads.
+
 Afterframe saves the position and ranges you watched per movie or episode. Once you've watched enough of a title to complete it, it leaves **Continue Watching** and stays in **My Library → Watched**. Use the previous and next buttons beside Play or choose an episode from the list below the player. Long seasons have an **Episode range** picker. The player includes a cancellable 10-second countdown before the next episode starts automatically.
 
 The Afterframe player uses bundled or [TheIntroDB](https://theintrodb.org/) timings to show and skip known intros, recaps, and credits. Gaps between credits segments are preserved for mid-credit and post-credit scenes. For CineSrc titles, use the captions button to choose a track from the public subtitle catalog CineSrc uses. **Playback settings** lets you request a preferred quality for the current playback session. **Video sources** opens CineSrc's server controls. **Use Afterframe controls** returns to the Afterframe interface at the current playback position. In CineSrc's own player, Afterframe passes the auto-next setting and enables CineSrc's combined intro and recap skip when both options are on.
 
 Press **/** to search or **Ctrl+K / ⌘K** for quick navigation. Click the video picture to play or pause, or double-click it to toggle fullscreen. With the watch page focused, use **Space** to play or pause, **← / →** to seek, **F** for fullscreen, and **S** to skip an available segment. On touch devices, tap the picture to reveal the controls.
+
+## Comics
+
+Open **Comics** to browse manga, manhwa, manhua, and other comics from [MangaDex](https://mangadex.org/). Use the format tabs, genre and publication filters, or the search box. Browse and search include titles before they have chapters available in the reader. The **Recently updated** shelf highlights recently added English MangaDex chapters. The catalog uses MangaDex's safe and suggestive content ratings.
+
+Choose a chapter language to see chapters that open in the built-in reader. Afterframe checks [Weeb Central](https://weebcentral.com/) and [Manga Scans](https://manga-scans.com/) for English chapters and [Lector Manga](https://lector-mangas.lat/) for Spanish chapters. The lookup tries alternate titles and combines chapter lists even when MangaDex already has some chapters. MangaDex releases appear first for each chapter. Coverage depends on matching editions and available pages. Chapter ranges and previous or next chapter links help you navigate longer series.
+
+The reader offers single-page and vertical-scroll layouts, page fit controls, and fullscreen. Use the page picker or **← / →** in single-page mode, and press **F** for fullscreen. Afterframe remembers your layout and fit on this browser.
+
+**My Library → Reading** shows your reading list and your last page for each title. Guest activity stays in the browser, and signed-in progress belongs to the local account. Comics use MangaDex's public API without an API key. Chapter coverage varies by title and language.
+
+Afterframe credits MangaDex and the scanlation groups listed on each chapter. Set `MANGADEX_BLOCKED_GROUPS` in `afterframe/.env` to the comma-separated group IDs to exclude from chapter lists and the reader in response to [MangaDex group removal requests](https://gitlab.com/mangadex-pub/mangadex-api-docs/-/blob/main/index.md).

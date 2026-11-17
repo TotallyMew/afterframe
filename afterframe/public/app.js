@@ -1,11 +1,13 @@
 import { archiveCatalog, archiveFileUrl } from './catalog.js';
-import { categories, browseGenres, sortOptions, matchesCatalog, runtimeRanges, catalogFilters } from './discover.js';
+import { categories, browseGenres, sortOptions, matchesCatalog, runtimeRanges, catalogFilters, isAnime } from './discover.js';
 import { preferenceDefaults, viewingSession, mergeRanges, samplePlayback, completionReached, watchedSeconds } from './playback.js';
 import { findSubtitles, loadSubtitle } from './subtitles.js';
+import { comicCover, comicFormat, comicRoute, comicsHash, createComics, readerHash } from './comics.js';
 
 const icons = {
   home: '<path d="m3 10 9-7 9 7v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 21v-7h6v7"/>',
   film: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4m-4 6h4m10-6h4m-4 6h4"/>',
+  book: '<path d="M12 6C9 4 6 4 3 5v14c3-1 6-1 9 1 3-2 6-2 9-1V5c-3-1-6-1-9 1Zm0 0v14"/>',
   tv: '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="m8 2 4 4 4-4M8 22h8"/>',
   archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8m-9 4h4"/>',
   bookmark: '<path d="M6 4h12v17l-6-4-6 4z"/>',
@@ -73,11 +75,12 @@ const connectionForms = [...settingsDialog.querySelectorAll('[data-provider]')];
 const toast = document.querySelector('#toast');
 const titles = new Map(archiveCatalog.map(item => [item.key, item]));
 const archiveById = new Map(archiveCatalog.filter(item => item.id).map(item => [`${item.type}-${item.id}`, item]));
-const navLinks = [['home', 'Home', 'home'], ['movies', 'Movies', 'film'], ['tv', 'TV Shows', 'tv'], ['new', 'New Releases', 'clock'], ['watchlist', 'My Library', 'bookmark']];
+const navLinks = [['home', 'Home', 'home'], ['movies', 'Movies', 'film'], ['tv', 'TV Shows', 'tv'], ['comics', 'Comics', 'book'], ['new', 'New Releases', 'clock'], ['watchlist', 'My Library', 'bookmark']];
 const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
 const countries = 'AE AR AT AU BE BG BR CA CH CL CO CZ DE DK EE ES FI FR GB GR HK HR HU ID IE IL IN IS IT JP KR LT LU LV MX MY NL NO NZ PE PH PL PT RO RS SE SG SI SK TH TR TW UA US ZA'.split(' ');
 let saved;
 let progress;
+let reading;
 let ratings;
 let watched;
 let preferences;
@@ -93,21 +96,33 @@ const checkedRatings = new Set();
 const ratingBatches = new WeakSet();
 const cardFacts = new Map();
 const defaults = { category: '', decade: '', sort: 'popular', from: '', to: '', imdb: '', runtime: '' };
-const libraryPages = ['watchlist', 'watched', 'ratings'];
+const libraryTabs = [['watchlist', 'Watchlist'], ['watched', 'Watched'], ['ratings', 'My ratings'], ['reading', 'Reading']];
+const libraryPages = libraryTabs.map(([page]) => page);
 const cineSrcOrigin = 'https://cinesrc.st';
+const animePlayers = {
+  animeembed: { label: 'AnimeEmbed', origin: 'https://animeembed.com', next: 'anipm' },
+  anipm: { label: 'Ani.pm', origin: 'https://ani.pm', next: 'cinesrc' },
+  cinesrc: { label: 'CineSrc', origin: cineSrcOrigin, next: 'animeembed' },
+};
 
 function libraryTitle(item) {
-  const { key, id, archiveId, title, year, date, type, poster, backdrop, genre, genreIds, categories } = item;
-  return { key, id, archiveId, title, year, date, type, poster, backdrop, genre, genreIds, categories };
+  if (item.type === 'comic') {
+    const { key, id, title, year, type, format, poster } = item;
+    return { key, id, title, year, type, format, poster };
+  }
+  const { key, id, archiveId, title, year, date, type, poster, backdrop, genre, genreIds, categories, originalLanguage } = item;
+  return { key, id, archiveId, title, year, date, type, poster, backdrop, genre, genreIds, categories, originalLanguage };
 }
 
 function useLibrary(library = null) {
   saved = Object.assign(Object.create(null), library?.saved || read('saved', {}));
   progress = Object.assign(Object.create(null), library?.progress || read('progress', {}));
+  reading = Object.assign(Object.create(null), library ? library.reading : read('reading', {}));
   ratings = Object.assign(Object.create(null), library?.ratings || read('ratings', {}));
   watched = Object.assign(Object.create(null), library ? library.watched : read('watched', {}));
   preferences = Object.assign(Object.create(null), library ? library.preferences : read('preferences', {}));
-  for (const item of [...Object.values(saved), ...Object.values(progress).map(entry => entry.item), ...Object.values(ratings).map(entry => entry.item), ...Object.values(watched).map(entry => entry.item)]) {
+  const tracked = [progress, reading, ratings, watched].flatMap(records => Object.values(records).map(entry => entry.item));
+  for (const item of [...Object.values(saved), ...tracked]) {
     if (item?.key && !titles.has(item.key)) titles.set(item.key, item);
   }
 }
@@ -174,7 +189,7 @@ function syncPreferences() {
 }
 
 function libraryChange(kind, key, value) {
-  const records = { saved, progress, ratings, watched, preferences }[kind];
+  const records = { saved, progress, reading, ratings, watched, preferences }[kind];
   const previous = records[key];
   if (value === null) delete records[key];
   else records[key] = value;
@@ -185,7 +200,7 @@ function libraryChange(kind, key, value) {
   const accountId = account.id;
   const pendingKey = `pendingPlayback.${accountId}`;
   const recordKey = `${kind}/${key}`;
-  const queued = kind === 'progress' || kind === 'watched' ? { value, at: Date.now() } : null;
+  const queued = ['progress', 'reading', 'watched'].includes(kind) ? { value, at: Date.now() } : null;
   if (queued) write(pendingKey, { ...read(pendingKey, {}), [recordKey]: queued });
   libraryQueue = libraryQueue.then(async () => {
     if (account?.id !== accountId) return;
@@ -238,6 +253,7 @@ function localizeTitle(item) {
 }
 
 function meta(item) {
+  if (item.type === 'comic') return [comicFormat(item), item.year].filter(Boolean);
   const genre = item.genre || Object.entries(categories).find(([, ids]) => ids.includes(item.genreIds?.[0]))?.[0];
   return [item.year, genre, item.duration ? `${item.duration} min` : item.type === 'tv' ? 'TV series' : 'Movie'].filter(Boolean);
 }
@@ -251,6 +267,7 @@ function hasCineSrcTitle(item) {
 }
 
 function titlePath(item) {
+  if (item.type === 'comic') return `comic/${item.id}`;
   return hasCineSrcTitle(item) && !isArchive(item) ? `${item.type}/${item.id}` : `edition/${encodeURIComponent(item.key)}`;
 }
 
@@ -271,7 +288,8 @@ function cineSrcKey(item, episode) {
 
 function thumbnail(item, landscape = false) {
   if (landscape && item.backdrop) return `<img src="${escape(item.backdrop)}" alt="" loading="lazy">`;
-  return `<span class="poster-placeholder">${icon(item.type === 'tv' ? 'tv' : 'film')}</span>${item.poster ? `<img src="${escape(item.poster)}" alt="" loading="lazy">` : ''}`;
+  const poster = item.type === 'comic' ? comicCover(item.poster, 256) : item.poster;
+  return `<span class="poster-placeholder">${icon(item.type === 'comic' ? 'book' : item.type === 'tv' ? 'tv' : 'film')}</span>${poster ? `<img src="${escape(poster)}" alt="" loading="lazy">` : ''}`;
 }
 
 function resumeFor(item) {
@@ -287,6 +305,13 @@ function resumeFor(item) {
 }
 
 function titleCard(item, resume = false) {
+  if (item.type === 'comic') {
+    const entry = resume && reading[item.key];
+    return `<article class="poster-tile"><a href="${escape(entry ? readerHash(item, entry) : `#${titlePath(item)}`)}" class="poster-card comic-card" data-key="${escape(item.key)}">
+      <span class="poster-art">${thumbnail(item)}<span class="card-play" aria-hidden="true">${icon('book')}</span></span>
+      <span class="poster-title">${escape(item.title)}</span><span class="poster-meta">${(entry ? [entry.label, `Page ${entry.page}`] : meta(item)).map(escape).join(' · ')}</span>
+    </a>${entry ? '' : saveButton(item, true)}</article>`;
+  }
   const entry = resume ? resumeFor(item)?.[1] : null;
   const percent = entry ? Math.round(entry.time / entry.duration * 100) : 0;
   const score = ratings[item.key]?.score;
@@ -390,8 +415,9 @@ function footer() {
 
 function saveButton(item, compact = false) {
   const isSaved = Object.hasOwn(saved, item.key);
-  if (compact) return `<button type="button" class="card-save icon-button" data-action="save" data-key="${escape(item.key)}" aria-label="${isSaved ? 'Remove from' : 'Add to'} Watchlist: ${escape(item.title)}" aria-pressed="${isSaved}">${icon(isSaved ? 'check' : 'plus')}</button>`;
-  return `<button type="button" class="button secondary" data-action="save" data-key="${escape(item.key)}" aria-pressed="${isSaved}">${icon(isSaved ? 'check' : 'plus')} ${isSaved ? 'In Watchlist' : 'Watchlist'}</button>`;
+  const label = item.type === 'comic' ? 'Reading list' : 'Watchlist';
+  if (compact) return `<button type="button" class="card-save icon-button" data-action="save" data-key="${escape(item.key)}" aria-label="${isSaved ? 'Remove from' : 'Add to'} ${label}: ${escape(item.title)}" aria-pressed="${isSaved}">${icon(isSaved ? 'check' : 'plus')}</button>`;
+  return `<button type="button" class="button secondary" data-action="save" data-key="${escape(item.key)}" aria-pressed="${isSaved}">${icon(isSaved ? 'check' : 'plus')} ${isSaved ? `In ${label}` : label}</button>`;
 }
 
 function ratingControl(item) {
@@ -415,11 +441,12 @@ function renderLibraryControls() {
     const isSaved = Object.hasOwn(saved, button.dataset.key);
     button.setAttribute('aria-pressed', isSaved);
     const item = titles.get(button.dataset.key);
+    const label = item?.type === 'comic' ? 'Reading list' : 'Watchlist';
     if (button.matches('.card-save') && item) {
-      button.setAttribute('aria-label', `${isSaved ? 'Remove from' : 'Add to'} Watchlist: ${item.title}`);
+      button.setAttribute('aria-label', `${isSaved ? 'Remove from' : 'Add to'} ${label}: ${item.title}`);
       button.innerHTML = icon(isSaved ? 'check' : 'plus');
     }
-    else button.innerHTML = `${icon(isSaved ? 'check' : 'plus')} ${isSaved ? 'In Watchlist' : 'Watchlist'}`;
+    else button.innerHTML = `${icon(isSaved ? 'check' : 'plus')} ${isSaved ? `In ${label}` : label}`;
   }
   for (const button of titlePage.querySelectorAll('[data-action="mark-watched"]')) {
     const marked = Object.hasOwn(watched, button.dataset.watchedKey);
@@ -472,6 +499,10 @@ function releaseIndex(movies, shows) {
 function renderNavigation() {
   const current = active ? active.item.type === 'tv' ? 'tv' : 'movies' : libraryPages.includes(state.page) ? 'watchlist' : state.page;
   navigation.innerHTML = navLinks.map(([page, label, glyph]) => `<a href="#${page}" class="nav-link" ${current === page ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span></a>`).join('');
+}
+
+function renderLibraryTabs() {
+  return `<nav class="filters library-tabs" aria-label="Library">${libraryTabs.map(([page, label]) => `<a href="#${page}" class="filter"${state.page === page ? ' aria-current="page"' : ''}>${label}</a>`).join('')}</nav>`;
 }
 
 function filters(options) {
@@ -582,7 +613,7 @@ function renderArchiveSection() {
 }
 
 function render() {
-  if (active || main.hidden) return;
+  if (active || main.hidden || state.page === 'comics') return;
   railObserver?.disconnect();
   main.classList.toggle('home', state.page === 'home');
   renderSuggestions();
@@ -596,16 +627,27 @@ function render() {
     const trending = state.remote.filter(hasReleased);
     main.innerHTML = renderHero()
       + `<div class="home-shelves">${shelf('Continue watching', pref('resume') ? recentlyWatched : [], '', true)}
+        ${shelf('Continue reading', recentlyRead().slice(0, 8), 'reading', true)}
         ${state.connected ? remoteNotice() : connectionNotice()}
         ${editorialGrid('Trending this week', trending.filter(item => item.key !== featuredFilm()?.key).slice(0, 6), '')}
         ${releaseIndex(state.collections.newMovies || [], state.collections.newTV || [])}
         <div class="home-collections">${editorialGrid('Top films on TMDb', (state.collections.top || []).slice(0, 3), 'movies?sort=top')}${editorialGrid('Anime', (state.collections.anime || []).slice(0, 3), 'tv?genre=Anime')}</div>
-        <section class="editorial-section library-entry"><h2>My Library</h2><nav aria-label="Library"><a class="section-link" href="#watchlist">Watchlist ${icon('arrow')}</a><a class="section-link" href="#watched">Watched ${icon('arrow')}</a><a class="section-link" href="#ratings">My ratings ${icon('arrow')}</a></nav></section>
+        <section class="editorial-section library-entry"><h2>My Library</h2><nav aria-label="Library">${libraryTabs.map(([page, label]) => `<a class="section-link" href="#${page}">${label} ${icon('arrow')}</a>`).join('')}</nav></section>
         <a class="section-link archive-link" href="#archive">Explore the Internet Archive ${icon('arrow')}</a>${footer()}</div>`;
     for (const rail of main.querySelectorAll('.poster-rail')) rail.scrollLeft = scrollPositions.get(rail.parentElement.getAttribute('aria-label')) || 0;
     if (focusKey && focusShelf) main.querySelector(`.shelf[aria-label="${CSS.escape(focusShelf)}"] [data-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
     observeRails();
     syncCardRatings();
+    return;
+  }
+
+  if (state.page === 'reading') {
+    const books = Object.values(saved).filter(item => item.type === 'comic').reverse();
+    main.innerHTML = `<header class="view-heading"><h1>My Library</h1></header>${renderLibraryTabs()}
+      ${shelf('Continue reading', recentlyRead(), '', true)}
+      <section class="shelf" aria-label="Reading list"><div class="section-head"><h2>Reading list</h2><a class="section-link" href="#comics">Browse comics ${icon('arrow')}</a></div>
+      ${books.length ? grid(books) : '<p class="catalog-status">Save a comic to add it to your reading list.</p>'}</section>${footer()}`;
+    observeRails();
     return;
   }
 
@@ -616,7 +658,7 @@ function render() {
   let notice = '';
   if (state.page === 'watchlist') {
     heading = 'Watchlist';
-    items = Object.values(saved).map(item => titles.get(item.key) || item).reverse();
+    items = Object.values(saved).filter(item => item.type !== 'comic').map(item => titles.get(item.key) || item).reverse();
   } else if (state.page === 'ratings') {
     heading = 'My ratings';
     items = Object.values(ratings).map(entry => titles.get(entry.item.key) || entry.item).reverse();
@@ -632,7 +674,7 @@ function render() {
     notice = archiveNotice();
   } else if (state.page === 'search') {
     heading = `Results for “${state.query}”`;
-    choices = filters([['all', 'All'], ['movie', 'Movies'], ['tv', 'TV Shows'], ['free', 'Archive']]);
+    choices = `<div class="search-media">${filters([['all', 'All'], ['movie', 'Movies'], ['tv', 'TV Shows'], ['free', 'Archive']])}<a class="filter" href="${escape(comicsHash(state.query))}">Search comics ${icon('arrow')}</a></div>`;
     const terms = state.query.toLowerCase().split(/\s+/);
     items = archiveCatalog.filter(item => terms.every(term => `${item.title} ${item.year} ${item.genre} ${(item.episodes || []).map(episode => episode.title).join(' ')}`.toLowerCase().includes(term)));
     if (state.filter !== 'free') {
@@ -665,7 +707,7 @@ function render() {
   const libraryPage = libraryPages.includes(state.page);
   if (libraryPage) {
     heading = 'My Library';
-    choices = `<nav class="filters library-tabs" aria-label="Library">${[['watchlist', 'Watchlist'], ['watched', 'Watched'], ['ratings', 'My ratings']].map(([page, label]) => `<a href="#${page}" class="filter"${state.page === page ? ' aria-current="page"' : ''}>${label}</a>`).join('')}</nav>`;
+    choices = renderLibraryTabs();
     if (state.filter !== 'all') items = items.filter(item => item.type === state.filter);
     if (state.librarySort === 'title') items.sort((a, b) => a.title.localeCompare(b.title));
     if (state.librarySort === 'rating') items.sort((a, b) => (ratings[b.key]?.score || 0) - (ratings[a.key]?.score || 0));
@@ -700,6 +742,10 @@ function render() {
     if (sidebar) sidebar.scrollTop = sidebarScroll;
   }
   renderCatalogResults(results);
+}
+
+function recentlyRead() {
+  return Object.values(reading).sort((a, b) => b.updated - a.updated).map(entry => titles.get(entry.item.key) || entry.item);
 }
 
 function catalogCacheKey() {
@@ -824,6 +870,41 @@ function showPage(page, params = new URLSearchParams()) {
 function route() {
   clearTimeout(searchTimer);
   const hash = location.hash.slice(1);
+  const [path, query] = hash.split('?');
+  const comic = path.match(comicRoute);
+  comics.close();
+  if (path === 'comics' || comic) {
+    closeTitlePage();
+    catalogRequest?.abort();
+    railObserver?.disconnect();
+    suggestionRequest?.abort();
+    suggestionResults = [];
+    state.page = 'comics';
+    const params = new URLSearchParams(query);
+    state.query = comic ? '' : params.get('q')?.trim().slice(0, 180) || '';
+    search.value = state.query;
+    search.setAttribute('placeholder', 'Search comics');
+    search.setAttribute('aria-label', 'Search comics');
+    searchClear.hidden = !search.value;
+    hideSuggestions();
+    renderNavigation();
+    window.scrollTo(0, 0);
+    if (comic) {
+      main.hidden = true;
+      titlePage.hidden = false;
+      titlePage.innerHTML = '<div class="title-status" role="status">Loading comic…</div>';
+      const back = browseHash.startsWith('#comics') || browseHash === '#reading' ? browseHash : '#comics';
+      const load = () => { if (location.hash === `#${hash}`) comics.show(comic[1], comic[2], params, back); };
+      if (comic[2] && !accountReady) initialAccount.then(load);
+      else load();
+    } else {
+      browseHash = location.hash;
+      comics.browse(params);
+    }
+    return;
+  }
+  search.setAttribute('placeholder', 'Search titles');
+  search.setAttribute('aria-label', 'Search movies and TV shows');
   const title = hash.match(/^(?:(movie|tv)\/([1-9]\d{0,9})|edition\/([\w.-]+))(?:\/(watch|s(\d{1,4})e([1-9]\d{0,3}))(?:\/([\w-]+))?)?$/);
   if (title) return routeTitle(title);
   closeTitlePage();
@@ -870,7 +951,7 @@ async function routeTitle(match) {
   titlePage.innerHTML = `<div class="title-status" role="status">Loading title…</div>`;
   let item = titles.get(itemKey);
   try {
-    if (!item && type) {
+    if (type && (!item || (!item.originalLanguage && !isArchive(item)))) {
       const details = await api(`/api/${type}/${id}`);
       if (opening !== openingId) return;
       detailsCache.set(itemKey, details);
@@ -901,6 +982,16 @@ function submitSearch() {
   suggestionsDismissed = true;
   hideSuggestions();
   const value = search.value.trim();
+  if (state.page === 'comics') {
+    const params = new URLSearchParams(location.hash.split('?')[1]);
+    const browse = location.hash.startsWith('#comics');
+    const target = comicsHash(value, browse ? params.get('type') : '', 1, browse ? {
+      genre: params.get('genre'), status: params.get('status'), sort: params.get('sort'),
+    } : {});
+    if (location.hash !== target) location.hash = target;
+    else route();
+    return;
+  }
   if (value) location.hash = `search=${encodeURIComponent(value)}`;
   else if (state.page === 'search') location.hash = 'home';
 }
@@ -925,13 +1016,19 @@ function renderSuggestions() {
   }
   if (query.length < 2) return hideSuggestions();
   const matches = new Map();
-  const current = state.query.toLowerCase() === query ? [...state.remote, ...state.archive] : suggestionResults;
-  for (const item of [...current, ...archiveCatalog, ...Object.values(saved)]) {
-    if (item.title.toLowerCase().includes(query) && !matches.has(item.key)) matches.set(item.key, item);
+  const comicSearch = state.page === 'comics';
+  const current = comicSearch ? suggestionResults.filter(item => item.type === 'comic')
+    : state.query.toLowerCase() === query ? [...state.remote, ...state.archive] : suggestionResults.filter(item => item.type !== 'comic');
+  if (comicSearch) for (const item of current.slice(0, 6)) matches.set(item.key, item);
+  for (const item of comicSearch ? current : [...current, ...archiveCatalog, ...Object.values(saved).filter(item => item.type !== 'comic')]) {
     if (matches.size === 6) break;
+    if (item.title.toLowerCase().includes(query) && !matches.has(item.key)) matches.set(item.key, item);
   }
   if (!matches.size) return hideSuggestions();
-  suggestions.innerHTML = [...matches.values()].map((item, index) => `<div class="search-option" id="suggestion-${index}" role="option" aria-selected="false" data-action="suggestion" data-key="${escape(item.key)}">${item.poster ? `<img src="${escape(item.poster)}" alt="">` : icon(item.type === 'tv' ? 'tv' : 'film')}<span class="option-title">${escape(item.title)}</span><small>${escape(item.year || '')}</small></div>`).join('');
+  suggestions.innerHTML = [...matches.values()].map((item, index) => {
+    const poster = item.type === 'comic' ? comicCover(item.poster, 256) : item.poster;
+    return `<div class="search-option" id="suggestion-${index}" role="option" aria-selected="false" data-action="suggestion" data-key="${escape(item.key)}">${poster ? `<img src="${escape(poster)}" alt="">` : icon(item.type === 'comic' ? 'book' : item.type === 'tv' ? 'tv' : 'film')}<span class="option-title">${escape(item.title)}</span><small>${escape(item.year || '')}</small></div>`;
+  }).join('');
   suggestions.hidden = false;
   search.setAttribute('aria-expanded', 'true');
   selectSuggestion(suggestionIndex < matches.size ? suggestionIndex : -1);
@@ -939,16 +1036,22 @@ function renderSuggestions() {
 
 async function fetchSuggestions() {
   const query = search.value.trim();
-  if (suggestionsDismissed || document.activeElement !== search || query.length < 2 || !state.connected) return;
+  const comicSearch = state.page === 'comics';
+  if (suggestionsDismissed || document.activeElement !== search || query.length < (comicSearch ? 3 : 2) || (!comicSearch && !state.connected)) return;
   const status = document.querySelector('#search-status');
   const controller = new AbortController();
   suggestionRequest = controller;
   status.textContent = 'Searching titles…';
   try {
     const params = new URLSearchParams({ q: query });
-    const data = await api(`/api/search?${params}`, { signal: controller.signal });
+    if (comicSearch && location.hash.startsWith('#comics')) {
+      const activeFilters = new URLSearchParams(location.hash.split('?')[1]);
+      for (const name of ['type', 'genre', 'status', 'sort']) if (activeFilters.has(name)) params.set(name, activeFilters.get(name));
+    }
+    const data = await api(`/api/${comicSearch ? 'comics' : 'search'}?${params}`, { signal: controller.signal });
     if (controller.signal.aborted || search.value.trim() !== query) return;
-    suggestionResults = data.results.map(localizeTitle);
+    suggestionResults = comicSearch ? data.results : data.results.map(localizeTitle);
+    if (comicSearch) comics.rememberTitles(suggestionResults);
     renderSuggestions();
     if (!suggestionsDismissed && document.activeElement === search) {
       const count = suggestions.hidden ? 0 : suggestions.children.length;
@@ -1409,6 +1512,7 @@ function remember({ currentTime, duration }, session, force = false) {
   if (!force && now - (session.lastSaved || 0) < 8000) return;
   if (force && Math.abs((progress[session.progressKey]?.time ?? -1) - currentTime) < .5) return;
   const entry = { time: currentTime, duration, updated: now, item: libraryTitle(session.item), ranges: session.tracking.ranges.slice(-40), skipped: session.tracking.skipped.slice(-20) };
+  if (session.embedPlayback?.provider) entry.provider = session.embedPlayback.provider;
   if (session.media.embed && session.episode) entry.episode = session.episode;
   session.lastSaved = now;
   libraryChange('progress', session.progressKey, entry);
@@ -1425,6 +1529,13 @@ function playerCommand(command, ...args) {
   if (active?.media?.embed) {
     const playback = active.embedPlayback;
     if (!playback) return;
+    if (playback.provider) {
+      if (command === 'seek' && Number.isFinite(args[0])) {
+        active.tracking.sample = null;
+        playback.send('seek', { time: args[0] });
+      } else if (command === 'play' || command === 'pause') playback.send(command);
+      return;
+    }
     if (command === 'seek') {
       if (!Number.isFinite(args[0])) return;
       playback.relativeJump = undefined;
@@ -1450,6 +1561,10 @@ function jumpPlayback(delta) {
   const position = playbackPosition(active);
   if (!Number.isFinite(position?.duration)) return;
   const playback = active.embedPlayback;
+  if (playback?.provider) {
+    playerCommand('seek', Math.max(0, Math.min(position.duration, position.currentTime + delta)));
+    return;
+  }
   const target = playback && pendingCineSeek(playback);
   if (playback && target === undefined) {
     const waiting = playback.relativeJump !== undefined;
@@ -1573,6 +1688,10 @@ function playerChoices(name, title, options) {
   </div>`;
 }
 
+function nextCountdownMarkup(episode) {
+  return episode ? '<div class="next-countdown" role="region" aria-label="Next episode" hidden><p class="next-title"></p><p>Next episode in <span class="countdown-time">10</span> seconds</p><div class="watch-actions"><button class="button primary" type="button" data-action="next-episode">Play now</button><button class="button secondary" type="button" data-action="cancel-countdown">Cancel</button></div></div>' : '';
+}
+
 function videoOverlay(session) {
   const { item, episode } = session;
   const title = episode?.title || item.title;
@@ -1596,7 +1715,7 @@ function videoOverlay(session) {
   </div>
   ${session.media.embed ? '<div class="player-caption" aria-hidden="true" hidden><span></span></div>' : ''}
   <div class="player-lower">
-    ${episode ? '<div class="next-countdown" role="region" aria-label="Next episode" hidden><p class="next-title"></p><p>Next episode in <span class="countdown-time">10</span> seconds</p><div class="watch-actions"><button class="button primary" type="button" data-action="next-episode">Play now</button><button class="button secondary" type="button" data-action="cancel-countdown">Cancel</button></div></div>' : ''}
+    ${nextCountdownMarkup(episode)}
     <button class="player-skip" type="button" data-action="skip-segment" hidden></button>
     <div class="player-controls" role="group" aria-label="Playback controls">
       <div class="player-timeline">
@@ -2112,8 +2231,9 @@ function updateEmbeddedEpisode(session, season, number, internalNavigation) {
   return true;
 }
 
-function cineResumeTime(key) {
+function cineResumeTime(key, provider = 'cinesrc') {
   const previous = progress[key];
+  if ((previous?.provider || 'cinesrc') !== provider) return null;
   return pref('resume') && previous?.time > 5 && previous.time < previous.duration - 2 ? previous.time : null;
 }
 
@@ -2170,10 +2290,15 @@ function startCineSrc(session, restore) {
   const status = notice.querySelector('[role="status"]');
   const retry = notice.querySelector('[data-action="retry-video"]');
   const provider = notice.querySelector('[data-action="cine-options"]');
+  const useAnime = notice.querySelector('[data-action="video-provider"]');
+  useAnime.hidden = !session.animeEligible;
+  useAnime.textContent = 'Use AnimeEmbed';
+  provider.hidden = false;
+  titlePage.querySelector('[data-playback-source]').textContent = 'Playback by CineSrc';
   provider.textContent = session.providerControls ? 'Use Afterframe controls' : 'Use CineSrc controls';
   const setStatus = (message = '', canRetry = false) => {
     status.textContent = message;
-    notice.hidden = !canRetry && !session.providerControls;
+    notice.hidden = !canRetry && !session.providerControls && useAnime.hidden;
     status.hidden = !canRetry;
     retry.hidden = !canRetry;
     if (canRetry || !message) loading.hidden = true;
@@ -2468,6 +2593,137 @@ function startCineSrc(session, restore) {
   frame.src = cineSrcUrl(session, restore);
 }
 
+async function startCatalogPlayback(session) {
+  const provider = session.animeProvider || 'animeembed';
+  if (!session.animeEligible || provider === 'cinesrc') {
+    if (progress[session.progressKey]?.provider) session.tracking = viewingSession();
+    startCineSrc(session);
+    return;
+  }
+  session.animeProvider = provider;
+  const { label, origin, next } = animePlayers[provider];
+  const controller = new AbortController();
+  const { signal } = controller;
+  session.videoController = controller;
+  const { item, episode } = session;
+  const notice = titlePage.querySelector('.embed-notice');
+  const status = notice.querySelector('[role="status"]');
+  const retry = notice.querySelector('[data-action="retry-video"]');
+  const switchPlayer = notice.querySelector('[data-action="video-provider"]');
+  const credit = titlePage.querySelector('[data-playback-source]');
+  const videoBox = titlePage.querySelector('.video-box');
+  notice.hidden = false;
+  status.hidden = false;
+  status.textContent = 'Finding this episode in the anime player…';
+  retry.hidden = true;
+  notice.querySelector('[data-action="cine-options"]').hidden = true;
+  switchPlayer.hidden = false;
+  switchPlayer.textContent = `Use ${animePlayers[next].label}`;
+
+  function fallBack(target = next) {
+    if (signal.aborted || active !== session) return;
+    session.animeProvider = target;
+    stopVideo();
+    session.embedPlayback = null;
+    startCatalogPlayback(session);
+  }
+
+  const query = episode ? `?s=${episode.season}&e=${episode.number}` : '';
+  let source = session.animeSource;
+  try {
+    if (!source) ({ source } = await api(`/api/anime/${item.type}/${item.id}${query}`, { signal }));
+  } catch {
+    return fallBack('cinesrc');
+  }
+  if (signal.aborted || active !== session) return;
+  if (!source) return fallBack('cinesrc');
+  session.animeSource = source;
+
+  session.tracking = viewingSession(progress[session.progressKey]?.provider === provider ? progress[session.progressKey] : null);
+  session.segments = [];
+  session.lastSaved = 0;
+  session.providerControls = false;
+  const frame = document.createElement('iframe');
+  frame.title = `${item.title}${episode ? `, ${episodeLabel(episode)}` : ''} anime player`;
+  frame.allow = 'autoplay; fullscreen; picture-in-picture; encrypted-media; screen-wake-lock';
+  frame.allowFullscreen = true;
+  frame.referrerPolicy = 'strict-origin';
+  const overlay = document.createElement('template');
+  overlay.innerHTML = nextCountdownMarkup(episode);
+  videoBox.replaceChildren(frame, overlay.content);
+  credit.textContent = `Playback by ${label}`;
+  status.textContent = `Loading ${label}…`;
+  let ready = false;
+  let currentEpisode = source.episode;
+  let commandId = 0;
+  const timer = setTimeout(() => fallBack(), 16000);
+  const playback = {
+    provider, frame, position: null,
+    send(cmd, args = {}) {
+      const message = provider === 'anipm'
+        ? { ns: 'anipm.player', v: 1, cmd, args }
+        : { channel: 'animeembed', version: 1, command: cmd, data: args, requestId: String(++commandId) };
+      frame.contentWindow?.postMessage(message, origin);
+    },
+    stop() { clearTimeout(timer); controller.abort(); frame.remove(); },
+  };
+  session.embedPlayback = playback;
+  if (provider === 'anipm') frame.addEventListener('load', () => playback.send('hello'), { signal });
+  window.addEventListener('message', event => {
+    if (event.origin !== origin || event.source !== frame.contentWindow || active !== session) return;
+    const message = event.data;
+    const supported = provider === 'anipm' ? message?.ns === 'anipm.player' && message.v === 1
+      : message?.channel === 'animeembed' && message.version === 1;
+    if (!supported) return;
+    const data = message.data || {};
+    const state = data.state || data;
+    const reportedId = state.anilistId ?? message.animeId;
+    if (reportedId != null && Number(reportedId) !== source.id) return;
+    const reportedEpisode = state.episode ?? message.episode;
+    const episodeNumber = Number(reportedEpisode);
+    if (Number.isInteger(episodeNumber) && episodeNumber > 0) currentEpisode = episodeNumber;
+    if (currentEpisode !== source.episode) {
+      if (message.event !== 'episodechange' && message.event !== 'ready') return;
+      const adjacent = currentEpisode === source.episode + 1 ? session.nextEpisode : currentEpisode === source.episode - 1 ? session.previousEpisode : null;
+      if (adjacent) playEpisodeChoice(session, adjacent);
+      else if (provider === 'anipm') playback.send('loadEpisode', { episode: source.episode, start: playback.position?.currentTime ?? 0 });
+      return;
+    }
+    if (message.event === 'error') {
+      if (!ready) return fallBack();
+      status.hidden = false;
+      retry.hidden = false;
+      status.textContent = 'The anime player lost its video source.';
+      return;
+    }
+    if (['ready', 'autoplayblocked', 'timeupdate', 'progress'].includes(message.event)) {
+      status.hidden = true;
+      clearTimeout(timer);
+      ready = true;
+    }
+    const { currentTime, duration, paused } = state;
+    if (Number.isFinite(currentTime) && Number.isFinite(duration) && currentTime >= 0 && duration > 0 && currentTime <= duration + .5) {
+      const previousDuration = playback.position?.duration || progress[session.progressKey]?.duration;
+      if (!playback.position && previousDuration && Math.abs(previousDuration - duration) > 2.5) session.tracking = viewingSession();
+      const position = { currentTime: Math.min(currentTime, duration), duration,
+        paused: paused ?? (message.event === 'pause' || (message.event !== 'play' && message.event !== 'progress' && playback.position?.paused)) };
+      playback.position = position;
+      if (!position.paused && session.ended && message.event === 'play') resumePlayback(session);
+      trackPosition(position, session, ['seeking', 'seeked'].includes(message.event));
+      remember(position, session, message.event === 'pause');
+    }
+    if (message.event === 'ended') finishPlayback(session);
+  }, { signal });
+  const accent = getComputedStyle(titlePage).getPropertyValue('--accent').trim().replace(/^#/, '');
+  const start = Math.floor(cineResumeTime(session.progressKey, provider) || 0);
+  const url = new URL(`/embed/ani/${source.id}/${source.episode}${provider === 'anipm' ? '/sub' : ''}`, origin);
+  url.search = new URLSearchParams(provider === 'anipm'
+    ? { start, color: accent, autonext: '0', episodes: '0', adult: '0', autoskip: '0' }
+    : { start, accent, autoPlay: '1', autoNext: '0', autoSkip: '0', hide: 'next' });
+  if (pref('volume') && preferences.muted) url.searchParams.set('muted', '1');
+  frame.src = url.href;
+}
+
 function savePlayback() {
   if (!active) return;
   const video = titlePage.querySelector('video');
@@ -2522,11 +2778,12 @@ async function openTitle(item, watch = false, episodeKey, selection = null) {
     item, episode, media, accountId: account?.id, autoSkipped: new Set(), segments: media?.segments || [],
     progressKey: selection?.progressKey ?? (episode ? `${item.key}/${episode.key}` : item.key),
     details: detailsCache.get(item.key),
+    animeEligible: Boolean(media?.embed) && isAnime(item.originalLanguage, item.genreIds),
   };
   session.tracking = viewingSession(progress[session.progressKey]);
   active = session;
   const sourcePage = source?.page || (source?.archive ? `https://archive.org/details/${encodeURIComponent(source.archive)}` : '');
-  const watchSource = sourcePage ? `<div class="watch-source"><span>${escape(item.credit)}</span><a href="${escape(sourcePage)}" target="_blank" rel="noopener noreferrer">${escape(source.source || 'Internet Archive')} ${icon('external')}</a><a href="${escape(item.license[1])}" target="_blank" rel="noopener noreferrer">${escape(item.license[0])}</a></div>` : media?.embed ? '<div class="watch-source">Playback by CineSrc</div>' : '';
+  const watchSource = sourcePage ? `<div class="watch-source"><span>${escape(item.credit)}</span><a href="${escape(sourcePage)}" target="_blank" rel="noopener noreferrer">${escape(source.source || 'Internet Archive')} ${icon('external')}</a><a href="${escape(item.license[1])}" target="_blank" rel="noopener noreferrer">${escape(item.license[0])}</a></div>` : media?.embed ? '<div class="watch-source" data-playback-source></div>' : '';
   const canPlay = resumed || isArchive(item) || (item.type === 'movie' && hasCineSrcTitle(item) && (!item.date || hasReleased(item)));
   const back = `<a class="plain-link title-back" href="${media ? `#${titlePath(item)}` : escape(browseHash)}">${icon('chevron-left')} ${media ? `Back to ${escape(item.title)}` : 'Back to browse'}</a>`;
   const primary = !media && (item.type === 'tv'
@@ -2536,7 +2793,7 @@ async function openTitle(item, watch = false, episodeKey, selection = null) {
   titlePage.classList.toggle('is-playing', Boolean(media));
   titlePage.hidden = false;
   main.hidden = true;
-  const playbackNotice = media?.embed ? '<div class="embed-notice" hidden><span role="status"></span><div class="watch-actions"><button type="button" class="button secondary" data-action="cine-options">Use CineSrc controls</button><button type="button" class="button secondary" data-action="retry-video">Reload player</button></div></div>' : '';
+  const playbackNotice = media?.embed ? '<div class="embed-notice" hidden><span role="status"></span><div class="watch-actions"><button type="button" class="button secondary" data-action="video-provider" hidden></button><button type="button" class="button secondary" data-action="cine-options">Use CineSrc controls</button><button type="button" class="button secondary" data-action="retry-video">Reload player</button></div></div>' : '';
   const watchTitle = `<h1 id="title-heading" tabindex="-1">${escape(episode?.title || item.title)}</h1>`;
   titlePage.innerHTML = `${media
     ? `<div class="sr-only">${watchTitle}</div><div class="watch-stage"><div class="video-box"></div>${playbackNotice}</div>`
@@ -2551,7 +2808,7 @@ async function openTitle(item, watch = false, episodeKey, selection = null) {
   renderNavigation();
   window.scrollTo(0, 0);
   titlePage.querySelector('#title-heading').focus({ preventScroll: true });
-  if (media?.embed) startCineSrc(session);
+  if (media?.embed) startCatalogPlayback(session);
   else if (media) startVideo(session);
   loadTitle(session);
   if (!media) loadRelated(session);
@@ -2630,10 +2887,11 @@ function applyFilterForm(form, name, type) {
 
 function toggleSaved(item) {
   const previous = saved[item.key] ?? null;
-  if (previous && pref('confirmRemoval') && !confirm('Remove this title from your watchlist?')) return;
+  const label = item.type === 'comic' ? 'Reading list' : 'Watchlist';
+  if (previous && pref('confirmRemoval') && !confirm(`Remove this title from your ${label.toLowerCase()}?`)) return;
   libraryChange('saved', item.key, previous ? null : libraryTitle(item));
   undoToast = { key: item.key, previous, accountId: account?.id };
-  showToast(previous ? 'Removed from Watchlist' : 'Added to Watchlist');
+  showToast(previous ? `Removed from ${label}` : `Added to ${label}`);
   renderLibraryControls();
 }
 
@@ -2662,7 +2920,7 @@ function setAccount(user, library) {
       const separator = recordKey.indexOf('/');
       const kind = recordKey.slice(0, separator);
       const key = recordKey.slice(separator + 1);
-      const records = kind === 'progress' ? progress : kind === 'watched' ? watched : null;
+      const records = { progress, reading, watched }[kind];
       if (records && entry?.at >= (records[key]?.updated || 0)) retry.push([kind, key, entry.value]);
       else delete pending[recordKey];
     }
@@ -2787,7 +3045,7 @@ document.addEventListener('click', event => {
     if (accountId === account?.id) {
       libraryChange('saved', key, previous);
       renderLibraryControls();
-      showToast('Watchlist change undone');
+      showToast(titles.get(key)?.type === 'comic' ? 'Reading list change undone' : 'Watchlist change undone');
     } else {
       toast.hidden = true;
     }
@@ -2884,9 +3142,18 @@ document.addEventListener('click', event => {
     const focus = active.providerControls ? '.embed-notice [data-action="cine-options"]' : '[data-player="play"]';
     titlePage.querySelector(focus)?.focus({ preventScroll: true });
   }
+  if (action === 'video-provider' && active?.media?.embed) {
+    stopVideo();
+    active.embedPlayback = null;
+    active.animeProvider = animePlayers[active.animeProvider || 'cinesrc'].next;
+    startCatalogPlayback(active);
+  }
   if (['retry-video', 'direct-video'].includes(action) && active?.media) {
     stopVideo();
-    if (active.media.embed) startCineSrc(active);
+    if (active.media.embed) {
+      active.embedPlayback = null;
+      startCatalogPlayback(active);
+    }
     else startVideo(active, action === 'direct-video');
   }
   if (action === 'skip-segment' && active?.media) {
@@ -3080,6 +3347,9 @@ for (const form of connectionForms) {
 }
 
 document.querySelectorAll('[data-icon]').forEach(element => { element.innerHTML = icon(element.dataset.icon); });
+document.addEventListener('error', ({ target }) => {
+  if (target instanceof HTMLImageElement && target.getAttribute('src')?.startsWith('/comic-cover/')) target.remove();
+}, true);
 document.querySelector('#search-form').addEventListener('submit', event => {
   event.preventDefault();
   const option = !suggestions.hidden && suggestions.children[suggestionIndex];
@@ -3098,7 +3368,7 @@ search.addEventListener('input', () => {
   suggestionResults = [];
   renderSuggestions();
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(fetchSuggestions, 260);
+  searchTimer = setTimeout(fetchSuggestions, state.page === 'comics' ? 400 : 260);
 });
 search.addEventListener('focus', () => {
   suggestionsDismissed = false;
@@ -3156,4 +3426,9 @@ const initialAccount = api('/api/account').then(({ account: user, library }) => 
 }).catch(() => {
   accountReady = true;
 }).finally(() => { accountButton.disabled = false; });
+const comics = createComics({
+  main, titlePage, api, escape, icon, grid, shelf, observeRails, saveButton, titles, read, write,
+  getReading: key => reading[key],
+  recordReading: (item, entry) => libraryChange('reading', item.key, { ...entry, item: libraryTitle(item), updated: Date.now() }),
+});
 route();
