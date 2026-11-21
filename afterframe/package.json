@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --use-system-ca --env-file-if-exists=data/metadata-pg.env --env-file-if-exists=.env server.mjs"
+    "start": "node --use-system-ca --env-file-if-exists=data/metadata-pg.env --env-file-if-exists=.env server.mjs",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=22.19"

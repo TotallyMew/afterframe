@@ -2,6 +2,7 @@ export const preferenceDefaults = {
   intro: true, recap: true, credits: true, autoplay: true, resume: true,
   volume: true, subtitles: true, blur: true, hideSynopsis: true,
   reducedMotion: false, compact: false, confirmRemoval: true,
+  notifyEpisodes: true, notifySeasonStarts: true, notifySeasonSchedules: true,
 };
 
 export function viewingSession(progress) {
@@ -32,6 +33,21 @@ export function samplePlayback(tracking, position, now) {
 
 export function watchedSeconds(ranges, length) {
   return ranges.reduce((sum, [start, end]) => sum + Math.max(0, Math.min(end, length) - start), 0);
+}
+
+export function activeSkipSegment(segments, { currentTime, duration }) {
+  return segments.find(segment => currentTime >= segment.start && currentTime < segment.end && segment.end <= duration);
+}
+
+export function bufferedIntervals(buffered, duration) {
+  if (!buffered || !Number.isFinite(duration) || duration <= 0) return [];
+  const intervals = [];
+  for (let index = 0; index < buffered.length; index++) {
+    const start = Math.max(0, buffered.start(index)) / duration;
+    const end = Math.min(duration, buffered.end(index)) / duration;
+    if (end > start) intervals.push([start * 100, end * 100]);
+  }
+  return intervals;
 }
 
 export function completionReached(ranges, position, credits, ended = false, skipped = []) {

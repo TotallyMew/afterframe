@@ -14,7 +14,7 @@ export const archiveCategories = {
   'Science Fiction': ['science fiction', 'sci-fi', 'scifi'], Thriller: ['thriller', 'suspense'], War: ['war'], Western: ['western', 'westerns'],
 };
 
-export const sortOptions = { popular: 'Popular', top: 'Top rated on TMDb', newest: 'Newest', oldest: 'Oldest' };
+export const sortOptions = { popular: 'Popular', newest: 'Newest', oldest: 'Oldest' };
 export const browseGenres = { ...categories, Anime: [16] };
 
 export function isAnime(originalLanguage, genreIds) {
@@ -59,8 +59,9 @@ export function discoverParams(type, { category, decade, sort, from = 0, to = 0,
   const upper = Number.isFinite(upperYear) ? `${upperYear}-12-31` : today;
   results[`${date}.lte`] = upper < today ? upper : today;
   if (collection === 'new') {
-    const start = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    const start = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
     if (!results[`${date}.gte`] || results[`${date}.gte`] < start) results[`${date}.gte`] = start;
+    results['vote_count.gte'] = type === 'movie' ? '15' : '5';
   }
   if (collection === 'gems') {
     Object.assign(results, { sort_by: 'vote_average.desc', 'vote_count.gte': '250', 'vote_count.lte': '2500', 'vote_average.gte': '7' });

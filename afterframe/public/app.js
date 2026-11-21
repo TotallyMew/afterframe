@@ -1,7 +1,9 @@
 import { archiveCatalog, archiveFileUrl } from './catalog.js';
 import { categories, browseGenres, sortOptions, matchesCatalog, runtimeRanges, catalogFilters, isAnime } from './discover.js';
-import { preferenceDefaults, viewingSession, mergeRanges, samplePlayback, completionReached, watchedSeconds } from './playback.js';
-import { findSubtitles, loadSubtitle } from './subtitles.js';
+import { preferenceDefaults, viewingSession, mergeRanges, samplePlayback, completionReached, watchedSeconds, activeSkipSegment, bufferedIntervals } from './playback.js';
+import { findSubtitles, loadSubtitle, playbackLanguage, samePlaybackLanguage } from './subtitles.js';
+import { ratingOnTen, titleProgress, watchStatus, watchStatuses } from './library.js';
+import { createDiscoveryPages } from './discovery-pages.js';
 import { comicCover, comicFormat, comicRoute, comicsHash, createComics, readerHash } from './comics.js';
 
 const icons = {
@@ -67,6 +69,7 @@ const suggestions = document.querySelector('#search-suggestions');
 const region = document.querySelector('#region');
 const titlePage = document.querySelector('#title-page');
 const settingsDialog = document.querySelector('#settings-dialog');
+const settingsTabs = [...settingsDialog.querySelectorAll('[role="tab"]')];
 const creditsDialog = document.querySelector('#credits-dialog');
 const accountDialog = document.querySelector('#account-dialog');
 const accountButton = document.querySelector('#account-button');
@@ -74,8 +77,8 @@ const accountBody = document.querySelector('#account-body');
 const connectionForms = [...settingsDialog.querySelectorAll('[data-provider]')];
 const toast = document.querySelector('#toast');
 const titles = new Map(archiveCatalog.map(item => [item.key, item]));
-const archiveById = new Map(archiveCatalog.filter(item => item.id).map(item => [`${item.type}-${item.id}`, item]));
-const navLinks = [['home', 'Home', 'home'], ['movies', 'Movies', 'film'], ['tv', 'TV Shows', 'tv'], ['comics', 'Comics', 'book'], ['new', 'New Releases', 'clock'], ['watchlist', 'My Library', 'bookmark']];
+const navLinks = [['home', 'Home', 'home'], ['movies', 'Movies', 'film'], ['tv', 'TV Shows', 'tv'], ['anime', 'Anime', 'tv'], ['comics', 'Comics', 'book'], ['new', 'New Releases', 'clock'], ['recommendations', 'Recommendations', 'star'], ['watchlist', 'My Library', 'bookmark']];
+const discoveryPath = /^(?:anime|recommendations)$/;
 const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
 const countries = 'AE AR AT AU BE BG BR CA CH CL CO CZ DE DK EE ES FI FR GB GR HK HR HU ID IE IL IN IS IT JP KR LT LU LV MX MY NL NO NZ PE PH PL PT RO RS SE SG SI SK TH TR TW UA US ZA'.split(' ');
 let saved;
@@ -83,11 +86,15 @@ let progress;
 let reading;
 let ratings;
 let watched;
+let watchHistory;
+let notifications;
 let preferences;
 let account = null;
 let accountMode = 'signin';
 let accountReady = false;
 let libraryQueue = Promise.resolve();
+let libraryRevision = 0;
+let syncingLibrary = false;
 const catalogCache = new Map();
 const detailsCache = new Map();
 const seasonCache = new Map();
@@ -96,7 +103,7 @@ const checkedRatings = new Set();
 const ratingBatches = new WeakSet();
 const cardFacts = new Map();
 const defaults = { category: '', decade: '', sort: 'popular', from: '', to: '', imdb: '', runtime: '' };
-const libraryTabs = [['watchlist', 'Watchlist'], ['watched', 'Watched'], ['ratings', 'My ratings'], ['reading', 'Reading']];
+const libraryTabs = [['watchlist', 'Watchlist'], ['watched', 'Watched'], ['history', 'History'], ['ratings', 'My ratings'], ['reading', 'Reading'], ['notifications', 'Notifications']];
 const libraryPages = libraryTabs.map(([page]) => page);
 const cineSrcOrigin = 'https://cinesrc.st';
 const animePlayers = {
@@ -110,18 +117,20 @@ function libraryTitle(item) {
     const { key, id, title, year, type, format, poster } = item;
     return { key, id, title, year, type, format, poster };
   }
-  const { key, id, archiveId, title, year, date, type, poster, backdrop, genre, genreIds, categories, originalLanguage } = item;
-  return { key, id, archiveId, title, year, date, type, poster, backdrop, genre, genreIds, categories, originalLanguage };
+  const { key, id, archiveId, title, year, date, type, poster, backdrop, genre, genreIds, categories, originalLanguage, totalEpisodes } = item;
+  return { key, id, archiveId, title, year, date, type, poster, backdrop, genre, genreIds, categories, originalLanguage, totalEpisodes };
 }
 
 function useLibrary(library = null) {
   saved = Object.assign(Object.create(null), library?.saved || read('saved', {}));
   progress = Object.assign(Object.create(null), library?.progress || read('progress', {}));
   reading = Object.assign(Object.create(null), library ? library.reading : read('reading', {}));
-  ratings = Object.assign(Object.create(null), library?.ratings || read('ratings', {}));
+  ratings = Object.assign(Object.create(null), Object.fromEntries(Object.entries(library ? library.ratings || {} : read('ratings', {})).map(([key, entry]) => [key, ratingOnTen(entry)])));
   watched = Object.assign(Object.create(null), library ? library.watched : read('watched', {}));
   preferences = Object.assign(Object.create(null), library ? library.preferences : read('preferences', {}));
-  const tracked = [progress, reading, ratings, watched].flatMap(records => Object.values(records).map(entry => entry.item));
+  watchHistory = Object.assign(Object.create(null), library ? library.history : read('history', {}));
+  notifications = Object.assign(Object.create(null), library?.notifications);
+  const tracked = [progress, reading, ratings, watched, watchHistory].flatMap(records => Object.values(records).map(entry => entry.item));
   for (const item of [...Object.values(saved), ...tracked]) {
     if (item?.key && !titles.has(item.key)) titles.set(item.key, item);
   }
@@ -132,8 +141,8 @@ const savedRegion = read('region', defaultRegion);
 const state = {
   page: 'home', query: '', filter: 'all', connected: false, omdbConnected: false,
   region: countries.includes(savedRegion) ? savedRegion : 'LT', remote: [], loading: false, error: '',
-  archive: [], archiveLoading: false, archiveError: '', archiveNext: null, remoteNext: null,
-  collections: {}, total: null, filtersOpen: false, librarySort: 'recent',
+  remoteNext: null,
+  collections: {}, total: null, filtersOpen: false, librarySort: 'recent', libraryFilters: {}, historyPage: 1,
   facets: { ...defaults },
 };
 let active = null;
@@ -185,11 +194,23 @@ function syncPreferences() {
   document.documentElement.classList.toggle('compact-episodes', pref('compact'));
   for (const input of settingsDialog.querySelectorAll('[data-preference]')) input.checked = pref(input.dataset.preference);
   settingsDialog.querySelector('#preferred-quality').value = preferences.quality || '';
+  for (const field of settingsDialog.querySelectorAll('[data-language-preference]')) {
+    for (const option of field.querySelectorAll('[data-custom]')) option.remove();
+    const language = field.dataset.languagePreference === 'subtitleLanguage'
+      ? preferences.subtitleLanguage ?? (preferences.captions ? 'English' : '') : preferences.audioLanguage || '';
+    if (language && ![...field.options].some(option => option.value === language)) {
+      const option = new Option(language, language);
+      option.dataset.custom = '';
+      field.add(option);
+    }
+    field.value = language;
+  }
   if (active?.seasonData) renderEpisodeRows(active);
 }
 
-function libraryChange(kind, key, value) {
-  const records = { saved, progress, reading, ratings, watched, preferences }[kind];
+function libraryChange(kind, key, value, at = Date.now()) {
+  libraryRevision++;
+  const records = { saved, progress, reading, ratings, watched, preferences, history: watchHistory }[kind];
   const previous = records[key];
   if (value === null) delete records[key];
   else records[key] = value;
@@ -200,12 +221,12 @@ function libraryChange(kind, key, value) {
   const accountId = account.id;
   const pendingKey = `pendingPlayback.${accountId}`;
   const recordKey = `${kind}/${key}`;
-  const queued = ['progress', 'reading', 'watched'].includes(kind) ? { value, at: Date.now() } : null;
+  const queued = ['progress', 'reading', 'watched', 'history'].includes(kind) ? { value, at } : null;
   if (queued) write(pendingKey, { ...read(pendingKey, {}), [recordKey]: queued });
   libraryQueue = libraryQueue.then(async () => {
     if (account?.id !== accountId) return;
     try {
-      await post('/api/account/library', { accountId, kind, key, value }, true);
+      await post('/api/account/library', { accountId, kind, key, value, at }, true);
       if (queued) {
         const pending = read(pendingKey, {});
         if (pending[recordKey]?.at === queued.at && JSON.stringify(pending[recordKey].value) === JSON.stringify(value)) {
@@ -233,14 +254,12 @@ function imagePath(path, size = 'w500') {
 
 function localizeTitle(item) {
   const key = `${item.media_type}-${item.id}`;
-  const archiveItem = archiveById.get(key);
   if (item.catalog_facts) {
-    const itemKey = archiveItem?.key || key;
+    const itemKey = key;
     cardFacts.set(itemKey, item.catalog_facts);
     imdbScores.set(itemKey, item.catalog_facts.rating);
     checkedRatings.add(itemKey);
   }
-  if (archiveItem) return archiveItem;
   const title = {
     key, id: item.id, type: item.media_type, title: item.title || item.name,
     year: (item.release_date || item.first_air_date || '').slice(0, 4), date: item.release_date || item.first_air_date,
@@ -304,7 +323,7 @@ function resumeFor(item) {
     .sort((a, b) => b[1].updated - a[1].updated)[0];
 }
 
-function titleCard(item, resume = false) {
+function titleCard(item, resume = false, showDate = false) {
   if (item.type === 'comic') {
     const entry = resume && reading[item.key];
     return `<article class="poster-tile"><a href="${escape(entry ? readerHash(item, entry) : `#${titlePath(item)}`)}" class="poster-card comic-card" data-key="${escape(item.key)}">
@@ -318,14 +337,14 @@ function titleCard(item, resume = false) {
   const left = entry ? `${Math.ceil((entry.duration - entry.time) / 60)} min left` : '';
   const episode = entry?.episode || (entry && item.episodes?.find(candidate => progress[`${item.key}/${candidate.key}`] === entry));
   const context = entry ? [episodeLabel(episode), left].filter(Boolean) : meta(item).slice(0, 2);
-  if (!entry && item.type === 'tv' && state.page === 'tv' && item.date) context[0] = formatReleaseDate(item.date) || item.year;
+  if (!entry && item.date && (showDate || state.page === 'new' || item.type === 'tv' && state.page === 'tv')) context[0] = formatReleaseDate(item.date) || item.year;
   const url = `#${titlePath(item)}`;
   const tag = entry ? 'button' : 'a';
   return `<article class="poster-tile"><${tag} ${entry ? `type="button" aria-label="Resume ${escape(item.title)}${episode ? `, ${escape(episode.title)}` : ''}"` : `href="${url}"`} class="poster-card${entry ? ' resume-card' : ''}" data-action="${entry ? 'resume' : 'details'}" data-key="${escape(item.key)}" title="${escape(item.title)}">
     <span class="poster-art">${thumbnail(item, Boolean(entry))}<span class="card-play" aria-hidden="true">${icon('play')}</span>${entry ? `<span class="progress-line" role="progressbar" aria-label="Watch progress" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"><i style="width:${percent}%"></i></span>` : ''}</span>
     <span class="poster-title">${escape(item.title)}</span><span class="poster-meta">${context.map(escape).join(' · ')}</span>
-    <span class="card-facts">${cardDetails(item)}</span><span class="card-ratings"><span class="imdb-rating" data-rating-for="${escape(item.key)}">${ratingBadge(item)}</span>${score ? `<span class="personal-badge" aria-label="Your rating ${score} out of 5">You ${score}/5</span>` : ''}</span>
-  </${tag}>${entry ? '' : saveButton(item, true)}</article>`;
+    <span class="card-facts">${cardDetails(item)}</span><span class="card-ratings"><span class="imdb-rating" data-rating-for="${escape(item.key)}">${ratingBadge(item)}</span>${score ? `<span class="personal-badge" aria-label="Your rating ${score} out of 10">You ${score}/10</span>` : ''}</span>
+  </${tag}>${entry ? '' : saveButton(item, true)}${state.page === 'watchlist' ? watchStatusControl(item) : ''}</article>`;
 }
 
 function cardDetails(item) {
@@ -387,9 +406,9 @@ function grid(items) {
   return `<div class="poster-grid">${items.map(item => titleCard(item)).join('')}</div>`;
 }
 
-function shelf(title, items, link, resume = false) {
+function shelf(title, items, link, resume = false, showDate = false) {
   if (!items.length) return '';
-  return `<section class="shelf" aria-label="${title}"><div class="section-head"><h2>${title}</h2><div class="shelf-actions">${link ? `<a class="section-link" href="#${link}">View all ${icon('chevron-right')}</a>` : ''}<div class="rail-controls" hidden><button class="icon-button" type="button" data-action="rail" data-value="-1" aria-label="Scroll ${title} left">${icon('chevron-left')}</button><button class="icon-button" type="button" data-action="rail" data-value="1" aria-label="Scroll ${title} right">${icon('chevron-right')}</button></div></div></div><div class="poster-rail${resume ? ' resume-rail' : ''}">${items.map(item => titleCard(item, resume)).join('')}</div></section>`;
+  return `<section class="shelf" aria-label="${title}"><div class="section-head"><h2>${title}</h2><div class="shelf-actions">${link ? `<a class="section-link" href="#${link}">View all ${icon('chevron-right')}</a>` : ''}<div class="rail-controls" hidden><button class="icon-button" type="button" data-action="rail" data-value="-1" aria-label="Scroll ${title} left">${icon('chevron-left')}</button><button class="icon-button" type="button" data-action="rail" data-value="1" aria-label="Scroll ${title} right">${icon('chevron-right')}</button></div></div></div><div class="poster-rail${resume ? ' resume-rail' : ''}">${items.map(item => titleCard(item, resume, showDate)).join('')}</div></section>`;
 }
 
 function syncRail(rail) {
@@ -410,7 +429,7 @@ function observeRails() {
 }
 
 function footer() {
-  return `<footer class="page-footer"><button data-action="credits">Sources &amp; credits</button><span>·</span><a href="https://www.themoviedb.org/" target="_blank" rel="noopener noreferrer">TMDB</a><span>·</span><a href="https://www.justwatch.com/" target="_blank" rel="noopener noreferrer">JustWatch</a><span>·</span><a href="https://archive.org/" target="_blank" rel="noopener noreferrer">Internet Archive</a></footer>`;
+  return `<footer class="page-footer"><button data-action="credits">Sources &amp; credits</button></footer>`;
 }
 
 function saveButton(item, compact = false) {
@@ -422,7 +441,7 @@ function saveButton(item, compact = false) {
 
 function ratingControl(item) {
   const score = ratings[item.key]?.score || 0;
-  return `<fieldset class="rating-control" data-rating-key="${escape(item.key)}"><legend>Your rating</legend><div class="rating-stars">${[1, 2, 3, 4, 5].map(value => `<label><input type="radio" name="personal-rating" value="${value}" aria-label="${value} ${value === 1 ? 'star' : 'stars'}" ${value === score ? 'checked' : ''}><span class="${value <= score ? 'filled' : ''}">${icon('star')}</span></label>`).join('')}${score ? '<button type="button" class="plain-link" data-action="clear-rating">Clear rating</button>' : ''}</div></fieldset>`;
+  return `<div class="rating-control" data-rating-key="${escape(item.key)}"><label>Your rating <select name="personal-rating"><option value="">Choose 1–10</option>${Array.from({ length: 10 }, (_, index) => `<option${index + 1 === score ? ' selected' : ''}>${index + 1}</option>`).join('')}</select></label>${score ? ' <button type="button" class="plain-link" data-action="clear-rating">Clear rating</button>' : ''}</div>`;
 }
 
 function updateRating() {
@@ -430,13 +449,22 @@ function updateRating() {
   if (!current || !active) return;
   const focused = document.activeElement;
   const restore = current.contains(focused);
-  const value = focused.value;
   current.outerHTML = ratingControl(active.item);
-  if (restore) (titlePage.querySelector(`input[name="personal-rating"][value="${CSS.escape(value || '1')}"]`))?.focus({ preventScroll: true });
+  if (restore) titlePage.querySelector('[name="personal-rating"]')?.focus({ preventScroll: true });
+}
+
+function watchStatusControl(item) {
+  const entry = saved[item.key];
+  return `<label class="watch-status"${entry ? '' : ' hidden'}><span class="sr-only">Watch status for ${escape(item.title)}</span><select data-watch-key="${escape(item.key)}">${Object.entries(watchStatuses).map(([value, label]) => `<option value="${value}"${watchStatus(entry) === value ? ' selected' : ''}>${label}</option>`).join('')}</select></label>`;
 }
 
 function renderLibraryControls() {
   if (active) updateRating();
+  for (const select of titlePage.querySelectorAll('[data-watch-key]')) {
+    const entry = saved[select.dataset.watchKey];
+    select.closest('label').hidden = !entry;
+    select.value = watchStatus(entry);
+  }
   for (const button of document.querySelectorAll('[data-action="save"]')) {
     const isSaved = Object.hasOwn(saved, button.dataset.key);
     button.setAttribute('aria-pressed', isSaved);
@@ -492,17 +520,55 @@ function editorialGrid(title, items, link, className = '') {
 
 function releaseIndex(movies, shows) {
   if (!movies.length && !shows.length) return '';
-  const column = (title, items, link) => items.length ? `<section><h3>${title}</h3><ol>${items.slice(0, 4).map(item => `<li><a href="#${titlePath(item)}"><span>${escape(item.title)}</span><small>${escape(formatReleaseDate(item.date) || item.year)}</small></a></li>`).join('')}</ol><a class="section-link" href="#${link}">View all ${icon('arrow')}</a></section>` : '';
-  return `<section class="editorial-section release-index" aria-label="Recent releases"><header class="section-head"><h2>Recent releases</h2></header><div class="release-columns">${column('Films', movies, 'new')}${column('Series', shows, 'new?type=tv')}</div></section>`;
+  return shelf('New movies', movies.slice(0, 8), 'new', false, true) + shelf('New series', shows.slice(0, 8), 'new?type=tv', false, true);
 }
 
 function renderNavigation() {
+  const scroll = navigation.scrollLeft;
   const current = active ? active.item.type === 'tv' ? 'tv' : 'movies' : libraryPages.includes(state.page) ? 'watchlist' : state.page;
-  navigation.innerHTML = navLinks.map(([page, label, glyph]) => `<a href="#${page}" class="nav-link" ${current === page ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}</span></a>`).join('');
+  const unread = Object.values(notifications).filter(entry => !entry.read).length;
+  navigation.innerHTML = navLinks.map(([page, label, glyph]) => `<a href="#${page}" class="nav-link" ${current === page ? 'aria-current="page"' : ''}>${icon(glyph)}<span>${label}${page === 'watchlist' && unread ? ` <span class="nav-unread" aria-label="${unread} unread notifications">${unread}</span>` : ''}</span></a>`).join('');
+  navigation.scrollLeft = scroll;
 }
 
 function renderLibraryTabs() {
-  return `<nav class="filters library-tabs" aria-label="Library">${libraryTabs.map(([page, label]) => `<a href="#${page}" class="filter"${state.page === page ? ' aria-current="page"' : ''}>${label}</a>`).join('')}</nav>`;
+  const unread = Object.values(notifications).filter(entry => !entry.read).length;
+  return `<nav class="filters library-tabs" aria-label="Library">${libraryTabs.map(([page, label]) => `<a href="#${page}" class="filter"${state.page === page ? ' aria-current="page"' : ''}>${label}${page === 'notifications' && unread ? ` (${unread})` : ''}</a>`).join('')}</nav>`;
+}
+
+function renderHistory() {
+  const entries = Object.entries(watchHistory).sort(([, a], [, b]) => b.updated - a.updated);
+  const repeated = new Set();
+  const rewatches = new Set();
+  for (const [id, entry] of [...entries].reverse()) {
+    if (repeated.has(entry.mediaKey)) rewatches.add(id);
+    if (entry.completed) repeated.add(entry.mediaKey);
+  }
+  const formatter = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  const rows = entries.slice(0, 30 * state.historyPage).map(([id, entry]) => {
+    const percent = Math.floor(entry.coverage / entry.duration * 100);
+    return `<li><a href="#${titlePath(entry.item)}">${escape(entry.item.title)}</a>${entry.episode ? `<span>${escape([episodeLabel(entry.episode), entry.episode.title].filter(Boolean).join(' · '))}</span>` : ''}<small>${escape(formatter.format(entry.updated))} · ${percent}% watched · Last position ${timeCode(entry.time)}${entry.completed ? ' · Completed' : ''}${rewatches.has(id) ? ' · Rewatch' : ''}</small></li>`;
+  });
+  return rows.length ? `<ul class="activity-list">${rows.join('')}</ul>${entries.length > rows.length ? '<button class="button secondary" data-action="more-history">Show more</button>' : ''}` : '<p class="catalog-status">Your playback sessions will appear here after you start watching.</p>';
+}
+
+function renderNotifications() {
+  if (!account) return '<p class="catalog-status">Sign in to receive release notifications for your watchlist.</p>';
+  const rows = Object.entries(notifications).sort(([, a], [, b]) => b.created - a.created).map(([key, entry]) =>
+    `<li><a href="#tv/${entry.seriesId}">${escape(entry.title)}</a><span>${escape(entry.message.replace(/ \(TMDb\)/gi, ''))}${entry.source ? ` · <a href="${escape(entry.source)}" target="_blank" rel="noopener noreferrer">Announcement source</a>` : ''}</span>${entry.read ? '' : `<button class="plain-link" data-action="notification-read" data-key="${escape(key)}">Mark as read</button>`}</li>`);
+  return rows.length ? `<ul class="activity-list">${rows.join('')}</ul>` : '<p class="catalog-status">New releases for followed series will appear here.</p>';
+}
+
+function watchlistFilters(items) {
+  const { query, status, genre, rating, progress: coverage, after, before } = state.libraryFilters;
+  const genres = Object.keys(categories).filter(name => items.some(item => item.genre === name || item.genreIds?.some(id => categories[name].includes(id))));
+  const options = (choices, selected, emptyLabel) => `<option value="">${emptyLabel}</option>${choices.map(([value, label]) => `<option value="${escape(value)}"${value === selected ? ' selected' : ''}>${escape(label)}</option>`).join('')}`;
+  return `<form id="watchlist-filters" class="library-filters"><label>Title <input name="query" value="${escape(query || '')}" type="search" maxlength="180"></label><label>Status <select name="status">${options(Object.entries(watchStatuses), status, 'All statuses')}</select></label><label>Genre <select name="genre">${options(genres.map(name => [name, name]), genre, 'All genres')}</select></label><label>Personal rating <select name="rating">${options(Array.from({ length: 10 }, (_, i) => [String(i + 1), `${i + 1}+`]), rating, 'Any rating')}</select></label><label>Progress <select name="progress">${options([['unstarted', 'Unstarted'], ['started', 'Started'], ['complete', 'Complete']], coverage, 'Any progress')}</select></label><details${after || before ? ' open' : ''}><summary>Date added</summary><label>From <input type="date" name="after" value="${escape(after || '')}"></label><label>Through <input type="date" name="before" value="${escape(before || '')}"></label></details><button class="button secondary" type="submit">Apply</button></form>`;
+}
+
+function watchlistProgress(item) {
+  const entry = saved[item.key];
+  return watchStatus(entry) === 'completed' ? 100 : titleProgress({ ...item, totalEpisodes: item.totalEpisodes || entry?.totalEpisodes || item.episodes?.length }, progress, watched);
 }
 
 function filters(options) {
@@ -511,7 +577,7 @@ function filters(options) {
 
 function catalogToolbar(search = false) {
   const { category, decade, from, to, imdb, runtime } = state.facets;
-  const advanced = ['movies', 'tv', 'new'].includes(state.page) && state.connected && state.filter !== 'free';
+  const advanced = ['movies', 'tv', 'new'].includes(state.page) && state.connected;
   const genres = Object.keys(browseGenres).sort((a, b) => a.localeCompare(b));
   const checked = (name, value, label, current) => `<label class="facet-choice"><input type="radio" name="${name}" value="${escape(value)}"${current === value ? ' checked' : ''}>${escape(label)}</label>`;
   const years = Array.from({ length: 15 }, (_, index) => 2020 - index * 10);
@@ -526,10 +592,10 @@ function catalogToolbar(search = false) {
 }
 
 function sortControl(libraryPage) {
-  const options = libraryPage ? { recent: 'Recently added', title: 'Title A–Z', rating: 'Your rating' } : sortOptions;
+  const options = libraryPage ? { recent: 'Recently added', title: 'Title A–Z', rating: 'Your rating', ...(state.page === 'watchlist' ? { progress: 'Watch progress', status: 'Watch status', genre: 'Genre' } : {}) } : sortOptions;
   if (!libraryPage && (state.page === 'search' || state.page === 'new')) return '';
   const current = libraryPage ? state.librarySort : state.facets.sort;
-  return `<label class="sort-control"><span>Sort by</span><select aria-label="Sort titles" data-sort="${libraryPage ? 'library' : 'catalog'}">${Object.entries(options).filter(([key]) => key !== 'top' || (state.filter !== 'free' && state.page !== 'archive')).map(([key, label]) => `<option value="${key}"${key === current ? ' selected' : ''}>${label}</option>`).join('')}</select></label>`;
+  return `<label class="sort-control"><span>Sort by</span><select aria-label="Sort titles" data-sort="${libraryPage ? 'library' : 'catalog'}">${Object.entries(options).map(([key, label]) => `<option value="${key}"${key === current ? ' selected' : ''}>${label}</option>`).join('')}</select></label>`;
 }
 
 function appliedFilters() {
@@ -545,8 +611,8 @@ function addFacets(params) {
 
 function filterResults(items) {
   const filtered = items.filter(item => matchesCatalog(item, state.facets));
-  if (state.facets.sort === 'newest') return filtered.sort((a, b) => (b.year || 0) - (a.year || 0));
-  if (state.facets.sort === 'oldest') return filtered.sort((a, b) => (a.year || Infinity) - (b.year || Infinity));
+  if (state.facets.sort === 'newest') return filtered.sort((a, b) => (b.date || b.year || '').localeCompare(a.date || a.year || ''));
+  if (state.facets.sort === 'oldest') return filtered.sort((a, b) => (a.date || a.year || '9999').localeCompare(b.date || b.year || '9999'));
   return filtered;
 }
 
@@ -559,7 +625,6 @@ function renderCatalogResults(markup) {
   const focusFacet = target.contains(current) && current.form?.id === 'catalog-filters' ? current.name : '';
   const focusSearchFilters = current.matches('.search-filters summary');
   target.innerHTML = markup;
-  if (state.page === 'search' && state.filter !== 'free' && state.connected) renderArchiveSection();
   if (focusKey) target.querySelector(`[data-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
   if (focusedSort) target.querySelector('[data-sort]')?.focus({ preventScroll: true });
   if (focusFacet) target.querySelector(`#catalog-filters [name="${CSS.escape(focusFacet)}"]${current.type === 'radio' ? ':checked' : ''}`)?.focus({ preventScroll: true });
@@ -574,42 +639,18 @@ function empty(heading, message, action = '') {
 
 function connectionNotice(query = '') {
   const external = query ? `<a class="plain-link" href="${justWatchSearch(query)}" target="_blank" rel="noopener noreferrer">Search on JustWatch ${icon('external')}</a>` : '';
-  return `<div class="inline-notice"><span>Connect TMDB to browse its full catalog and see regional availability.</span><div><button type="button" class="plain-link" data-action="settings">Connect TMDB ${icon('arrow')}</button>${external ? `<br>${external}` : ''}</div></div>`;
+  return `<div class="inline-notice"><span>Connect the catalog to browse releases and regional availability.</span><div><button type="button" class="plain-link" data-action="settings" data-value="integrations">Catalog settings ${icon('arrow')}</button>${external ? `<br>${external}` : ''}</div></div>`;
 }
 
 function remoteNotice() {
-  if (state.loading) return '<div class="inline-notice" role="status">Loading titles from TMDB…</div>';
+  if (state.loading) return '<div class="inline-notice" role="status">Loading titles…</div>';
   if (!state.error) return '';
   return `<div class="inline-notice" role="status"><span>${escape(state.error)}</span><button type="button" class="plain-link" data-action="refresh">Retry ${icon('arrow')}</button></div>`;
-}
-
-function archiveNotice() {
-  if (state.archiveLoading) return '<p class="catalog-status" role="status">Loading Internet Archive titles…</p>';
-  if (state.archiveError) return `<div class="inline-notice" role="status"><span>${escape(state.archiveError)}</span><button type="button" class="plain-link" data-action="retry-archive">Retry ${icon('arrow')}</button></div>`;
-  return state.archiveNext ? '<div class="load-more"><button type="button" class="button secondary" data-action="more-archive">Load more from the Archive</button></div>' : '';
 }
 
 function titleIdentity(item) {
   const title = item.title.toLowerCase().replace(/\s*\(\d{4}\)\s*$/, '').replace(/[^\p{L}\p{N}]/gu, '');
   return `${item.type}:${title}:${item.year || ''}`;
-}
-
-function mergeTitles(items, additional) {
-  const identities = new Set(items.map(titleIdentity));
-  return [...items, ...additional.filter(item => {
-    const identity = titleIdentity(item);
-    if (identities.has(identity)) return false;
-    identities.add(identity);
-    return true;
-  })];
-}
-
-function renderArchiveSection() {
-  const target = main.querySelector('#archive-results');
-  if (!target) return;
-  const items = filterResults(mergeTitles([], state.archive));
-  target.innerHTML = `${items.length ? grid(items) : ''}${archiveNotice()}`;
-  target.closest('section').hidden = !items.length && !state.archiveLoading && !state.archiveError && !state.archiveNext;
 }
 
 function render() {
@@ -620,6 +661,9 @@ function render() {
   if (state.page === 'home') {
     const recentlyWatched = [...titles.values()].map(item => [item, resumeFor(item)?.[1]])
       .filter(([, entry]) => entry).sort((a, b) => b[1].updated - a[1].updated).slice(0, 8).map(([item]) => item);
+    const recentHistory = [...new Map(Object.values(watchHistory).sort((a, b) => a.updated - b.updated)
+      .map(entry => [entry.item.key, entry])).values()].sort((a, b) => b.updated - a.updated)
+      .slice(0, 8).map(({ item }) => titles.get(item.key) || item);
     const scrollPositions = new Map([...main.querySelectorAll('.poster-rail')].map(rail => [rail.parentElement.getAttribute('aria-label'), rail.scrollLeft]));
     const focused = document.activeElement;
     const focusKey = focused.matches('.poster-card') ? focused.dataset.key : '';
@@ -627,13 +671,14 @@ function render() {
     const trending = state.remote.filter(hasReleased);
     main.innerHTML = renderHero()
       + `<div class="home-shelves">${shelf('Continue watching', pref('resume') ? recentlyWatched : [], '', true)}
+        ${shelf('Recently watched', recentHistory, 'history')}
         ${shelf('Continue reading', recentlyRead().slice(0, 8), 'reading', true)}
         ${state.connected ? remoteNotice() : connectionNotice()}
         ${editorialGrid('Trending this week', trending.filter(item => item.key !== featuredFilm()?.key).slice(0, 6), '')}
         ${releaseIndex(state.collections.newMovies || [], state.collections.newTV || [])}
-        <div class="home-collections">${editorialGrid('Top films on TMDb', (state.collections.top || []).slice(0, 3), 'movies?sort=top')}${editorialGrid('Anime', (state.collections.anime || []).slice(0, 3), 'tv?genre=Anime')}</div>
+        ${shelf('Anime', (state.collections.anime || []).slice(0, 8), 'anime')}
         <section class="editorial-section library-entry"><h2>My Library</h2><nav aria-label="Library">${libraryTabs.map(([page, label]) => `<a class="section-link" href="#${page}">${label} ${icon('arrow')}</a>`).join('')}</nav></section>
-        <a class="section-link archive-link" href="#archive">Explore the Internet Archive ${icon('arrow')}</a>${footer()}</div>`;
+        ${footer()}</div>`;
     for (const rail of main.querySelectorAll('.poster-rail')) rail.scrollLeft = scrollPositions.get(rail.parentElement.getAttribute('aria-label')) || 0;
     if (focusKey && focusShelf) main.querySelector(`.shelf[aria-label="${CSS.escape(focusShelf)}"] [data-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
     observeRails();
@@ -650,60 +695,60 @@ function render() {
     observeRails();
     return;
   }
+  if (['history', 'notifications'].includes(state.page)) {
+    main.innerHTML = `<header class="view-heading"><h1>My Library</h1></header>${renderLibraryTabs()}<section class="shelf"><h2>${state.page === 'history' ? 'Watch history' : 'Notifications'}</h2>${state.page === 'history' ? renderHistory() : renderNotifications()}</section>${footer()}`;
+    return;
+  }
 
   let heading;
   let subtitle = '';
   let items = [];
   let choices = '';
   let notice = '';
+  let libraryFilterMarkup = '';
   if (state.page === 'watchlist') {
     heading = 'Watchlist';
     items = Object.values(saved).filter(item => item.type !== 'comic').map(item => titles.get(item.key) || item).reverse();
+    libraryFilterMarkup = watchlistFilters(items);
+    const { query, status, genre, rating, progress: coverage, after, before } = state.libraryFilters;
+    const from = after ? Date.parse(`${after}T00:00`) : -Infinity;
+    const to = before ? new Date(`${before}T23:59:59.999`).getTime() : Infinity;
+    items = items.filter(item => (!query || item.title.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
+      && (!status || watchStatus(saved[item.key]) === status)
+      && (!genre || item.genre === genre || item.genreIds?.some(id => categories[genre]?.includes(id)))
+      && (!rating || ratings[item.key]?.score >= Number(rating))
+      && (!(after || before) || (saved[item.key].added >= from && saved[item.key].added <= to))
+      && (!coverage || (coverage === 'complete' ? watchlistProgress(item) === 100 : coverage === 'started' ? watchlistProgress(item) > 0 && watchlistProgress(item) < 100 : watchlistProgress(item) === 0)));
+    if (state.librarySort === 'recent') items.sort((a, b) => (saved[b.key].added || 0) - (saved[a.key].added || 0));
+    if (state.librarySort === 'progress') items.sort((a, b) => watchlistProgress(b) - watchlistProgress(a));
+    if (state.librarySort === 'status') items.sort((a, b) => Object.keys(watchStatuses).indexOf(watchStatus(saved[a.key])) - Object.keys(watchStatuses).indexOf(watchStatus(saved[b.key])));
+    if (state.librarySort === 'genre') items.sort((a, b) => (meta(a)[1] || '').localeCompare(meta(b)[1] || ''));
   } else if (state.page === 'ratings') {
     heading = 'My ratings';
     items = Object.values(ratings).map(entry => titles.get(entry.item.key) || entry.item).reverse();
   } else if (state.page === 'watched') {
     heading = 'Watched';
-    const completed = Object.values(watched).sort((a, b) => b.updated - a.updated);
+    const completed = [...Object.values(watched), ...Object.values(saved).filter(entry => watchStatus(entry) === 'completed').map(item => ({ item, updated: item.completedAt || 0 }))].sort((a, b) => b.updated - a.updated);
     items = [...new Map(completed.map(entry => [entry.item.key, titles.get(entry.item.key) || entry.item])).values()];
-  } else if (state.page === 'archive') {
-    heading = 'Internet Archive';
-    subtitle = 'Public-domain and Creative Commons films and episodes.';
-    choices = filters([['all', 'All'], ['movie', 'Movies'], ['tv', 'TV Shows'], ['cc', 'Creative Commons']]);
-    items = mergeTitles(archiveCatalog.filter(item => state.filter === 'all' || item.type === state.filter || (state.filter === 'cc' && item.license[0].startsWith('CC'))), state.archive);
-    notice = archiveNotice();
   } else if (state.page === 'search') {
     heading = `Results for “${state.query}”`;
-    choices = `<div class="search-media">${filters([['all', 'All'], ['movie', 'Movies'], ['tv', 'TV Shows'], ['free', 'Archive']])}<a class="filter" href="${escape(comicsHash(state.query))}">Search comics ${icon('arrow')}</a></div>`;
-    const terms = state.query.toLowerCase().split(/\s+/);
-    items = archiveCatalog.filter(item => terms.every(term => `${item.title} ${item.year} ${item.genre} ${(item.episodes || []).map(episode => episode.title).join(' ')}`.toLowerCase().includes(term)));
-    if (state.filter !== 'free') {
-      items = [...new Map([...items, ...state.remote].map(item => [item.key, item])).values()];
-      notice = state.connected ? remoteNotice() : connectionNotice(state.query);
-    }
-    items = items.filter(item => state.filter === 'all' || state.filter === 'free' || item.type === state.filter);
-    if (state.filter === 'free') {
-      items = mergeTitles(items, state.archive);
-      notice = archiveNotice();
-    }
+    choices = `<div class="search-media">${filters([['all', 'All'], ['movie', 'Movies'], ['tv', 'TV Shows']])}<a class="filter" href="${escape(comicsHash(state.query))}">Search comics ${icon('arrow')}</a></div>`;
+    items = state.remote;
+    notice = state.connected ? remoteNotice() : connectionNotice(state.query);
+    items = items.filter(item => state.filter === 'all' || item.type === state.filter);
   } else if (state.page === 'new') {
     heading = 'New Releases';
-    subtitle = 'Movies and series that premiered in the past 90 days.';
+    subtitle = 'Movies and series that premiered in the last 60 days.';
     choices = filters([['movie', 'Movies'], ['tv', 'TV Shows']]);
     items = state.remote;
     notice = state.connected ? remoteNotice() : connectionNotice();
   } else {
     const type = state.page === 'tv' ? 'tv' : 'movie';
     heading = state.collection === 'gems' ? 'Hidden gems' : type === 'tv' ? 'TV Shows' : 'Movies';
-    choices = filters([['all', 'All titles'], ['free', 'Archive']]);
-    items = state.connected && state.filter !== 'free' ? [] : archiveCatalog.filter(item => item.type === type);
-    if (state.filter !== 'free') {
-      items = [...new Map([...items, ...state.remote].map(item => [item.key, item])).values()];
-      notice = state.connected ? remoteNotice() : connectionNotice();
-    }
-    if (!state.connected || state.filter === 'free') items = mergeTitles(items, state.archive);
+    items = state.remote;
+    notice = state.connected ? remoteNotice() : connectionNotice();
   }
-  if (state.remoteNext && !state.loading && state.filter !== 'free') notice += '<div class="load-more"><button type="button" class="button secondary" data-action="more-tmdb">Load more titles</button></div>';
+  if (state.remoteNext && !state.loading) notice += '<div class="load-more"><button type="button" class="button secondary" data-action="more-tmdb">Load more titles</button></div>';
   const libraryPage = libraryPages.includes(state.page);
   if (libraryPage) {
     heading = 'My Library';
@@ -713,25 +758,18 @@ function render() {
     if (state.librarySort === 'rating') items.sort((a, b) => (ratings[b.key]?.score || 0) - (ratings[a.key]?.score || 0));
   }
   if (!libraryPage) items = filterResults(items);
-  const loading = state.loading || state.archiveLoading;
+  const loading = state.loading;
   let content = items.length ? grid(items) : loading
     ? `<div class="poster-grid skeleton-grid" aria-hidden="true">${'<div></div>'.repeat(7)}</div>` : '';
-  if (!items.length && !state.loading && !state.error && !state.archiveLoading && !state.archiveError && !(state.page === 'search' && state.archive.length)) {
+  if (!items.length && !state.loading && !state.error) {
     content = libraryPage
       ? empty(state.filter !== 'all' ? 'No matching titles' : { ratings: 'No ratings yet', watchlist: 'Your watchlist is empty', watched: 'No watched titles yet' }[state.page], { ratings: 'Rate a film or series to add it here.', watchlist: 'Save a film or series to find it here.', watched: 'Finish a film or episode, or mark it watched from its detail page.' }[state.page], '<a class="button primary" href="#movies">Browse movies</a>')
       : empty('No matching titles', state.facets.imdb && state.remoteNext ? 'Load more titles to check the next page for matching IMDb ratings.' : 'Try a different title or filter.');
   }
-  const separateArchive = state.page === 'search' && state.filter !== 'free' && state.connected;
-  if (['movies', 'tv'].includes(state.page) && (!state.connected || state.filter === 'free')) notice += archiveNotice();
-  if (state.page === 'search' && !separateArchive && state.filter !== 'free') {
-    const merged = filterResults(mergeTitles(items, state.archive));
-    if (merged.length) content = grid(merged);
-    notice += archiveNotice();
-  }
   const counted = !state.facets.imdb && !libraryPage && state.total !== null ? state.total : items.length;
   const resultCount = `<p class="results-count" role="status">${counted.toLocaleString()} ${counted === 1 ? 'title' : 'titles'}${state.facets.imdb ? ' matched so far' : ''}</p>`;
   const searchFilters = state.page === 'search' && (counted >= 8 || state.facets.category || state.facets.decade || state.facets.from || state.facets.to);
-  const results = `<div class="catalog-header">${resultCount}${searchFilters ? catalogToolbar(true) : sortControl(libraryPage)}</div>${libraryPage ? '' : appliedFilters()}${content}${notice}${separateArchive ? '<section class="shelf"><div class="section-head"><h2>Internet Archive</h2></div><div id="archive-results"></div></section>' : ''}`;
+  const results = `${libraryFilterMarkup}<div class="catalog-header">${resultCount}${searchFilters ? catalogToolbar(true) : sortControl(libraryPage)}</div>${libraryPage ? '' : appliedFilters()}${content}${notice}`;
   const shellKey = JSON.stringify([state.page, state.query, state.filter, state.facets, state.collection, state.connected]);
   if (main.dataset.catalogShell !== shellKey || !main.querySelector('#catalog-results')) {
     const sidebarScroll = main.querySelector('.catalog-sidebar')?.scrollTop || 0;
@@ -758,7 +796,6 @@ function cacheCatalog() {
   const cached = catalogCache.get(key);
   catalogCache.set(key, {
     remote: state.error ? cached?.remote || [] : state.remote,
-    archive: state.archiveError ? cached?.archive || [] : state.archive,
   });
 }
 
@@ -792,7 +829,7 @@ async function loadTMDB(id, page) {
   } finally {
     if (id === requestId) {
       state.loading = false;
-      if (!state.archiveLoading) cacheCatalog();
+      cacheCatalog();
       render();
     }
   }
@@ -807,54 +844,34 @@ async function loadHome(id, signal) {
   } catch { /* Trending and continue watching can still load. */ }
 }
 
-async function loadArchive(id, page) {
-  const signal = catalogRequest.signal;
-  const group = state.page === 'movies' ? 'movie' : state.page === 'tv' ? 'tv' : ['movie', 'tv', 'cc'].includes(state.filter) ? state.filter : 'all';
-  const params = new URLSearchParams({ group, page });
-  addFacets(params);
-  if (state.page === 'search') params.set('q', state.query);
-  state.archiveLoading = true;
-  state.archiveError = '';
-  render();
-  try {
-    const data = await api(`/api/archive?${params}`, { signal });
-    if (id !== requestId) return;
-    for (const item of data.results) {
-      if (!titles.get(item.key)?.media) titles.set(item.key, item);
-    }
-    const previous = page === 1 ? [] : state.archive;
-    state.archive = [...new Map([...previous, ...data.results].map(item => [item.key, titles.get(item.key)])).values()];
-    state.archiveNext = data.nextPage;
-  } catch (error) {
-    if (id === requestId) state.archiveError = error.message;
-  } finally {
-    if (id === requestId) {
-      state.archiveLoading = false;
-      if (!state.loading) cacheCatalog();
-      render();
-    }
-  }
-}
-
 function refreshCatalog() {
   const id = ++requestId;
   catalogRequest?.abort();
   catalogRequest = new AbortController();
+  if (discoveryPath.test(state.page)) {
+    const { signal } = catalogRequest;
+    const page = state.page;
+    main.classList.remove('home');
+    if (page === 'recommendations' && !accountReady) initialAccount.then(() => { if (!signal.aborted) discoveryPages.load(page, state.discoveryQuery, signal); });
+    else discoveryPages.load(page, state.discoveryQuery, signal);
+    return;
+  }
   const cached = catalogCache.get(catalogCacheKey());
-  Object.assign(state, { remote: cached?.remote || [], remoteNext: null, total: null, error: '', loading: false, archive: cached?.archive || [], archiveNext: null, archiveError: '', archiveLoading: false });
+  Object.assign(state, { remote: cached?.remote || [], remoteNext: null, total: null, error: '', loading: false });
   render();
-  if (state.connected && state.filter !== 'free' && ['home', 'search', 'movies', 'tv', 'new'].includes(state.page)) loadTMDB(id, 1);
+  if (state.connected && ['home', 'search', 'movies', 'tv', 'new'].includes(state.page)) loadTMDB(id, 1);
   if (state.connected && state.page === 'home') loadHome(id, catalogRequest.signal);
-  if (['archive', 'search'].includes(state.page) || (['movies', 'tv'].includes(state.page) && (!state.connected || state.filter === 'free'))) loadArchive(id, 1);
 }
 
 function showPage(page, params = new URLSearchParams()) {
   state.page = page;
+  state.discoveryQuery = params.toString();
   const selection = params.get('type');
-  const filtersByPage = page === 'new' || libraryPages.includes(page) ? ['movie', 'tv'] : page === 'search' || page === 'archive' ? ['movie', 'tv', page === 'search' ? 'free' : 'cc'] : ['free'];
+  const filtersByPage = page === 'new' || libraryPages.includes(page) || page === 'search' ? ['movie', 'tv'] : [];
   state.filter = filtersByPage.includes(selection) ? selection : page === 'new' ? 'movie' : 'all';
   state.collection = page === 'movies' && params.get('collection') === 'gems' ? 'gems' : '';
   params.set('category', params.get('genre') || '');
+  if (page === 'new' && !params.has('sort')) params.set('sort', 'newest');
   state.facets = Object.fromEntries(Object.entries(catalogFilters(params)).map(([name, value]) => [name, value ? String(value) : '']));
   state.filtersOpen = Object.entries(state.facets).some(([name, value]) => value !== defaults[name]);
   if (page !== 'search') {
@@ -865,9 +882,11 @@ function showPage(page, params = new URLSearchParams()) {
   renderNavigation();
   window.scrollTo(0, 0);
   refreshCatalog();
+  if (libraryPages.includes(page)) syncLibrary();
 }
 
 function route() {
+  if (settingsDialog.open) settingsDialog.close();
   clearTimeout(searchTimer);
   const hash = location.hash.slice(1);
   const [path, query] = hash.split('?');
@@ -918,8 +937,8 @@ function route() {
     }
   }
   const [page, params] = hash.split('?');
-  const pages = ['archive', ...libraryPages, ...navLinks.map(([name]) => name)];
-  showPage(pages.includes(page) ? page : 'home', new URLSearchParams(params));
+  const pages = [...libraryPages, ...navLinks.map(([name]) => name)];
+  showPage(pages.includes(page) || discoveryPath.test(page) ? page : 'home', new URLSearchParams(params));
 }
 
 function closeTitlePage() {
@@ -940,9 +959,20 @@ function navigateTitle(item, suffix = '') {
 
 async function routeTitle(match) {
   const [, type, id, key, mode, season, number, editionEpisode] = match;
-  const opening = ++openingId;
   const itemKey = key || `${type}-${id}`;
   const path = location.hash;
+  let episode;
+  if (mode?.startsWith('s') && type === 'tv') {
+    episode = episodeChoice?.path === path ? episodeChoice.episode : { season: Number(season), number: Number(number), title: `Episode ${number}` };
+  }
+  if (active?.episode && active.item.key === itemKey) {
+    const choice = episode || (mode === 'watch' && active.item.episodes?.find(entry => entry.key === editionEpisode));
+    if (choice) {
+      switchWatchedEpisode(active, choice);
+      return;
+    }
+  }
+  const opening = ++openingId;
   stopVideo();
   active = null;
   main.hidden = true;
@@ -962,8 +992,7 @@ async function routeTitle(match) {
       titles.set(item.key, item);
     }
     if (!item) throw new Error('This title could not be found.');
-    if (mode?.startsWith('s') && type === 'tv') {
-      const episode = episodeChoice?.path === path ? episodeChoice.episode : { season: Number(season), number: Number(number), title: `Episode ${number}` };
+    if (episode) {
       openTitle(item, false, undefined, { embed: true, episode, progressKey: cineSrcKey(item, episode) });
     } else if (mode === 'watch') {
       if (type === 'movie') openTitle(item, false, undefined, { embed: true, progressKey: cineSrcKey(item) });
@@ -1018,9 +1047,9 @@ function renderSuggestions() {
   const matches = new Map();
   const comicSearch = state.page === 'comics';
   const current = comicSearch ? suggestionResults.filter(item => item.type === 'comic')
-    : state.query.toLowerCase() === query ? [...state.remote, ...state.archive] : suggestionResults.filter(item => item.type !== 'comic');
+    : state.query.toLowerCase() === query ? state.remote : suggestionResults.filter(item => item.type !== 'comic');
   if (comicSearch) for (const item of current.slice(0, 6)) matches.set(item.key, item);
-  for (const item of comicSearch ? current : [...current, ...archiveCatalog, ...Object.values(saved).filter(item => item.type !== 'comic')]) {
+  for (const item of comicSearch ? current : [...current, ...Object.values(saved).filter(item => item.type !== 'comic' && !isArchive(item))]) {
     if (matches.size === 6) break;
     if (item.title.toLowerCase().includes(query) && !matches.has(item.key)) matches.set(item.key, item);
   }
@@ -1131,14 +1160,20 @@ function finishPlayback(session) {
   const position = playbackPosition(session);
   if (Number.isFinite(position?.duration) && position.duration > 0) checkCompletion(session, { currentTime: position.duration, duration: position.duration }, true);
   session.ended = true;
-  if (!session.providerControls) startCountdown(session);
+  startCountdown(session);
 }
 
 function resumePlayback(session) {
   if (!session.ended) return;
   session.ended = false;
+  session.inCredits = false;
   session.countdownCancelled = false;
   session.tracking.sample = null;
+  if (session.completed) {
+    session.completed = false;
+    session.tracking = viewingSession();
+  }
+  session.history = null;
   cancelCountdown(session);
 }
 
@@ -1147,6 +1182,7 @@ function checkCompletion(session, position, ended = false) {
   const credits = session.segments.filter(segment => segment.kind === 'credits');
   if (!completionReached(session.tracking.ranges, position, credits, ended, session.tracking.skipped)) return;
   session.completed = true;
+  rememberHistory(position, session, true, true);
   const key = session.episode ? session.progressKey : session.item.key;
   if (!watched[key]) recordWatched(session.item, key);
   if (progress[session.progressKey]) libraryChange('progress', session.progressKey, null);
@@ -1160,17 +1196,52 @@ function cancelCountdown(session) {
 }
 
 function playEpisodeChoice(session, episode) {
-  if (!episode || active !== session) return;
+  if (!episode || active !== session || (!episode.key && !validEpisode(episode))) return;
   cancelCountdown(session);
+  if (session.episode) {
+    const suffix = episode.key ? `/watch/${episode.key}` : `/s${episode.season}e${episode.number}`;
+    const hash = `#${titlePath(session.item)}${suffix}`;
+    if (location.hash !== hash) history.pushState(null, '', hash);
+    switchWatchedEpisode(session, episode);
+    return;
+  }
   if (episode.key) navigateTitle(session.item, `/watch/${episode.key}`);
   else watchCineSrc(session.item, episode);
 }
 
+function switchWatchedEpisode(previous, episode) {
+  const { item } = previous;
+  const progressKey = episode.key ? `${item.key}/${episode.key}` : cineSrcKey(item, episode);
+  if (progressKey === previous.progressKey) return;
+  // The stage owns fullscreen, so only replace its playback contents.
+  const stage = titlePage.querySelector('.watch-stage');
+  const restoreFocus = stage.contains(document.activeElement);
+  stopVideo();
+  const media = episode.key ? episode.media : { embed: true, episode, progressKey };
+  const session = {
+    item, episode, media, progressKey, accountId: account?.id,
+    details: previous.details, revealed: previous.revealed, animeEligible: previous.animeEligible,
+    animeProvider: previous.animeProvider, providerControls: previous.providerControls,
+    preferredQuality: previous.preferredQuality, autoSkipped: new Set(), segments: media.segments || [],
+    tracking: viewingSession(progress[progressKey]),
+  };
+  active = session;
+  updateWatchHeading(session);
+  if (media.embed) startCatalogPlayback(session);
+  else {
+    const source = titlePage.querySelector('.watch-source a');
+    if (source) source.href = media.page || `https://archive.org/details/${encodeURIComponent(media.archive)}`;
+    startVideo(session);
+  }
+  if (restoreFocus) (stage.querySelector('[data-player="play"]') || stage.querySelector('iframe'))?.focus({ preventScroll: true });
+  loadTitle(session);
+}
+
 function startCountdown(session) {
-  if (!session.nextEpisode || !pref('autoplay') || session.countdown || session.countdownCancelled) return;
+  if (active !== session || session.providerControls || (!session.inCredits && !session.ended)
+    || !session.nextEpisode || !pref('autoplay') || session.countdown || session.countdownCancelled) return;
   const overlay = titlePage.querySelector('.next-countdown');
   if (!overlay) return;
-  if (document.fullscreenElement?.matches('.video-box > video, .video-box > iframe')) document.exitFullscreen().catch(() => {});
   overlay.querySelector('.next-title').textContent = session.nextEpisode.title;
   overlay.hidden = false;
   const label = overlay.querySelector('.countdown-time');
@@ -1291,10 +1362,11 @@ function episodeRow(session, entry, index) {
   const hiddenDescription = description && !marked && pref('hideSynopsis');
   const resume = pref('resume') && progress[key]?.time > 5 && !marked;
   const available = archive || airedEpisode(entry);
+  const airDate = available ? '' : formatReleaseDate(entry.air_date);
   return `<article class="episode-row${marked ? ' episode-watched' : ''}" data-episode-key="${escape(key)}" data-episode-title="${escape(coordinates.title)}"${selected ? ' aria-current="true"' : ''}>
     <span class="episode-number" aria-hidden="true">${coordinates.number || index + 1}</span>
     ${protectImage ? `<button class="episode-image episode-reveal${blurred ? ' is-spoiler' : ''}" type="button" data-action="reveal-episode" aria-label="Show thumbnail for ${escape(coordinates.title)}" aria-pressed="${!blurred}" title="${blurred ? 'Reveal' : 'Hide'} thumbnail">${thumbnail}<span class="episode-reveal-icon">${icon('eye')}</span></button>` : `<div class="episode-image">${thumbnail}</div>`}
-    <div class="episode-info"><button class="episode-play" type="button" ${episodeAction(coordinates)} aria-label="${resume ? 'Resume' : 'Play'} ${escape(coordinates.title)}"${available ? '' : ' disabled'}>${escape(coordinates.title)}${selected ? ' <span class="episode-current">Selected</span>' : ''}</button><small>${episodeLabel(coordinates)}${available ? '' : ' · Not aired'}</small>
+    <div class="episode-info"><button class="episode-play" type="button" ${episodeAction(coordinates)} aria-label="${resume ? 'Resume' : 'Play'} ${escape(coordinates.title)}"${available ? '' : ' disabled'}>${escape(coordinates.title)}${selected ? ' <span class="episode-current">Selected</span>' : ''}</button><small>${episodeLabel(coordinates)}${airDate ? ` · Scheduled for ${escape(airDate)}` : available ? '' : ' · Not aired'}</small>
       ${description ? `<details class="episode-description"${hiddenDescription ? ' data-spoiler-description' : ''}${revealedDescription ? ' open' : ''}><summary><span class="episode-preview">${hiddenDescription ? 'Show description' : escape(description)}</span><span class="episode-expanded-label">Hide description</span></summary><p>${escape(description)}</p></details>` : ''}</div>
     <div class="episode-progress">${!marked ? episodeProgressMarkup(progress[key]) : ''}</div>
     ${watchedButton(item, key, coordinates)}
@@ -1319,7 +1391,7 @@ function updateEpisodeNavigation(session) {
   const next = titlePage.querySelector('.player-transport [data-action="next-episode"]');
   if (previous) previous.hidden = !session.previousEpisode;
   if (next) next.hidden = !session.nextEpisode;
-  if (session.ended && !session.providerControls) startCountdown(session);
+  startCountdown(session);
 }
 
 function updateSeriesTracking(session) {
@@ -1392,10 +1464,14 @@ async function resolveEpisodeNavigation(session, entries) {
   if (!current) return;
   const eligible = entries.filter(airedEpisode);
   const index = eligible.findIndex(entry => current.key ? entry.key === current.key : entry.episode_number === current.number);
-  if (index < 0) return;
+  if (index < 0) {
+    session.episodeNavigationReady = true;
+    return;
+  }
   const convert = entry => entry && (entry.key ? entry : episodeCoordinates(entry));
   session.previousEpisode = convert(eligible[index - 1]);
   session.nextEpisode = convert(eligible[index + 1]);
+  updateEpisodeNavigation(session);
   if (!current.key && current.season > 0) {
     const seasons = regularSeasons(session);
     const seasonIndex = seasons.findIndex(season => season.season_number === current.season);
@@ -1413,7 +1489,10 @@ async function resolveEpisodeNavigation(session, entries) {
       ]);
     }
   }
-  if (active === session && session.episode === current) updateEpisodeNavigation(session);
+  if (active === session && session.episode === current) {
+    session.episodeNavigationReady = true;
+    updateEpisodeNavigation(session);
+  }
 }
 
 async function loadSeason(session, number) {
@@ -1468,6 +1547,7 @@ async function loadTitle(session) {
   if (active !== session) return;
   const details = session.details;
   if (details) {
+    session.item.totalEpisodes = details.number_of_episodes || session.item.episodes?.length;
     session.item.imdb ||= details.external_ids?.imdb_id || details.imdb_id;
     const facts = titlePage.querySelector('.title-facts');
     if (facts) facts.innerHTML = titleFacts(session);
@@ -1480,9 +1560,18 @@ async function loadTitle(session) {
     if (cast && (details.credits?.cast?.length || details.credits?.crew?.length)) {
       cast.hidden = false;
       const crew = details.credits.crew?.filter(person => ['Director', 'Writer', 'Screenplay', 'Director of Photography', 'Original Music Composer', 'Editor'].includes(person.job)).slice(0, 10) || [];
-      cast.innerHTML = `<h2>Cast &amp; crew</h2><div class="cast-list">${(details.credits.cast || []).slice(0, 8).map(person => `<div class="cast-person">${person.profile_path ? `<img src="${imagePath(person.profile_path, 'w185')}" alt="" loading="lazy">` : `<span>${icon('user')}</span>`}<strong>${escape(person.name)}</strong><small>${escape(person.character)}</small></div>`).join('')}</div>${crew.length ? `<dl class="crew-list">${crew.map(person => `<div><dt>${escape(person.job)}</dt><dd>${escape(person.name)}</dd></div>`).join('')}</dl>` : ''}`;
+      const personLink = person => escape(person.name);
+      cast.innerHTML = `<h2>Cast &amp; crew</h2><div class="cast-list">${(details.credits.cast || []).slice(0, 8).map(person => `<div class="cast-person">${person.profile_path ? `<img src="${imagePath(person.profile_path, 'w185')}" alt="" loading="lazy">` : `<span>${icon('user')}</span>`}<strong>${personLink(person)}</strong><small>${escape(person.character)}</small></div>`).join('')}</div>${crew.length ? `<dl class="crew-list">${crew.map(person => `<div><dt>${escape(person.job)}</dt><dd>${personLink(person)}</dd></div>`).join('')}</dl>` : ''}`;
     }
     refreshTitleRating(session);
+    if (facts && session.item.id && isAnime(session.item.originalLanguage, session.item.genreIds)) {
+      const season = session.episode?.season || regularSeasons(session)[0]?.season_number || 1;
+      api(`/api/mal/catalog/${session.item.type}/${session.item.id}?season=${season}`).then(({ rating }) => {
+        if (active !== session || !rating) return;
+        session.malRating = rating;
+        facts.innerHTML = titleFacts(session);
+      }).catch(() => {});
+    }
   }
   const about = titlePage.querySelector('.title-about');
   if (about && !session.item.description && session.details?.overview) {
@@ -1496,6 +1585,9 @@ async function loadTitle(session) {
     if (selected || session.item.episodes?.length) loadSeason(session, selected?.dataset.value ?? 0);
   }
   updateSeriesTracking(session);
+  const status = saved[session.item.key];
+  const select = titlePage.querySelector('[data-watch-key]');
+  if (select && session.item.type === 'tv' && watchStatus(status) === 'completed' && !status.completedAt) changeWatchStatus({ target: select });
 }
 
 function watchCineSrc(item, episode = null) {
@@ -1506,6 +1598,7 @@ function watchCineSrc(item, episode = null) {
 }
 
 function remember({ currentTime, duration }, session, force = false) {
+  rememberHistory({ currentTime, duration }, session, force);
   if (session.completed || session.ended || session.embedPlayback?.unidentifiedEpisode || !Number.isFinite(duration) || !Number.isFinite(currentTime) || currentTime < 5 || currentTime >= duration || session.accountId !== account?.id) return;
   if (!session.tracking.ranges.some(([start, end]) => currentTime >= start && currentTime <= end + .5)) return;
   const now = Date.now();
@@ -1520,6 +1613,21 @@ function remember({ currentTime, duration }, session, force = false) {
 }
 
 const segmentNames = { intro: 'Intro', recap: 'Recap', credits: 'Credits' };
+
+function rememberHistory(position, session, force = false, completed = false) {
+  if (!session.history || session.accountId !== account?.id || session.embedPlayback?.unidentifiedEpisode) return;
+  const { currentTime, duration } = position;
+  if (!Number.isFinite(currentTime) || !Number.isFinite(duration) || duration <= 0) return;
+  const { id, tracking, started } = session.history;
+  const coverage = Math.min(duration, watchedSeconds(tracking.ranges, duration));
+  const previous = watchHistory[id];
+  const now = Date.now();
+  if (coverage < Math.min(5, duration / 2) || (!completed && previous && (force ? coverage <= previous.coverage : now - previous.updated < 8000))) return;
+  libraryChange('history', id, {
+    item: libraryTitle(session.item), mediaKey: session.progressKey, episode: session.episode,
+    started, updated: now, duration, time: Math.max(0, Math.min(duration, currentTime)), coverage, completed: completed || Boolean(previous?.completed),
+  });
+}
 
 function playbackPosition(session) {
   return session.embedPlayback?.position || titlePage.querySelector('video');
@@ -1612,6 +1720,11 @@ function trackPosition(position, session, seek = false) {
   if (!position || active !== session || !Number.isFinite(position.duration) || position.duration <= 0) return;
   if (seek) session.tracking.sample = null;
   const advanced = samplePlayback(session.tracking, position, performance.now());
+  if (!session.ended && !session.embedPlayback?.unidentifiedEpisode) {
+    session.history ??= { id: crypto.randomUUID(), started: Date.now(), tracking: viewingSession() };
+    if (seek) session.history.tracking.sample = null;
+    samplePlayback(session.history.tracking, position, performance.now());
+  }
   updateSkip(position, session);
   if (advanced && !session.ended) checkCompletion(session, position);
 }
@@ -1627,9 +1740,20 @@ function timeCode(seconds) {
 function updateSkip(video, session) {
   if (session.providerControls) return;
   const button = titlePage.querySelector('[data-action="skip-segment"]');
-  if (!button || active !== session) return;
-  const segment = session.segments.find(entry => video.currentTime >= entry.start && video.currentTime < entry.end - .25 && entry.end <= video.duration);
-  if (segment && pref(segment.kind) && !video.paused && !video.seeking && !session.autoSkipped.has(segment)) {
+  if (active !== session) return;
+  const segment = activeSkipSegment(session.segments, video);
+  if (segment?.kind === 'credits' && !video.paused && !video.seeking && !session.embedPlayback?.unidentifiedEpisode) {
+    session.inCredits = true;
+    startCountdown(session);
+  }
+  const firstCredit = session.segments.find(entry => entry.kind === 'credits');
+  if (session.inCredits && (!firstCredit || video.currentTime < firstCredit.start) && !session.ended) {
+    session.inCredits = false;
+    cancelCountdown(session);
+  }
+  if (!button) return;
+  const creditsWithNext = segment?.kind === 'credits' && (session.nextEpisode || (session.episode && !session.episodeNavigationReady));
+  if (segment && !creditsWithNext && pref(segment.kind) && !video.paused && !video.seeking && !session.autoSkipped.has(segment)) {
     skipSegment(session, segment);
     if (segment.kind === 'credits') checkCompletion(session, video);
     button.hidden = true;
@@ -1643,6 +1767,11 @@ function updateSkip(video, session) {
 }
 
 function skipSegment(session, segment) {
+  if (segment.kind === 'credits' && session.nextEpisode) {
+    checkCompletion(session, playbackPosition(session));
+    playEpisodeChoice(session, session.nextEpisode);
+    return;
+  }
   session.autoSkipped.add(segment);
   session.tracking.skipped = mergeRanges(session.tracking.skipped, segment.start, segment.end);
   session.tracking.sample = null;
@@ -1653,7 +1782,7 @@ async function loadSkipSegments(video, session) {
   const { item, episode } = session;
   if (!item.id || (item.type === 'tv' && (!Number.isInteger(episode?.season) || !Number.isInteger(episode?.number))) || !Number.isFinite(video.duration)) return;
   const params = new URLSearchParams({ id: item.id, type: item.type, duration: Math.round(video.duration * 1000) });
-  if (session.media.embed) params.set('source', 'cinesrc');
+  if (session.media.embed) params.set('source', session.embedPlayback?.provider || 'cinesrc');
   if (item.type === 'tv') {
     params.set('season', episode.season);
     params.set('episode', episode.number);
@@ -1669,7 +1798,7 @@ async function loadSkipSegments(video, session) {
     const position = playbackPosition(session);
     if (!position || Math.round(position.duration) !== duration) return;
     const supplied = new Set(session.segments.map(segment => segment.kind));
-    session.segments = [...session.segments, ...segments.filter(segment => !supplied.has(segment.kind))
+    session.segments = [...session.segments, ...segments.filter(segment => !supplied.has(segment.kind) && (!session.embedPlayback?.provider || segment.kind === 'credits'))
       .map(segment => ({ ...segment, end: Math.min(segment.end, position.duration) }))];
     if (!session.providerControls) updateSkip(position, session);
     if (session.embedPlayback?.skippedTo !== undefined) creditCineSkip(session, session.embedPlayback.skippedTo);
@@ -1741,6 +1870,7 @@ function videoOverlay(session) {
               <label class="player-popup-heading" for="player-volume">Volume <span class="player-volume-level" aria-hidden="true">100%</span></label>
               <input id="player-volume" class="player-volume" type="range" min="0" max="1" step=".05" value="1">
               <button class="player-popup-action" type="button" data-player="mute">Mute</button>
+              ${session.media.embed ? '' : '<label class="player-language" hidden>Audio track <select class="player-select"></select></label>'}
             </div>
           </details>
           <details class="player-menu player-subtitles">
@@ -1774,10 +1904,47 @@ function updateSubtitleButton(menu, enabled) {
   menu.querySelector('.subtitle-off').setAttribute('aria-pressed', String(!enabled));
 }
 
+function preferredSubtitleLanguage() {
+  return pref('subtitles') ? preferences.subtitleLanguage ?? (preferences.captions ? 'English' : '') : '';
+}
+
+function rememberSubtitleLanguage(language) {
+  if (pref('subtitles') && preferences.subtitleLanguage !== language) libraryChange('preferences', 'subtitleLanguage', language);
+}
+
+function bindNativeAudio(video, select, signal) {
+  const tracks = video.audioTracks;
+  if (!tracks) return;
+  const field = select.closest('label');
+  const describe = track => playbackLanguage(track.language) || track.label;
+  function choose(index) {
+    for (let cursor = 0; cursor < tracks.length; cursor++) tracks[cursor].enabled = cursor === index;
+  }
+  function syncTracks() {
+    const available = Array.from(tracks);
+    field.hidden = available.length < 2;
+    if (field.hidden) return;
+    select.replaceChildren(...available.map((track, index) => new Option(track.label || describe(track) || `Track ${index + 1}`, index)));
+    const preferred = available.findIndex(track => samePlaybackLanguage(describe(track), preferences.audioLanguage));
+    if (preferred >= 0) choose(preferred);
+    select.value = available.findIndex(track => track.enabled);
+  }
+  for (const event of ['addtrack', 'removetrack']) tracks.addEventListener(event, syncTracks, { signal });
+  tracks.addEventListener('change', () => { select.value = Array.from(tracks).findIndex(track => track.enabled); }, { signal });
+  select.addEventListener('change', () => {
+    const index = Number(select.value);
+    choose(index);
+    const language = describe(tracks[index]);
+    if (language?.length <= 60) libraryChange('preferences', 'audioLanguage', language);
+  }, { signal });
+  syncTracks();
+}
+
 function bindNativeSubtitles(menu, video, track, signal) {
   menu.hidden = !track;
   if (!track) return;
   const option = menu.querySelector('.subtitle-native-track');
+  const language = playbackLanguage(track.language) || track.label;
   option.querySelector('span').textContent = track.label || 'Captions';
   function syncTrack() {
     const enabled = track.mode === 'showing';
@@ -1786,14 +1953,21 @@ function bindNativeSubtitles(menu, video, track, signal) {
   }
   option.addEventListener('click', () => {
     track.mode = 'showing';
+    rememberSubtitleLanguage(language);
     syncTrack();
   }, { signal });
   menu.querySelector('.subtitle-off').addEventListener('click', () => {
     track.mode = 'disabled';
+    rememberSubtitleLanguage('');
     syncTrack();
   }, { signal });
   video.textTracks.addEventListener('change', syncTrack, { signal });
-  syncTrack();
+  const applyPreference = () => {
+    track.mode = samePlaybackLanguage(language, preferredSubtitleLanguage()) ? 'showing' : 'disabled';
+    syncTrack();
+  };
+  document.addEventListener('afterframe-subtitle-preference', applyPreference, { signal });
+  applyPreference();
 }
 
 function bindEmbedSubtitles(player, menu, session, signal) {
@@ -1831,8 +2005,8 @@ function bindEmbedSubtitles(player, menu, session, signal) {
     </button>`).join('');
     syncSelection();
   }
-  menu.addEventListener('toggle', async () => {
-    if (!menu.open || tracks || listing) return;
+  async function listTracks() {
+    if (tracks || listing) return;
     listing = true;
     showStatus('Loading subtitle tracks…');
     try {
@@ -1842,28 +2016,47 @@ function bindEmbedSubtitles(player, menu, session, signal) {
       const languages = [...new Set(tracks.map(track => track.language))];
       language.replaceChildren(...languages.map(name => new Option(name, name)));
       const activeLanguage = tracks.find(track => track.url === selected?.url)?.language;
-      language.value = activeLanguage || (languages.includes('English') ? 'English' : languages[0] || '');
+      const preferred = languages.find(name => samePlaybackLanguage(name, preferredSubtitleLanguage()));
+      language.value = activeLanguage || preferred || (languages.includes('English') ? 'English' : languages[0] || '');
       language.closest('label').hidden = !tracks.length;
       renderTracks();
       showStatus(tracks.length ? '' : 'No subtitle tracks available.');
+      if (!selected && preferredSubtitleLanguage()) await restorePreferred();
     } catch {
       if (!signal.aborted) showStatus('Subtitle tracks could not load. Reopen the menu to retry.');
     } finally {
       listing = false;
     }
-  }, { signal });
-  language.addEventListener('change', renderTracks, { signal });
-  menu.querySelector('.subtitle-off').addEventListener('click', () => {
+  }
+  async function restorePreferred() {
+    const preferred = preferredSubtitleLanguage();
+    if (!tracks) return listTracks();
+    const candidates = tracks.filter(track => samePlaybackLanguage(track.language, preferred));
+    for (const track of candidates) {
+      if (signal.aborted || preferred !== preferredSubtitleLanguage()) return;
+      if (await selectTrack(track)) return;
+      if (download?.signal.aborted) return;
+    }
+    if (preferred && tracks.length && !candidates.length) showStatus(`${preferred} subtitles are unavailable for this video.`);
+  }
+  document.addEventListener('afterframe-subtitle-preference', () => {
     download?.abort();
     selected = session.subtitleTrack = null;
     showStatus('');
     syncSelection();
+    if (preferredSubtitleLanguage()) restorePreferred();
   }, { signal });
-  choices.addEventListener('click', async event => {
-    const option = event.target.closest('[data-subtitle-index]');
-    if (!option) return;
+  menu.addEventListener('toggle', () => { if (menu.open) listTracks(); }, { signal });
+  language.addEventListener('change', renderTracks, { signal });
+  menu.querySelector('.subtitle-off').addEventListener('click', () => {
     download?.abort();
-    const track = tracks[Number(option.dataset.subtitleIndex)];
+    selected = session.subtitleTrack = null;
+    rememberSubtitleLanguage('');
+    showStatus('');
+    syncSelection();
+  }, { signal });
+  async function selectTrack(track, remember = false) {
+    download?.abort();
     const progressKey = session.progressKey;
     const request = new AbortController();
     download = request;
@@ -1872,15 +2065,22 @@ function bindEmbedSubtitles(player, menu, session, signal) {
       const cues = await loadSubtitle(track, AbortSignal.any([signal, request.signal]));
       if (download !== request || request.signal.aborted || signal.aborted || progressKey !== session.progressKey) return;
       selected = session.subtitleTrack = { key: progressKey, url: track.url, cues };
+      if (remember) rememberSubtitleLanguage(track.language);
       showStatus('');
       syncSelection();
+      return true;
     } catch {
       if (request.signal.aborted || signal.aborted) return;
       showStatus('This track could not load. Try another version.');
       syncSelection();
     }
+  }
+  choices.addEventListener('click', event => {
+    const option = event.target.closest('[data-subtitle-index]');
+    if (option) selectTrack(tracks[Number(option.dataset.subtitleIndex)], true);
   }, { signal });
   syncSelection();
+  if (!selected && preferredSubtitleLanguage()) listTracks();
   return render;
 }
 
@@ -1889,6 +2089,10 @@ function bindVideoControls(video, player, session, signal) {
   const readPosition = () => video || playback.position;
   const controls = player.querySelector('.player-controls');
   const seek = controls.querySelector('.player-seek');
+  if (!video) {
+    seek.title = 'This video source does not report buffered ranges';
+    seek.setAttribute('aria-description', seek.title);
+  }
   const jumps = controls.querySelectorAll('.player-jump button');
   const volume = controls.querySelector('.player-volume');
   const audio = controls.querySelector('.player-audio summary');
@@ -1915,7 +2119,10 @@ function bindVideoControls(video, player, session, signal) {
   for (const option of quality) option.setAttribute('aria-pressed', String(option.value === preferredQuality));
   let scrubbing = false;
   let idleTimer;
+  let controlsHovered = false;
   let lastVolume = playback.volume || .5;
+
+  if (video) bindNativeAudio(video, controls.querySelector('.player-audio select'), signal);
 
   function setControlsVisible(visible) {
     if (player.classList.contains('controls-active') === visible) return;
@@ -1969,6 +2176,12 @@ function bindVideoControls(video, player, session, signal) {
     if (!scrubbing) updateTime();
     updateSubtitles?.(readPosition()?.currentTime);
   }
+  function updateBuffer() {
+    const ranges = bufferedIntervals(video.buffered, video.duration);
+    const stops = ranges.map(([start, end]) => `transparent ${start}%, #ffffff80 ${start}% ${end}%, transparent ${end}%`);
+    seek.style.setProperty('--buffered-track', stops.length ? `linear-gradient(to right, ${stops.join(', ')})` : 'none');
+    seek.classList.toggle('has-buffer-data', ranges.length > 0);
+  }
   function showSeekPreview(position) {
     const segment = session.segments.find(entry => position >= entry.start && position < entry.end);
     previewTime.textContent = timeCode(position);
@@ -2014,7 +2227,7 @@ function bindVideoControls(video, player, session, signal) {
     setControlsVisible(true);
     clearTimeout(idleTimer);
     idleTimer = setTimeout(() => {
-      if (!scrubbing) setControlsVisible(false);
+      if (!scrubbing && !controlsHovered && !controls.querySelector(':focus-visible')) setControlsVisible(false);
     }, 2500);
   }
   session.renderSegments = () => {
@@ -2108,6 +2321,9 @@ function bindVideoControls(video, player, session, signal) {
   for (const type of ['timeupdate', 'seeking', 'loadedmetadata', 'durationchange']) {
     video?.addEventListener(type, updatePosition, { signal });
   }
+  for (const type of ['progress', 'loadedmetadata', 'durationchange', 'seeking', 'emptied']) {
+    video?.addEventListener(type, updateBuffer, { signal });
+  }
   video?.addEventListener('loadedmetadata', session.renderSegments, { signal });
   video?.addEventListener('volumechange', updateVolume, { signal });
   video?.addEventListener('ratechange', updateSpeed, { signal });
@@ -2120,12 +2336,18 @@ function bindVideoControls(video, player, session, signal) {
   player.addEventListener('pointermove', event => {
     if (event.pointerType !== 'touch') revealControls();
   }, { signal });
-  player.addEventListener('pointerleave', event => {
-    if (event.pointerType === 'touch' || scrubbing) return;
-    clearTimeout(idleTimer);
-    setControlsVisible(false);
+  controls.addEventListener('pointerenter', event => {
+    if (event.pointerType === 'touch') return;
+    controlsHovered = true;
+    revealControls();
+  }, { signal });
+  controls.addEventListener('pointerleave', event => {
+    if (event.pointerType === 'touch') return;
+    controlsHovered = false;
+    revealControls();
   }, { signal });
   player.addEventListener('focusin', revealControls, { signal });
+  controls.addEventListener('focusout', revealControls, { signal });
   const size = track ? new ResizeObserver(positionCaptions) : null;
   if (size) size.observe(video);
   signal.addEventListener('abort', () => {
@@ -2139,10 +2361,11 @@ function startVideo(session, direct = false) {
   const { item, episode, media, progressKey } = session;
   const player = titlePage.querySelector('.video-box');
   const sourcePage = media.page || `https://archive.org/details/${encodeURIComponent(media.archive)}`;
-  player.innerHTML = `<video playsinline preload="auto" aria-label="${escape(episode?.title || item.title)}" ${item.backdrop ? `poster="${escape(item.backdrop)}"` : ''}></video><div class="video-picture" aria-hidden="true"></div>${videoOverlay(session)}<div class="video-error" role="status" hidden><p>The video could not load.</p><div class="watch-actions"><button type="button" class="button secondary" data-action="retry-video">Retry</button>${direct ? `<a class="button primary" href="${escape(sourcePage)}" target="_blank" rel="noopener noreferrer">Open source ${icon('external')}</a>` : '<button type="button" class="button primary" data-action="direct-video">Try direct stream</button>'}</div></div>`;
+  player.innerHTML = `<video playsinline preload="auto" aria-label="${escape(episode?.title || item.title)}" ${item.backdrop ? `poster="${escape(item.backdrop)}"` : ''}></video><div class="video-picture" aria-hidden="true"></div>${videoOverlay(session)}<p class="video-buffering" role="status" hidden>Buffering…</p><div class="video-error" role="status" hidden><p>The video could not load.</p><div class="watch-actions"><button type="button" class="button secondary" data-action="retry-video">Retry</button>${direct ? `<a class="button primary" href="${escape(sourcePage)}" target="_blank" rel="noopener noreferrer">Open source ${icon('external')}</a>` : '<button type="button" class="button primary" data-action="direct-video">Try direct stream</button>'}</div></div>`;
   player.classList.remove('has-played', 'is-ended');
   const video = player.querySelector('video');
   const controller = new AbortController();
+  const { signal } = controller;
   session.videoController = controller;
   if (media.captions) {
     const track = document.createElement('track');
@@ -2161,30 +2384,35 @@ function startVideo(session, direct = false) {
       video.volume = preferences.level ?? 1;
       video.muted = preferences.muted ?? false;
     }
-    if (pref('subtitles') && video.textTracks[0] && preferences.captions) video.textTracks[0].mode = 'showing';
     updateSkip(video, session);
     loadSkipSegments(video, session);
-  });
+  }, { signal });
   video.addEventListener('timeupdate', () => {
     trackPosition(video, session);
     if (!video.seeking) remember(video, session);
-  });
-  video.addEventListener('seeking', () => { session.tracking.sample = null; });
-  video.addEventListener('play', () => resumePlayback(session));
+  }, { signal });
+  video.addEventListener('seeking', () => { session.tracking.sample = null; }, { signal });
+  video.addEventListener('play', () => resumePlayback(session), { signal });
   video.addEventListener('pause', () => {
     session.tracking.sample = null;
     remember(video, session, true);
-  });
-  video.addEventListener('volumechange', () => rememberVolume(video.volume, video.muted));
-  video.textTracks.addEventListener('change', () => {
-    if (pref('subtitles') && video.textTracks.length) {
-      const enabled = [...video.textTracks].some(track => track.mode === 'showing');
-      if (preferences.captions !== enabled) libraryChange('preferences', 'captions', enabled);
-    }
-  });
-  video.addEventListener('ended', () => finishPlayback(session));
+  }, { signal });
+  video.addEventListener('volumechange', () => rememberVolume(video.volume, video.muted), { signal });
+  video.addEventListener('ended', () => finishPlayback(session), { signal });
+  const buffering = player.querySelector('.video-buffering');
+  let bufferingTimer;
+  function clearBuffering() {
+    clearTimeout(bufferingTimer);
+    buffering.hidden = true;
+  }
+  video.addEventListener('waiting', () => {
+    clearTimeout(bufferingTimer);
+    bufferingTimer = setTimeout(() => { buffering.hidden = video.paused || video.ended; }, 450);
+  }, { signal });
+  for (const event of ['playing', 'pause', 'ended', 'error', 'emptied']) video.addEventListener(event, clearBuffering, { signal });
+  signal.addEventListener('abort', clearBuffering, { once: true });
   const errorBox = player.querySelector('.video-error');
-  video.addEventListener('error', () => { errorBox.hidden = false; });
+  video.addEventListener('error', () => { errorBox.hidden = false; }, { signal });
   video.src = direct ? archiveFileUrl(media) : `/stream/${item.key}${episode ? `/${episode.key}` : ''}`;
   video.play().catch(() => { /* The play button remains available when autoplay is blocked. */ });
 }
@@ -2225,7 +2453,11 @@ function updateEmbeddedEpisode(session, season, number, internalNavigation) {
   updateWatchHeading(session);
   session.tracking = viewingSession(progress[session.progressKey]);
   session.completed = false;
+  session.history = null;
   session.ended = false;
+  session.inCredits = false;
+  session.nextEpisode = session.previousEpisode = undefined;
+  session.episodeNavigationReady = false;
   session.countdownCancelled = false;
   loadSeason(session, season);
   return true;
@@ -2369,6 +2601,7 @@ function startCineSrc(session, restore) {
     const durationChanged = previousDuration && Math.abs(previousDuration - duration) > 2.5;
     if (durationChanged) {
       session.tracking = viewingSession();
+      session.history = null;
       session.segments = [];
       session.segmentRequest = null;
       session.autoSkipped.clear();
@@ -2589,11 +2822,15 @@ function startCineSrc(session, restore) {
     playerCommand('getCurrentTime');
   }, 2500);
   controller.signal.addEventListener('abort', () => clearInterval(poll), { once: true });
-  frame.addEventListener('load', () => { loading.hidden = true; }, { signal: controller.signal });
+  if (session.providerControls) frame.addEventListener('load', () => { loading.hidden = true; }, { signal: controller.signal });
   frame.src = cineSrcUrl(session, restore);
 }
 
 async function startCatalogPlayback(session) {
+  session.sourceRevision = (session.sourceRevision || 0) + 1;
+  session.segmentRequest = null;
+  session.inCredits = false;
+  session.segments = [];
   const provider = session.animeProvider || 'animeembed';
   if (!session.animeEligible || provider === 'cinesrc') {
     if (progress[session.progressKey]?.provider) session.tracking = viewingSession();
@@ -2614,7 +2851,7 @@ async function startCatalogPlayback(session) {
   const videoBox = titlePage.querySelector('.video-box');
   notice.hidden = false;
   status.hidden = false;
-  status.textContent = 'Finding this episode in the anime player…';
+  status.textContent = 'Loading video…';
   retry.hidden = true;
   notice.querySelector('[data-action="cine-options"]').hidden = true;
   switchPlayer.hidden = false;
@@ -2638,9 +2875,9 @@ async function startCatalogPlayback(session) {
   if (signal.aborted || active !== session) return;
   if (!source) return fallBack('cinesrc');
   session.animeSource = source;
+  const preferDub = provider === 'animeembed' && !session.dubFallback && samePlaybackLanguage(preferences.audioLanguage, 'English');
 
   session.tracking = viewingSession(progress[session.progressKey]?.provider === provider ? progress[session.progressKey] : null);
-  session.segments = [];
   session.lastSaved = 0;
   session.providerControls = false;
   const frame = document.createElement('iframe');
@@ -2649,14 +2886,19 @@ async function startCatalogPlayback(session) {
   frame.allowFullscreen = true;
   frame.referrerPolicy = 'strict-origin';
   const overlay = document.createElement('template');
-  overlay.innerHTML = nextCountdownMarkup(episode);
+  overlay.innerHTML = episode ? `<div class="player-lower anime-player-overlay">${nextCountdownMarkup(episode)}<button class="player-skip" type="button" data-action="skip-segment" hidden></button></div>` : '';
   videoBox.replaceChildren(frame, overlay.content);
   credit.textContent = `Playback by ${label}`;
-  status.textContent = `Loading ${label}…`;
   let ready = false;
   let currentEpisode = source.episode;
   let commandId = 0;
-  const timer = setTimeout(() => fallBack(), 16000);
+  function retrySource() {
+    if (preferDub && !playback.position?.currentTime) {
+      session.dubFallback = true;
+      fallBack(provider);
+    } else fallBack();
+  }
+  const timer = setTimeout(retrySource, 16000);
   const playback = {
     provider, frame, position: null,
     send(cmd, args = {}) {
@@ -2690,7 +2932,7 @@ async function startCatalogPlayback(session) {
       return;
     }
     if (message.event === 'error') {
-      if (!ready) return fallBack();
+      if (!ready || (preferDub && !playback.position?.currentTime)) return retrySource();
       status.hidden = false;
       retry.hidden = false;
       status.textContent = 'The anime player lost its video source.';
@@ -2710,6 +2952,7 @@ async function startCatalogPlayback(session) {
       playback.position = position;
       if (!position.paused && session.ended && message.event === 'play') resumePlayback(session);
       trackPosition(position, session, ['seeking', 'seeked'].includes(message.event));
+      loadSkipSegments(position, session);
       remember(position, session, message.event === 'pause');
     }
     if (message.event === 'ended') finishPlayback(session);
@@ -2720,6 +2963,7 @@ async function startCatalogPlayback(session) {
   url.search = new URLSearchParams(provider === 'anipm'
     ? { start, color: accent, autonext: '0', episodes: '0', adult: '0', autoskip: '0' }
     : { start, accent, autoPlay: '1', autoNext: '0', autoSkip: '0', hide: 'next' });
+  if (preferDub) url.searchParams.set('track', 'dub');
   if (pref('volume') && preferences.muted) url.searchParams.set('muted', '1');
   frame.src = url.href;
 }
@@ -2797,7 +3041,7 @@ async function openTitle(item, watch = false, episodeKey, selection = null) {
   const watchTitle = `<h1 id="title-heading" tabindex="-1">${escape(episode?.title || item.title)}</h1>`;
   titlePage.innerHTML = `${media
     ? `<div class="sr-only">${watchTitle}</div><div class="watch-stage"><div class="video-box"></div>${playbackNotice}</div>`
-    : `<section class="title-record">${back}<div class="record-copy">${item.poster ? `<img class="record-poster" src="${escape(item.poster)}" alt="">` : ''}<div class="record-information"><h1 id="title-heading" tabindex="-1">${escape(item.title)}</h1><div class="meta title-facts">${titleFacts(session)}</div><p class="title-byline" hidden></p>${about}<div class="watch-actions title-actions">${primary}${saveButton(item)}${item.type === 'movie' ? watchedButton(item) : ''}</div>${item.type === 'tv' ? '<p class="series-tracking" aria-live="polite"></p>' : ''}${ratingControl(item)}</div>${item.backdrop ? `<div class="record-still"><img src="${escape(item.backdrop)}" alt="" fetchpriority="high"></div>` : ''}</div></section>`}
+    : `<section class="title-record screen-record">${item.backdrop ? `<div class="record-backdrop" aria-hidden="true"><img src="${escape(item.backdrop)}" alt="" fetchpriority="high"></div>` : ''}${back}<div class="record-copy">${item.poster ? `<img class="record-poster" src="${escape(item.poster)}" alt="">` : ''}<div class="record-information"><h1 id="title-heading" tabindex="-1">${escape(item.title)}</h1><div class="meta title-facts">${titleFacts(session)}</div><div class="watch-actions title-actions">${primary}${saveButton(item)}${watchStatusControl(item)}${item.type === 'movie' ? watchedButton(item) : ''}</div>${item.type === 'tv' ? '<p class="series-tracking" aria-live="polite"></p>' : ''}${about}<p class="title-byline" hidden></p>${ratingControl(item)}</div></div></section>`}
     <div class="watch-body">
       ${media && !episode ? `<div class="title-overview">${about}${ratingControl(item)}</div>` : ''}
       ${item.type === 'tv' && !item.archiveId ? `<section class="title-episodes episode-list" tabindex="-1" aria-label="Episodes">${episodesMarkup(session)}</section>` : ''}
@@ -2841,8 +3085,14 @@ function titleFacts(session) {
   const duration = details?.runtime || item.duration;
   const genres = details?.genres?.slice(0, 3).map(genre => genre.name).join(' · ') || meta(item)[1];
   const seasons = details?.number_of_seasons ? `${details.number_of_seasons} ${details.number_of_seasons === 1 ? 'season' : 'seasons'}` : '';
-  const facts = item.type === 'tv' ? [date, seasons, seriesStatus(details?.status), genres] : [date, duration ? `${duration} min` : '', genres];
-  return `${facts.filter(Boolean).map(value => `<span>${escape(value)}</span>`).join('')}${ratingBadge(item)}${imdbVotes(item)}`;
+  const upcoming = details?.next_episode_to_air;
+  const upcomingDate = upcoming?.air_date >= new Date().toISOString().slice(0, 10) ? formatReleaseDate(upcoming.air_date) : '';
+  const nextEpisode = upcomingDate ? `Next episode ${episodeLabel(upcoming)} · Scheduled for ${upcomingDate}` : '';
+  const scheduledSeason = details?.seasons?.filter(entry => entry.season_number > 0 && entry.air_date > new Date().toISOString().slice(0, 10)).sort((a, b) => a.air_date.localeCompare(b.air_date))[0];
+  const seasonDate = formatReleaseDate(scheduledSeason?.air_date);
+  const nextSeason = seasonDate ? `Season ${scheduledSeason.season_number} · Scheduled for ${seasonDate}` : '';
+  const facts = item.type === 'tv' ? [date, seasons, seriesStatus(details?.status), genres, nextEpisode, nextSeason] : [date, duration ? `${duration} min` : '', genres];
+  return `${facts.filter(Boolean).map(value => `<span>${escape(value)}</span>`).join('')}${ratingBadge(item)}${imdbVotes(item)}${session.malRating ? `<span class="catalog-score">MAL ${session.malRating.toFixed(2)}</span>` : ''}`;
 }
 
 function titleByline(details) {
@@ -2889,26 +3139,29 @@ function toggleSaved(item) {
   const previous = saved[item.key] ?? null;
   const label = item.type === 'comic' ? 'Reading list' : 'Watchlist';
   if (previous && pref('confirmRemoval') && !confirm(`Remove this title from your ${label.toLowerCase()}?`)) return;
-  libraryChange('saved', item.key, previous ? null : libraryTitle(item));
+  libraryChange('saved', item.key, previous ? null : { ...libraryTitle(item), added: Date.now(), ...(item.type !== 'comic' ? { watchStatus: 'planned' } : {}) });
   undoToast = { key: item.key, previous, accountId: account?.id };
   showToast(previous ? `Removed from ${label}` : `Added to ${label}`);
   renderLibraryControls();
 }
 
 function accountMarkup() {
-  if (account) return `<div class="profile-summary"><span class="profile-avatar">${escape(account.username[0].toUpperCase())}</span><div><h3>${escape(account.username)}</h3><p>Your local watchlist, ratings, and playback history.</p></div></div><div class="dialog-actions"><button type="button" class="button secondary" data-action="signout">Sign out</button></div><p class="form-status" role="status"></p>`;
+  if (account) return `<div class="profile-summary"><span class="profile-avatar">${escape(account.username[0].toUpperCase())}</span><div><h3>${escape(account.username)}</h3><p>Your watchlist, ratings, and playback history.</p></div></div><div class="dialog-actions"><button type="button" class="button secondary" data-action="signout">Sign out</button><button type="button" class="button secondary" data-action="account-security" data-value="revoke-other">Sign out other devices</button><button type="button" class="button secondary" data-action="account-security" data-value="recovery-code">Generate recovery code</button></div><p class="form-status" role="status"></p>`;
   const create = accountMode === 'create';
-  return `<form id="account-form"><h3>${create ? 'Create a local account' : 'Sign in to Afterframe'}</h3>
+  const reset = accountMode === 'reset';
+  return `<form id="account-form"><h3>${reset ? 'Reset your password' : create ? 'Create an account' : 'Sign in to Afterframe'}</h3>
     <label for="account-name">Username</label><input id="account-name" name="username" type="text" autocomplete="username" minlength="3" maxlength="30" pattern="[A-Za-z0-9][A-Za-z0-9_\\-]{2,29}" required>
     ${create ? '<p class="field-help">Use 3–30 letters, numbers, underscores or hyphens.</p>' : ''}
-    <label for="account-password">Password</label><input id="account-password" name="password" type="password" autocomplete="${create ? 'new-password' : 'current-password'}" minlength="8" maxlength="128" required>
+    ${reset ? '<label for="recovery-code">Recovery code</label><input id="recovery-code" name="code" type="password" autocomplete="off" minlength="48" maxlength="48" required>' : ''}
+    <label for="account-password">${reset ? 'New password' : 'Password'}</label><input id="account-password" name="password" type="password" autocomplete="${create || reset ? 'new-password' : 'current-password'}" minlength="8" maxlength="128" required>
     ${create ? '<p class="field-help">At least 8 characters.</p>' : ''}
     <p class="form-status" role="status"></p>
-    <div class="dialog-actions"><button class="button primary" type="submit">${create ? 'Create account' : 'Sign in'}</button><button class="plain-link" type="button" data-action="account-mode">${create ? 'Already have an account?' : 'Create account'}</button></div>
+    <div class="dialog-actions"><button class="button primary" type="submit">${reset ? 'Reset password' : create ? 'Create account' : 'Sign in'}</button><button class="plain-link" type="button" data-action="account-mode" data-value="${create || reset ? 'signin' : 'create'}">${create || reset ? 'Back to sign in' : 'Create account'}</button>${create || reset ? '' : '<button class="plain-link" type="button" data-action="account-mode" data-value="reset">Use a recovery code</button>'}</div>
   </form>`;
 }
 
 function setAccount(user, library) {
+  libraryRevision++;
   account = user;
   accountReady = true;
   useLibrary(library);
@@ -2920,19 +3173,21 @@ function setAccount(user, library) {
       const separator = recordKey.indexOf('/');
       const kind = recordKey.slice(0, separator);
       const key = recordKey.slice(separator + 1);
-      const records = { progress, reading, watched }[kind];
-      if (records && entry?.at >= (records[key]?.updated || 0)) retry.push([kind, key, entry.value]);
+      const records = { progress, reading, watched, history: watchHistory }[kind];
+      if (records && entry?.at >= (records[key]?.updated || 0)) retry.push([kind, key, entry.value, entry.at]);
       else delete pending[recordKey];
     }
     write(pendingKey, pending);
-    for (const [kind, key, value] of retry) libraryChange(kind, key, value);
+    for (const change of retry) libraryChange(...change);
   }
   syncPreferences();
   accountButton.innerHTML = `${user ? `<span class="account-initial" aria-hidden="true">${escape(user.username[0].toUpperCase())}</span>` : icon('user')}<span class="account-name">${user ? escape(user.username) : 'Sign in'}</span>`;
   accountButton.setAttribute('aria-label', user ? `Account for ${user.username}` : 'Sign in');
+  renderNavigation();
   if (accountDialog.open) accountBody.innerHTML = accountMarkup();
   renderLibraryControls();
   if (!active && state.page === 'home') render();
+  if (!active && state.page === 'recommendations') refreshCatalog();
 }
 
 function openAccount() {
@@ -2941,6 +3196,85 @@ function openAccount() {
   accountBody.innerHTML = accountMarkup();
   accountDialog.showModal();
   accountBody.querySelector('input')?.focus();
+}
+
+async function syncLibrary() {
+  if (!account || active?.media || syncingLibrary || document.hidden || accountDialog.open || settingsDialog.open) return;
+  const profile = account.id;
+  const revision = libraryRevision;
+  syncingLibrary = true;
+  try {
+    await libraryQueue;
+    const { account: user, library } = await api('/api/account');
+    if (account?.id !== profile || revision !== libraryRevision || active?.media || accountDialog.open || settingsDialog.open) return;
+    if (user?.id === profile) {
+      const current = { saved, progress, reading, ratings, watched, preferences, history: watchHistory, notifications };
+      if (Object.entries(current).some(([kind, entries]) => JSON.stringify(entries) !== JSON.stringify(library[kind])) || Object.keys(read(`pendingPlayback.${profile}`, {})).length) setAccount(user, library);
+    } else if (!user) setAccount(null);
+  } catch { /* Retry on the next sync. */ }
+  finally { syncingLibrary = false; }
+}
+
+async function changeWatchStatus(event) {
+  const { watchKey } = event.target.dataset;
+  const entry = saved[watchKey];
+  const value = event.target.value;
+  if (!entry || !Object.hasOwn(watchStatuses, value) || (watchStatus(entry) === value && !(value === 'completed' && entry.type === 'tv' && !entry.completedAt))) return;
+  const metadata = titles.get(watchKey);
+  if (value === 'completed' && entry.type === 'tv') {
+    const control = event.target;
+    const accountId = account?.id;
+    control.disabled = true;
+    try {
+      const item = metadata || entry;
+      const details = item.episodes ? null : detailsCache.get(item.key) || await api(`/api/tv/${item.id}`);
+      const seasons = (details?.seasons || []).filter(season => season.season_number > 0 && season.episode_count > 0 && airedEpisode(season));
+      const entries = item.episodes ? [...item.episodes] : [];
+      for (let start = 0; start < seasons.length; start += 5) {
+        const batch = await Promise.all(seasons.slice(start, start + 5).map(season => getSeason(item, season.season_number)));
+        entries.push(...batch.flatMap(season => season.episodes || []));
+      }
+      const last = details?.last_episode_to_air;
+      const today = new Date().toISOString().slice(0, 10);
+      const episodes = entries
+        .filter(episode => episode.key || (episode.air_date && episode.air_date < today) || ((!episode.air_date || episode.air_date === today) && last
+          && (episode.season_number < last.season_number || episode.season_number === last.season_number && episode.episode_number <= last.episode_number)))
+        .map(episode => episode.key || `cinesrc-s${episode.season_number}e${episode.episode_number}`);
+      if (account?.id !== accountId || saved[watchKey] !== entry) return;
+      const totalEpisodes = details?.number_of_episodes || item.episodes?.length || entry.totalEpisodes;
+      const update = async () => {
+        if (account?.id !== accountId) return;
+        const updated = Date.now();
+        const result = accountId ? await post('/api/account/complete-series', { accountId, episodes, item: { key: watchKey, type: 'tv', totalEpisodes } })
+          : { updated, saved: { ...entry, totalEpisodes, watchStatus: 'completed', completedAt: updated } };
+        if (account?.id !== accountId) return;
+        libraryRevision++;
+        saved[watchKey] = result.saved;
+        for (const episode of episodes) {
+          const key = `${watchKey}/${episode}`;
+          watched[key] ||= { item: libraryTitle(item), updated: result.updated };
+          delete progress[key];
+        }
+        if (!accountId) { write('saved', saved); write('watched', watched); write('progress', progress); }
+        renderLibraryControls();
+        if (active?.item.key === watchKey) renderEpisodeRows(active);
+        showToast(`Completed · ${episodes.length} aired ${episodes.length === 1 ? 'episode' : 'episodes'} marked watched`);
+      };
+      const pending = libraryQueue.then(update);
+      libraryQueue = pending.catch(() => {});
+      await pending;
+    } catch (error) {
+      control.value = watchStatus(saved[watchKey]);
+      showToast(error.message || 'Could not complete this series.');
+    } finally {
+      control.disabled = false;
+      document.querySelector(`[data-watch-key="${CSS.escape(watchKey)}"]`)?.focus({ preventScroll: true });
+    }
+    return;
+  }
+  libraryChange('saved', watchKey, { ...entry, totalEpisodes: metadata?.totalEpisodes ?? entry.totalEpisodes, watchStatus: value });
+  renderLibraryControls();
+  document.querySelector(`[data-watch-key="${CSS.escape(watchKey)}"]`)?.focus({ preventScroll: true });
 }
 
 async function signOut(button) {
@@ -2967,7 +3301,7 @@ function rememberBrowseFilters() {
   const params = new URLSearchParams();
   if (state.filter !== 'all') params.set('type', state.filter);
   for (const [name, value] of Object.entries(state.facets)) {
-    if (value && value !== defaults[name]) params.set(name === 'category' ? 'genre' : name, value);
+    if (value && value !== (name === 'sort' && state.page === 'new' ? 'newest' : defaults[name])) params.set(name === 'category' ? 'genre' : name, value);
   }
   if (state.collection) params.set('collection', state.collection);
   const base = state.page === 'search' ? `search=${encodeURIComponent(state.query)}` : state.page;
@@ -2992,22 +3326,39 @@ function refreshTitleRating(session) {
   }).catch(() => {});
 }
 
-function updateConnectionForms(openDetails = false) {
+function updateConnectionForms() {
+  const managed = state.managedIntegrations;
+  const integrationNote = settingsDialog.querySelector('#integration-note');
+  integrationNote.textContent = managed ? 'The server administrator manages these integrations.' : 'Afterframe saves these keys on this computer and uses them for all local profiles.';
   for (const form of connectionForms) {
+    form.querySelector('details').hidden = Boolean(managed);
     if (form.elements.credential.disabled) continue;
     const connected = form.dataset.provider === 'tmdb' ? state.connected : state.omdbConnected;
     const status = form.querySelector('.connection-status');
-    status.textContent = connected ? 'Configured' : 'Key needed';
+    if (status.dataset.error === 'true' || status.textContent === 'Verified and saved') continue;
+    status.textContent = connected ? 'Configured' : managed ? 'Not configured on the server' : 'Key needed';
     status.dataset.connected = connected;
     delete status.dataset.error;
-    if (openDetails) form.querySelector('details').open = !connected && form.dataset.provider === 'tmdb';
   }
 }
 
-function openSettings() {
+function selectSettingsTab(name) {
+  for (const tab of settingsTabs) {
+    const selected = tab.dataset.value === name;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    const panel = document.getElementById(tab.getAttribute('aria-controls'));
+    panel.hidden = !selected;
+    if (panel.hidden) for (const disclosure of panel.querySelectorAll('details[open]')) disclosure.open = false;
+  }
+}
+
+function openSettings(tab = 'general') {
   syncPreferences();
-  updateConnectionForms(true);
+  updateConnectionForms();
+  selectSettingsTab(tab);
   settingsDialog.showModal();
+  settingsTabs.find(button => button.dataset.value === tab)?.focus();
 }
 
 document.addEventListener('click', event => {
@@ -3015,7 +3366,8 @@ document.addEventListener('click', event => {
   if (!control) return;
   const { action, key, value } = control.dataset;
   const item = titles.get(key);
-  if (action === 'settings') openSettings();
+  if (action === 'settings') openSettings(value);
+  if (action === 'settings-tab') selectSettingsTab(value);
   if (action === 'clear-search') {
     search.value = '';
     searchClear.hidden = true;
@@ -3052,9 +3404,30 @@ document.addEventListener('click', event => {
   }
   if (action === 'account') openAccount();
   if (action === 'account-mode') {
-    accountMode = accountMode === 'signin' ? 'create' : 'signin';
+    accountMode = value;
     accountBody.innerHTML = accountMarkup();
     accountBody.querySelector('input').focus();
+  }
+  if (action === 'account-security' && account) {
+    const status = accountBody.querySelector('.form-status');
+    control.disabled = true;
+    post(`/api/account/${value}`).then(result => {
+      status.textContent = result.code ? `Save this one-time recovery code somewhere safe. Generating another code replaces it. ${result.code}` : 'Other sessions were signed out.';
+    }).catch(error => { status.textContent = error.message; }).finally(() => { control.disabled = false; });
+  }
+  if (action === 'more-history') {
+    state.historyPage++;
+    render();
+  }
+  if (action === 'notification-read' && account) {
+    const accountId = account.id;
+    post('/api/account/notifications-read', { key }).then(() => {
+      if (account?.id !== accountId || !notifications[key]) return;
+      libraryRevision++;
+      notifications[key].read = true;
+      renderNavigation();
+      if (state.page === 'notifications' && !active) render();
+    }).catch(error => showToast(error.message));
   }
   if (action === 'signout') signOut(control);
   if (action === 'credits') {
@@ -3076,8 +3449,8 @@ document.addEventListener('click', event => {
     else if (isArchive(item)) navigateTitle(item, `/watch${recent?.[0].includes('/') ? `/${recent[0].split('/')[1]}` : ''}`);
     else navigateTitle(item);
   }
-  if (action === 'episode' && active) navigateTitle(active.item, `/watch/${key}`);
-  if (action === 'stream-episode' && active) watchCineSrc(active.item, episodeFromControl(control));
+  if (action === 'episode' && active) playEpisodeChoice(active, active.item.episodes?.find(episode => episode.key === key));
+  if (action === 'stream-episode' && active) playEpisodeChoice(active, episodeFromControl(control));
   if (action === 'save' && item) toggleSaved(item);
   if (action === 'mark-watched' && item) {
     const watchedKey = control.dataset.watchedKey;
@@ -3133,8 +3506,6 @@ document.addEventListener('click', event => {
     rail.scrollBy({ left: Number(value) * rail.clientWidth * .8, behavior: pref('reducedMotion') || matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
   }
   if (action === 'refresh') refreshCatalog();
-  if (action === 'retry-archive' && !state.archiveLoading) loadArchive(requestId, state.archiveNext || 1);
-  if (action === 'more-archive' && !state.archiveLoading && state.archiveNext) loadArchive(requestId, state.archiveNext);
   if (action === 'more-tmdb' && !state.loading && state.remoteNext) loadTMDB(requestId, state.remoteNext);
   if (action === 'cine-options' && active?.embedPlayback) {
     active.providerControls = !active.providerControls;
@@ -3166,11 +3537,28 @@ document.addEventListener('click', event => {
   if (action === 'cancel-countdown' && active) {
     active.countdownCancelled = true;
     cancelCountdown(active);
-    titlePage.querySelector('.player-transport [data-action="next-episode"]')?.focus({ preventScroll: true });
+    titlePage.querySelector('.player-transport [data-action="next-episode"], .video-box:not(:has(.player-transport)) iframe')?.focus({ preventScroll: true });
   }
 });
 
 main.addEventListener('submit', event => {
+  if (event.target.dataset.discoveryForm) {
+    event.preventDefault();
+    const { discoveryForm } = event.target.dataset;
+    if (!discoveryPath.test(discoveryForm)) return;
+    const params = new URLSearchParams(new FormData(event.target));
+    const hash = `#${discoveryForm}?${params}`;
+    if (location.hash === hash) refreshCatalog();
+    else location.hash = hash;
+    return;
+  }
+  if (event.target.id === 'watchlist-filters') {
+    event.preventDefault();
+    state.libraryFilters = Object.fromEntries(new FormData(event.target));
+    state.libraryFilters.query = state.libraryFilters.query.trim();
+    render();
+    return;
+  }
   if (event.target.id !== 'catalog-filters') return;
   event.preventDefault();
   clearTimeout(filterTimer);
@@ -3188,6 +3576,7 @@ main.addEventListener('input', event => {
 });
 main.addEventListener('change', event => {
   const { target } = event;
+  if (target.matches('[data-watch-key]')) return changeWatchStatus(event);
   if (target.dataset.sort === 'library') {
     state.librarySort = target.value;
     render();
@@ -3219,14 +3608,27 @@ for (const dialog of [settingsDialog, creditsDialog, accountDialog]) {
     if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) dialog.close();
   });
 }
+settingsDialog.addEventListener('close', () => {
+  for (const disclosure of settingsDialog.querySelectorAll('details[open]')) disclosure.open = false;
+});
+settingsDialog.addEventListener('keydown', event => {
+  if (!settingsTabs.includes(event.target) || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const first = event.key === 'Home' || (!['Home', 'End'].includes(event.key) && event.target === settingsTabs.at(-1));
+  const tab = first ? settingsTabs[0] : settingsTabs.at(-1);
+  selectSettingsTab(tab.dataset.value);
+  tab.focus();
+});
 titlePage.addEventListener('change', event => {
   if (!active) return;
+  if (event.target.matches('[data-watch-key]')) return changeWatchStatus(event);
   if (event.target.matches('.episode-range') && active.seasonData) {
     active.episodeRange = Number(event.target.value);
     renderEpisodeRows(active);
   }
   if (event.target.matches('[name="personal-rating"]')) {
-    libraryChange('ratings', active.item.key, { score: Number(event.target.value), item: libraryTitle(active.item) });
+    const score = Number(event.target.value);
+    if (score) libraryChange('ratings', active.item.key, { score, scale: 10, item: libraryTitle(active.item) });
     renderLibraryControls();
   }
 });
@@ -3287,6 +3689,13 @@ accountDialog.addEventListener('submit', async event => {
   status.textContent = accountMode === 'create' ? 'Creating your account…' : 'Signing in…';
   try {
     const { account: user, library } = await post(`/api/account/${accountMode}`, Object.fromEntries(new FormData(event.target)));
+    if (accountMode === 'reset') {
+      accountMode = 'signin';
+      accountBody.innerHTML = accountMarkup();
+      accountBody.querySelector('.form-status').textContent = 'Password reset. Sign in with your new password.';
+      accountBody.querySelector('input').focus();
+      return;
+    }
     setAccount(user, library);
     accountDialog.close();
     showToast(`Signed in as ${user.username}`);
@@ -3296,6 +3705,16 @@ accountDialog.addEventListener('submit', async event => {
   }
 });
 settingsDialog.addEventListener('change', event => {
+  const languagePreference = event.target.dataset.languagePreference;
+  if (languagePreference) {
+    if (languagePreference === 'subtitleLanguage' && event.target.value && !pref('subtitles')) libraryChange('preferences', 'subtitles', true);
+    libraryChange('preferences', languagePreference, event.target.value);
+    if (languagePreference === 'subtitleLanguage') {
+      syncPreferences();
+      document.dispatchEvent(new Event('afterframe-subtitle-preference'));
+    }
+    return;
+  }
   if (event.target.id === 'preferred-quality') {
     libraryChange('preferences', 'quality', event.target.value);
     return;
@@ -3304,7 +3723,8 @@ settingsDialog.addEventListener('change', event => {
   if (!name || !Object.hasOwn(preferenceDefaults, name)) return;
   libraryChange('preferences', name, event.target.checked);
   syncPreferences();
-  if (name === 'autoplay' && active?.ended && !active.media.embed) {
+  if (name === 'subtitles') document.dispatchEvent(new Event('afterframe-subtitle-preference'));
+  if (name === 'autoplay' && active?.media) {
     if (pref('autoplay')) startCountdown(active);
     else cancelCountdown(active);
   }
@@ -3413,10 +3833,14 @@ region.addEventListener('change', () => {
 updateRegion();
 syncPreferences();
 window.addEventListener('hashchange', route);
+window.addEventListener('focus', syncLibrary);
+document.addEventListener('visibilitychange', syncLibrary);
+setInterval(syncLibrary, 30000);
 window.addEventListener('pagehide', savePlayback);
-api('/api/status').then(({ connected, omdbConnected }) => {
+api('/api/status').then(({ connected, omdbConnected, managedIntegrations }) => {
   state.connected ||= connected;
   state.omdbConnected ||= omdbConnected;
+  state.managedIntegrations = managedIntegrations;
   if (settingsDialog.open) updateConnectionForms();
   if (connected) refreshCatalog();
 }).catch(() => { /* The local archive catalog works while the connection is unavailable. */ });
@@ -3430,5 +3854,19 @@ const comics = createComics({
   main, titlePage, api, escape, icon, grid, shelf, observeRails, saveButton, titles, read, write,
   getReading: key => reading[key],
   recordReading: (item, entry) => libraryChange('reading', item.key, { ...entry, item: libraryTitle(item), updated: Date.now() }),
+});
+const discoveryPages = createDiscoveryPages({
+  main, api, escape, footer, grid, localizeTitle, syncCardRatings,
+  library: () => {
+    if (account) return null;
+    const take = (entries, limit) => Object.values(entries).slice(-limit);
+    const compact = item => ({ key: item.key, id: item.id, title: item.title.slice(0, 120), type: item.type, genreIds: item.genreIds?.slice(0, 12) });
+    return {
+      history: take(watchHistory, 60).map(({ item, mediaKey, completed, coverage, duration, updated }) => ({ item: compact(item), mediaKey, completed, coverage, duration, updated })),
+      saved: Object.fromEntries(take(saved, 75).map(item => [item.key, { ...compact(item), watchStatus: item.watchStatus }])),
+      ratings: take(ratings, 50).map(({ score, item }) => ({ score, item: compact(item) })),
+      watched: take(watched, 50).filter(({ item }) => item.type === 'movie').map(({ item }) => ({ item: compact(item) })),
+    };
+  },
 });
 route();

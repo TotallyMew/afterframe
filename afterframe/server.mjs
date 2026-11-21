@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { Readable } from 'node:stream';
@@ -6,8 +7,11 @@ import { pipeline } from 'node:stream/promises';
 import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { archiveCatalog, archiveFileUrl } from './public/catalog.js';
-import { archiveEdition, archiveIdPattern, searchArchive } from './archive.mjs';
-import { accountApi, providerCredential, saveProviderCredential } from './accounts.mjs';
+import { archiveEdition, archiveIdPattern } from './archive.mjs';
+import { accountApi, currentAccount, readLibrary, providerCredential, saveProviderCredential } from './accounts.mjs';
+import { recommendations, seasonalAnime } from './discovery.mjs';
+import { monitorReleases } from './releases.mjs';
+import { catalogAnimeRating, malRating } from './mal.mjs';
 import { comicCoverResponse, comicPageResponse, comicsApi, reportComicPage } from './comics.mjs';
 import { animeSource } from './anime.mjs';
 import { catalogFilters, discoverParams, isAnime, matchesCatalog } from './public/discover.js';
@@ -17,6 +21,8 @@ const port = Number(process.env.PORT || 4173);
 const publicDirectory = fileURLToPath(new URL('./public/', import.meta.url));
 const catalog = new Map(archiveCatalog.map(item => [item.key, item]));
 const localHosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
+const publicOrigin = process.env.AFTERFRAME_ORIGIN ? new URL(process.env.AFTERFRAME_ORIGIN) : null;
+if (publicOrigin && (publicOrigin.protocol !== 'https:' || publicOrigin.href !== `${publicOrigin.origin}/`)) throw new Error('AFTERFRAME_ORIGIN must be an HTTPS origin.');
 const verifiedCuts = {
   // Slow Horses S5E2, checked against the 47:55 CineSrc cut.
   'cinesrc/tv/95480/5/2': {
@@ -32,14 +38,19 @@ const mime = {
   '.css': 'text/css; charset=utf-8', '.jpg': 'image/jpeg', '.webp': 'image/webp', '.svg': 'image/svg+xml',
   '.vtt': 'text/vtt; charset=utf-8', '.woff2': 'font/woff2',
 };
-const contentPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: https://image.tmdb.org https://archive.org https://*.archive.org https://uploads.mangadex.org; media-src 'self' blob: https://archive.org https://*.archive.org https://upload.wikimedia.org; connect-src 'self' https://subs.bright67.online https://uploads.mangadex.org https://*.mangadex.network; frame-src https://cinesrc.st https://ani.pm https://animeembed.com; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+const contentPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: https://image.tmdb.org https://s4.anilist.co https://archive.org https://*.archive.org https://uploads.mangadex.org; media-src 'self' blob: https://archive.org https://*.archive.org https://upload.wikimedia.org; connect-src 'self' https://opensubtitles-v3.strem.io https://subs5.strem.io https://subs.bright67.online https://uploads.mangadex.org https://*.mangadex.network; frame-src https://cinesrc.st https://ani.pm https://animeembed.com; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 const tmdbKeyPattern = /^[a-f0-9]{32}$/i;
-let tmdbCredential = providerCredential('tmdb') || process.env.TMDB_READ_TOKEN?.trim() || process.env.TMDB_API_KEY?.trim();
-const savedOmdbKey = providerCredential('omdb');
+let tmdbCredential = (!publicOrigin && providerCredential('tmdb')) || process.env.TMDB_READ_TOKEN?.trim() || process.env.TMDB_API_KEY?.trim();
+const savedOmdbKey = !publicOrigin && providerCredential('omdb');
 if (savedOmdbKey) setOmdbKey(savedOmdbKey);
 
 function connectionStatus() {
-  return { connected: Boolean(tmdbCredential), omdbConnected: hasOmdbKey() };
+  return { connected: Boolean(tmdbCredential), omdbConnected: hasOmdbKey(), managedIntegrations: Boolean(publicOrigin) };
+}
+
+function siteJsonRequest(request) {
+  return request.headers.origin === (publicOrigin?.origin || `http://${request.headers.host}`)
+    && request.headers['content-type']?.split(';')[0].trim() === 'application/json';
 }
 
 function json(response, status, body) {
@@ -108,18 +119,19 @@ async function catalogFacts(keys) {
 
 async function handleApi(request, response, url) {
   const { pathname, searchParams } = url;
+  if (pathname === '/api/health' && request.method === 'GET') return json(response, 200, { status: 'ok' });
   if (pathname === '/api/status' && request.method === 'GET') return json(response, 200, connectionStatus());
 
   if (pathname === '/api/account' || pathname.startsWith('/api/account/')) {
     let body;
     if (request.method === 'POST') {
-      if (request.headers.origin !== `http://${request.headers.host}` || !request.headers['content-type']?.startsWith('application/json')) {
-        return json(response, 403, { error: 'Open Afterframe on localhost to use accounts.' });
+      if (!siteJsonRequest(request)) {
+        return json(response, 403, { error: 'Open Afterframe on its configured address to use accounts.' });
       }
       let raw = '';
       for await (const chunk of request) {
         raw += chunk;
-        if (raw.length > 16384) return json(response, 413, { error: 'This account request is too large.' });
+        if (raw.length > (pathname === '/api/account/complete-series' ? 500000 : 16384)) return json(response, 413, { error: 'This account request is too large.' });
       }
       try { body = JSON.parse(raw); } catch { return json(response, 400, { error: 'Invalid account request.' }); }
     }
@@ -128,8 +140,8 @@ async function handleApi(request, response, url) {
   }
 
   if (pathname === '/api/connection' && request.method === 'POST') {
-    if (request.headers.origin !== `http://${request.headers.host}` || !request.headers['content-type']?.startsWith('application/json')) {
-      return json(response, 403, { error: 'Open settings from Afterframe on localhost.' });
+    if (publicOrigin || !siteJsonRequest(request)) {
+      return json(response, 403, { error: 'This installation manages integration keys on the server.' });
     }
     let body = '';
     for await (const chunk of request) {
@@ -143,7 +155,7 @@ async function handleApi(request, response, url) {
     const candidate = typeof value === 'string' ? value.trim() : '';
     if (provider === 'tmdb') {
       if (!/^[\w.-]{20,2048}$/.test(candidate)) {
-        return json(response, 400, { error: 'Enter your TMDb API Read Access Token or API key.' });
+        return json(response, 400, { error: 'Enter your catalog API token or key.' });
       }
       await tmdb('/authentication', {}, candidate);
       saveProviderCredential(provider, candidate);
@@ -157,11 +169,34 @@ async function handleApi(request, response, url) {
       saveProviderCredential(provider, candidate);
       setOmdbKey(candidate);
     } else {
-      return json(response, 400, { error: 'Choose TMDb or OMDb.' });
+      return json(response, 400, { error: 'Choose a supported integration.' });
     }
     return json(response, 200, connectionStatus());
   }
 
+  if (pathname === '/api/anime-discovery' && request.method === 'GET') return json(response, 200, await seasonalAnime(searchParams));
+  const mal = pathname.match(/^\/api\/mal\/(anime|manga)\/([1-9]\d{0,9})$/);
+  if (mal && request.method === 'GET') return json(response, 200, { rating: await malRating(mal[1], mal[2]) });
+  const catalogMal = pathname.match(/^\/api\/mal\/catalog\/(movie|tv)\/([1-9]\d{0,9})$/);
+  if (catalogMal && request.method === 'GET') {
+    const season = searchParams.get('season') || '1';
+    if (!/^\d{1,4}$/.test(season)) return json(response, 400, { error: 'Invalid season.' });
+    return json(response, 200, { rating: await catalogAnimeRating(catalogMal[1], catalogMal[2], season) });
+  }
+  if (pathname === '/api/recommendations' && ['GET', 'POST'].includes(request.method)) {
+    const account = currentAccount(request);
+    let library = account ? readLibrary(account.id) : undefined;
+    if (!account && request.method === 'POST') {
+      if (!siteJsonRequest(request)) return json(response, 403, { error: 'Open recommendations from Afterframe.' });
+      let raw = '';
+      for await (const chunk of request) {
+        raw += chunk;
+        if (raw.length > 64000) return json(response, 413, { error: 'Recommendation request is too large.' });
+      }
+      try { library = JSON.parse(raw); } catch { return json(response, 400, { error: 'Invalid recommendation request.' }); }
+    }
+    return json(response, 200, await recommendations(library || undefined, tmdb, Boolean(tmdbCredential)));
+  }
   if (pathname === '/api/comics/report' && request.method === 'POST') {
     response.writeHead(await reportComicPage(request), { 'cache-control': 'no-store' });
     return response.end();
@@ -177,7 +212,7 @@ async function handleApi(request, response, url) {
     const season = searchParams.get('s') || '';
     const episode = searchParams.get('e') || '';
     if (type === 'tv' && (!/^\d{1,4}$/.test(season) || !/^[1-9]\d{0,3}$/.test(episode))) return json(response, 400, { error: 'Invalid episode coordinates.' });
-    if (!tmdbCredential) return json(response, 503, { error: 'Connect TMDb in Settings.' });
+    if (!tmdbCredential) return json(response, 503, { error: 'Connect the catalog in Settings.' });
     const title = await titleMetadata(type, id);
     if (!isAnime(title.original_language, title.genres?.map(genre => genre.id))) return json(response, 200, { source: null });
     try {
@@ -238,15 +273,6 @@ async function handleApi(request, response, url) {
     });
     return json(response, 200, { segments });
   }
-  if (pathname === '/api/archive') {
-    const page = Number(searchParams.get('page') || 1);
-    if (!Number.isInteger(page) || page < 1 || page > 278) return json(response, 400, { error: 'That Archive page is unavailable.' });
-    try {
-      return json(response, 200, await searchArchive({ group: searchParams.get('group'), query: searchParams.get('q')?.trim().slice(0, 180), page, filters: catalogFilters(searchParams) }));
-    } catch {
-      return json(response, 502, { error: 'The Internet Archive catalog is temporarily unavailable.' });
-    }
-  }
   if (pathname.startsWith('/api/archive/')) {
     const id = pathname.slice('/api/archive/'.length);
     const item = archiveIdPattern.test(id) ? await archiveEdition(id) : null;
@@ -255,10 +281,10 @@ async function handleApi(request, response, url) {
 
   const route = pathname.match(/^\/api\/(movie|tv)\/(\d{1,10})(?:\/season\/(\d{1,4}))?$/);
   if (!route && !['/api/search', '/api/trending', '/api/browse', '/api/home'].includes(pathname)) return json(response, 404, { error: 'Not found.' });
-  if (!tmdbCredential) return json(response, 503, { error: 'Connect TMDb in Settings to use the full catalog.' });
+  if (!tmdbCredential) return json(response, 503, { error: 'Connect the catalog in Settings to use the full catalog.' });
 
   const page = Number(searchParams.get('page') || 1);
-  if (!Number.isInteger(page) || page < 1 || page > 500) return json(response, 400, { error: 'That TMDB page is unavailable.' });
+  if (!Number.isInteger(page) || page < 1 || page > 500) return json(response, 400, { error: 'That catalog page is unavailable.' });
 
   if (pathname === '/api/search') {
     const query = searchParams.get('q')?.trim().slice(0, 180);
@@ -277,14 +303,13 @@ async function handleApi(request, response, url) {
     if (!['movie', 'tv'].includes(type)) return json(response, 400, { error: 'Choose movies or TV shows.' });
     const filters = catalogFilters(searchParams);
     const collection = searchParams.get('collection');
-    if (collection === 'new') filters.sort = 'newest';
+    if (collection === 'new' && !searchParams.has('sort')) filters.sort = 'newest';
     return json(response, 200, await discover(type, page, filters, collection));
   }
   if (pathname === '/api/home') {
     const collections = [
       ['newMovies', 'movie', 'newest', 'new', ''],
       ['newTV', 'tv', 'newest', 'new', ''],
-      ['top', 'movie', 'top', '', ''],
       ['anime', 'tv', 'popular', '', 'Anime'],
     ];
     const sections = await Promise.allSettled(collections.map(([, type, sort, collection, category]) =>
@@ -358,9 +383,17 @@ const server = createServer(async (request, response) => {
   response.setHeader('content-security-policy', contentPolicy);
   response.setHeader('x-content-type-options', 'nosniff');
   response.setHeader('referrer-policy', 'no-referrer');
-  if (!localHosts.has(request.headers.host)) return json(response, 403, { error: 'Use localhost to open Afterframe.' });
+  if (publicOrigin ? request.headers.host !== publicOrigin.host : !localHosts.has(request.headers.host)) return json(response, 403, { error: 'Use the configured address to open Afterframe.' });
+  if (publicOrigin) response.setHeader('strict-transport-security', 'max-age=31536000');
   try {
     const url = new URL(request.url, 'http://localhost');
+    if (publicOrigin && url.pathname.startsWith('/api/')) {
+      const requestId = randomUUID();
+      const started = performance.now();
+      response.setHeader('x-request-id', requestId);
+      response.once('finish', () => console.log(JSON.stringify({ requestId, method: request.method, path: url.pathname,
+        status: response.statusCode, durationMs: Math.round(performance.now() - started) })));
+    }
     if (url.pathname.startsWith('/api/')) return await handleApi(request, response, url);
     if (!['GET', 'HEAD'].includes(request.method)) return json(response, 405, { error: 'Method unavailable.' });
     if (url.pathname.startsWith('/comic-page/')) {
@@ -394,10 +427,11 @@ const server = createServer(async (request, response) => {
   } catch (error) {
     if (response.destroyed) return;
     if (response.headersSent) return response.destroy();
+    if (error.statusCode === 400) return json(response, 400, { error: error.message });
     const status = error.upstreamStatus;
-    if (status === 401 || status === 403) return json(response, 401, { error: 'TMDb rejected the API credential.' });
-    if (status === 404) return json(response, 404, { error: 'TMDB could not find this title.' });
-    if (status === 429) return json(response, 429, { error: 'TMDB is rate limiting requests. Try again shortly.' });
+    if (status === 401 || status === 403) return json(response, 401, { error: 'The catalog rejected the API credential.' });
+    if (status === 404) return json(response, 404, { error: 'This title was not found.' });
+    if (status === 429) return json(response, 429, { error: 'The catalog is temporarily limiting requests. Try again shortly.' });
     return json(response, 502, { error: 'The source is temporarily unavailable.' });
   }
 });
@@ -407,3 +441,4 @@ refreshMetadataPeriodically(async key => {
   if (match && tmdbCredential) await titleMetadata(match[1], match[2], match[3], true);
 });
 server.listen(port, '127.0.0.1', () => console.log(`Afterframe is ready at http://localhost:${port}`));
+monitorReleases(id => cacheMetadata(`release:${id}`, 10 * 60000, () => tmdb(`/tv/${id}`, { language: 'en-US' })), () => Boolean(tmdbCredential), (id, season) => titleMetadata('tv', id, season));

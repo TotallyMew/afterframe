@@ -75,7 +75,6 @@ async function pageImage(url, signal) {
 
 export function createComics({ main, titlePage, api, escape, icon, grid, shelf, observeRails, saveButton, titles, getReading, recordReading, read, write }) {
   let controller;
-  const source = '<span class="comics-credit">Catalog by MangaDex</span>';
 
   function close() {
     controller?.abort();
@@ -134,7 +133,7 @@ export function createComics({ main, titlePage, api, escape, icon, grid, shelf, 
           <div class="comic-results-grid"><div class="poster-grid skeleton-grid" aria-hidden="true">${'<div></div>'.repeat(10)}</div></div>
         </section>
       </div>
-      <footer class="page-footer">${source}</footer>`;
+      `;
     const form = main.querySelector('.comic-filters');
     const disclosure = main.querySelector('.comics-catalog details');
     disclosure.addEventListener('toggle', () => { form.dataset.mobileOpen = String(disclosure.open); });
@@ -228,12 +227,16 @@ export function createComics({ main, titlePage, api, escape, icon, grid, shelf, 
     let page = Math.min(pageNumber(params), 200);
     const focus = params.get('chapters');
     const synopsis = synopsisText(item.synopsis);
+    if (item.malId) api(`/api/mal/manga/${item.malId}`, { signal }).then(({ rating }) => {
+      const badge = titlePage.querySelector('[data-manga-rating]');
+      if (!signal.aborted && badge && rating) { badge.textContent = `MAL ${rating.toFixed(2)}`; badge.hidden = false; }
+    }).catch(() => {});
     const info = [comicFormat(item), item.year, statuses.find(([value]) => value === item.status)?.[1]].filter(Boolean);
     titlePage.innerHTML = `<article class="title-record comic-record">
       <a class="plain-link title-back" href="${escape(back)}">${icon('chevron-left')} ${back === '#reading' ? 'Reading list' : 'Comics'}</a>
       <div class="record-copy comic-overview">${item.poster ? `<img class="record-poster" src="${escape(comicCover(item.poster))}" alt="" fetchpriority="high">` : ''}
         <div class="record-information"><h1 id="title-heading" tabindex="-1">${escape(item.title)}</h1>
-          <div class="meta title-facts">${info.map(fact => `<span>${escape(fact)}</span>`).join('')}</div>
+          <div class="meta title-facts">${info.map(fact => `<span>${escape(fact)}</span>`).join('')}<span data-manga-rating hidden></span></div>
           ${item.author.length ? `<p class="title-byline">${escape(item.author.join(', '))}</p>` : ''}
           ${synopsis ? `<p class="title-about comic-synopsis">${escape(synopsis)}</p>` : ''}
           ${item.genres?.length ? `<div class="comic-genre-links" aria-label="Genres">${item.genres.map(genre => `<a class="filter" href="${escape(comicsHash('', '', 1, { genre: genre.id }))}">${escape(genre.name)}</a>`).join('')}</div>` : ''}
@@ -248,7 +251,7 @@ export function createComics({ main, titlePage, api, escape, icon, grid, shelf, 
         </div>
         <div id="comic-chapter-list" class="comic-chapter-list"><p class="catalog-status" role="status">Loading chapters…</p></div>
         <nav class="comics-pager comic-list-pages" aria-label="Chapter ranges" hidden></nav>
-      </section><footer class="page-footer">${source}</footer>
+      </section>
     </article>`;
     const heading = titlePage.querySelector(focus ? '#chapters-heading' : '#title-heading');
     heading.focus({ preventScroll: true });
@@ -538,7 +541,7 @@ export function createComics({ main, titlePage, api, escape, icon, grid, shelf, 
       <div class="comic-reader-end">
         <a class="plain-link" href="${escape(back)}">${icon('book')} All chapters</a>
         <nav class="comic-reader-chapters" data-comic-chapter-nav aria-label="Chapter navigation after reading"></nav>
-      </div><footer class="page-footer comic-reader-credit">${groupCredits(chapter)}${source}</footer></div>`;
+      </div><footer class="page-footer comic-reader-credit">${groupCredits(chapter)}</footer></div>`;
     titlePage.querySelector('#title-heading').focus({ preventScroll: true });
     mountPages(item, chapter, listPage, pages, endpoint, signal);
     readerControls(item, chapter, listPage, signal).catch(() => {});

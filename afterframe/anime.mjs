@@ -63,3 +63,20 @@ export async function animeSource(type, id, season, episode) {
   const descriptor = type === 'tv' ? `tmdb_show:${id}:s${season}` : `tmdb_movie:${id}`;
   return matchAnimeEpisode((await animeMappings()).get(descriptor), episode);
 }
+
+export async function animeCatalogTitles(ids) {
+  const matches = new Map();
+  const requested = new Set(ids);
+  for (const [descriptor, rules] of await animeMappings()) {
+    const source = descriptor.match(/^tmdb_(show|movie):([1-9]\d*)(?::s\d+)?$/);
+    if (!source) continue;
+    for (const target of Object.keys(rules || {})) {
+      const id = Number(target.match(/^anilist:([1-9]\d*)$/)?.[1]);
+      if (!requested.has(id)) continue;
+      const key = `${source[1] === 'show' ? 'tv' : 'movie'}/${source[2]}`;
+      if (!matches.has(id)) matches.set(id, key);
+      else if (matches.get(id) !== key) matches.set(id, null);
+    }
+  }
+  return matches;
+}

@@ -1,5 +1,18 @@
 const subtitleOrigin = 'https://subs.bright67.online';
+const openSubtitlesOrigin = 'https://opensubtitles-v3.strem.io';
+const downloadOrigin = 'https://subs5.strem.io';
 const cueTiming = /^\s*((?:\d{1,3}:)?\d{2}:\d{2}[.,]\d{1,3})\s+-->\s+((?:\d{1,3}:)?\d{2}:\d{2}[.,]\d{1,3})(?:\s|$)/;
+const languageNames = new Intl.DisplayNames(['en'], { type: 'language', fallback: 'none' });
+
+export function playbackLanguage(value) {
+  const name = value?.trim() || '';
+  if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(name)) return name;
+  return languageNames.of(name.split('-')[0]) || name;
+}
+
+export function samePlaybackLanguage(first, second) {
+  return Boolean(first && second) && playbackLanguage(first).toLowerCase() === playbackLanguage(second).toLowerCase();
+}
 
 async function subtitleRequest(url, signal) {
   const response = await fetch(url, {
@@ -9,7 +22,33 @@ async function subtitleRequest(url, signal) {
   return response;
 }
 
+async function openSubtitles(item, episode, signal) {
+  let imdb = item.imdb;
+  if (!imdb) {
+    const response = await fetch(`/api/${item.type}/${item.id}`, { signal });
+    if (!response.ok) return [];
+    const details = await response.json();
+    imdb = details.external_ids?.imdb_id || details.imdb_id;
+  }
+  if (!/^tt\d{5,12}$/.test(imdb)) return [];
+  const id = episode ? `${imdb}:${episode.season}:${episode.number}` : imdb;
+  const response = await subtitleRequest(`${openSubtitlesOrigin}/subtitles/${episode ? 'series' : 'movie'}/${id}.json`, signal);
+  const { subtitles } = await response.json();
+  return (Array.isArray(subtitles) ? subtitles : []).flatMap(entry => {
+    const url = typeof entry?.url === 'string' ? URL.parse(entry.url) : null;
+    const language = typeof entry?.lang === 'string' ? playbackLanguage(entry.lang) : '';
+    if (!language || url?.origin !== downloadOrigin || url.username || url.password || !/^\/[a-z-]+\/download\//i.test(url.pathname)) return [];
+    return [{ url: url.href, language, release: typeof entry.label === 'string' ? entry.label.slice(0, 100) : '' }];
+  });
+}
+
 export async function findSubtitles(item, episode, signal) {
+  try {
+    const tracks = await openSubtitles(item, episode, signal);
+    if (tracks.length || signal.aborted) return tracks;
+  } catch (error) {
+    if (signal.aborted) throw error;
+  }
   const search = new URL('/search', subtitleOrigin);
   search.searchParams.set('id', item.id);
   if (episode) {
@@ -27,7 +66,7 @@ export async function findSubtitles(item, episode, signal) {
     const language = [entry.display, entry.languageName, entry.language].find(value => typeof value === 'string' && value.trim());
     if (!language || tracks.has(url.href)) continue;
     const release = typeof entry.release === 'string' ? entry.release.split(/[/\\]/).at(-1).trim() : '';
-    tracks.set(url.href, { url: url.href, language: language.trim().slice(0, 50), release: release.slice(0, 100) });
+    tracks.set(url.href, { url: url.href, language: playbackLanguage(language).slice(0, 50), release: release.slice(0, 100) });
   }
   return [...tracks.values()].sort((a, b) => a.language.localeCompare(b.language));
 }

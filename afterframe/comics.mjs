@@ -66,6 +66,7 @@ function comic({ id, attributes, relationships }) {
   const tags = (attributes.tags || []).filter(tag => tag.attributes.name.en);
   return {
     id, key: `comic-${id}`, type: 'comic', format, poster,
+    malId: /^[1-9]\d{0,9}$/.test(attributes.links?.mal) ? Number(attributes.links.mal) : null,
     title: attributes.title.en || attributes.altTitles?.find(title => title.en)?.en || englishText(attributes.title, original),
     year: attributes.year, status: attributes.status, author,
     synopsis: englishText(attributes.description, original), longStrip: tags.some(tag => tag.attributes.name.en === 'Long Strip'),
