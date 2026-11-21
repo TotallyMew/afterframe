@@ -140,6 +140,7 @@ const defaultRegion = navigator.language.match(/-([A-Z]{2})\b/)?.[1];
 const savedRegion = read('region', defaultRegion);
 const state = {
   page: 'home', query: '', filter: 'all', connected: false, omdbConnected: false,
+  featuredKey: null, homeTrending: 'all',
   region: countries.includes(savedRegion) ? savedRegion : 'LT', remote: [], loading: false, error: '',
   remoteNext: null,
   collections: {}, total: null, filtersOpen: false, librarySort: 'recent', libraryFilters: {}, historyPage: 1,
@@ -406,9 +407,13 @@ function grid(items) {
   return `<div class="poster-grid">${items.map(item => titleCard(item)).join('')}</div>`;
 }
 
+function railControls(title) {
+  return `<div class="rail-controls" hidden><button class="icon-button" type="button" data-action="rail" data-value="-1" aria-label="Scroll ${title} left">${icon('chevron-left')}</button><button class="icon-button" type="button" data-action="rail" data-value="1" aria-label="Scroll ${title} right">${icon('chevron-right')}</button></div>`;
+}
+
 function shelf(title, items, link, resume = false, showDate = false) {
   if (!items.length) return '';
-  return `<section class="shelf" aria-label="${title}"><div class="section-head"><h2>${title}</h2><div class="shelf-actions">${link ? `<a class="section-link" href="#${link}">View all ${icon('chevron-right')}</a>` : ''}<div class="rail-controls" hidden><button class="icon-button" type="button" data-action="rail" data-value="-1" aria-label="Scroll ${title} left">${icon('chevron-left')}</button><button class="icon-button" type="button" data-action="rail" data-value="1" aria-label="Scroll ${title} right">${icon('chevron-right')}</button></div></div></div><div class="poster-rail${resume ? ' resume-rail' : ''}">${items.map(item => titleCard(item, resume, showDate)).join('')}</div></section>`;
+  return `<section class="shelf" aria-label="${title}"><div class="section-head"><h2>${title}</h2><div class="shelf-actions">${link ? `<a class="section-link" href="#${link}">View all ${icon('chevron-right')}</a>` : ''}${railControls(title)}</div></div><div class="poster-rail${resume ? ' resume-rail' : ''}">${items.map(item => titleCard(item, resume, showDate)).join('')}</div></section>`;
 }
 
 function syncRail(rail) {
@@ -420,9 +425,9 @@ function syncRail(rail) {
   controls.lastElementChild.setAttribute('aria-disabled', String(rail.scrollLeft >= remaining - 4));
 }
 
-function observeRails() {
+function observeRails(root = main) {
   railObserver ??= new ResizeObserver(entries => entries.forEach(({ target }) => syncRail(target)));
-  for (const rail of main.querySelectorAll('.poster-rail')) {
+  for (const rail of root.querySelectorAll('.poster-rail')) {
     railObserver.observe(rail);
     rail.addEventListener('scroll', () => syncRail(rail), { passive: true });
   }
@@ -487,35 +492,40 @@ function renderLibraryControls() {
   if (active) updateSeriesTracking(active);
 }
 
-function featuredFilm() {
-  const live = state.remote.filter(item => item.type === 'movie' && item.backdrop && hasReleased(item));
-  const recent = (state.collections.newMovies || []).filter(item => item.backdrop && item.votes >= 15);
-  return live[0] || recent[0];
+function featuredFilms() {
+  const movies = [...state.remote, ...(state.collections.newMovies || [])].filter(item => item.type === 'movie' && item.backdrop && hasReleased(item));
+  return [...new Map(movies.map(item => [item.key, item])).values()].slice(0, 3);
 }
 
 function hasReleased(item) {
   return Boolean(item.date && item.date <= new Date().toISOString().slice(0, 10));
 }
 
-function renderHero() {
-  const item = featuredFilm();
-  if (!item) return state.loading ? '<div class="hero home-loading" aria-label="Loading featured titles"></div>' : '';
+function renderHero(item, choices) {
+  if (!item) return state.loading
+    ? '<div class="home-hero home-loading" role="status"><span class="sr-only">Loading featured titles</span></div>'
+    : '<header class="view-heading home-welcome"><h1>Home</h1></header>';
   const resumed = pref('resume') && resumeFor(item);
-  const action = resumed ? 'resume' : item.type === 'movie' || isArchive(item) ? 'watch' : 'details';
-  return `<section class="hero" aria-label="Featured title">
-    <div class="hero-inner"><div class="hero-copy"><div class="eyebrow">Featured film</div>
+  return `<section class="home-hero" aria-label="Featured film">
+    <img class="home-hero-image" src="${escape(item.backdrop)}" alt="" fetchpriority="high">
+    <div class="home-hero-copy"><p class="home-feature-label">Featured film</p>
       <h1>${escape(item.title)}</h1>
       <div class="meta">${meta(item).map(value => `<span>${escape(value)}</span>`).join('')}<span class="imdb-rating" data-rating-for="${escape(item.key)}">${ratingBadge(item)}</span></div>
-      ${item.description ? `<p class="hero-summary">${escape(item.description)}</p>` : ''}
-      <div class="hero-actions"><button type="button" class="button primary" data-action="${action}" data-key="${escape(item.key)}">${icon('play')} ${resumed ? 'Resume' : action === 'details' ? 'View episodes' : 'Watch now'}</button>${action === 'details' ? '' : `<button type="button" class="button secondary" data-action="details" data-key="${escape(item.key)}">${icon('info')} Details</button>`}${saveButton(item)}</div>
-    </div><a class="hero-art" href="#${titlePath(item)}" aria-label="Details for ${escape(item.title)}"><img class="hero-image" src="${escape(item.backdrop)}" alt="" fetchpriority="high"></a></div>
+      ${item.description ? `<p class="home-hero-summary">${escape(item.description)}</p>` : ''}
+      <div class="hero-actions"><button type="button" class="button primary" data-action="${resumed ? 'resume' : 'watch'}" data-key="${escape(item.key)}">${icon('play')} ${resumed ? 'Resume' : 'Watch now'}</button><button type="button" class="button secondary" data-action="details" data-key="${escape(item.key)}">Details</button>${saveButton(item)}</div>
+    </div>
+    ${choices.length > 1 ? `<div class="home-feature-choices" role="group" aria-label="Choose a featured film">${choices.map(choice => `<button type="button" class="home-feature-choice" data-action="home-feature" data-key="${escape(choice.key)}" aria-pressed="${choice.key === item.key}" aria-label="Feature ${escape(choice.title)}" title="${escape(choice.title)}"><img src="${escape(choice.poster || choice.backdrop)}" alt="" loading="lazy"></button>`).join('')}</div>` : ''}
   </section>`;
 }
 
-function editorialGrid(title, items, link, className = '') {
+function renderHomeTrending(items) {
   if (!items.length) return '';
-  const action = link ? `<a class="section-link" href="#${link}">View all ${icon('arrow')}</a>` : '';
-  return `<section class="editorial-section ${className}" aria-label="${title}"><header class="section-head"><h2>${title}</h2>${action}</header>${grid(items)}</section>`;
+  const title = 'Trending this week';
+  const activeFilter = state.homeTrending;
+  const filtered = activeFilter === 'all' ? items : items.filter(item => item.type === activeFilter);
+  return `<section class="shelf home-trending" aria-label="${title}"><div class="section-head"><h2>${title}</h2><div class="shelf-actions"><div class="home-trending-filters" role="group" aria-label="Filter trending titles">${[['all', 'All'], ['movie', 'Movies'], ['tv', 'TV Shows']].map(([value, label]) => `<button class="home-trending-filter" type="button" data-action="home-trending" data-value="${value}" aria-pressed="${value === activeFilter}">${label}</button>`).join('')}</div>${railControls(title)}</div></div>${filtered.length
+    ? `<div class="poster-rail" aria-label="Trending titles">${filtered.slice(0, 12).map(item => titleCard(item)).join('')}</div>`
+    : '<p class="catalog-status" role="status">No trending titles for this filter.</p>'}</section>`;
 }
 
 function releaseIndex(movies, shows) {
@@ -668,19 +678,23 @@ function render() {
     const focused = document.activeElement;
     const focusKey = focused.matches('.poster-card') ? focused.dataset.key : '';
     const focusShelf = focused.closest('.shelf')?.getAttribute('aria-label');
-    const trending = state.remote.filter(hasReleased);
-    main.innerHTML = renderHero()
+    const homeControl = focused.matches('[data-action="home-feature"], [data-action="home-trending"]') ? focused.dataset : null;
+    const choices = featuredFilms();
+    const featured = choices.find(item => item.key === state.featuredKey) || choices[0];
+    const trending = state.remote.filter(item => item.key !== featured?.key && hasReleased(item));
+    main.innerHTML = renderHero(featured, choices)
       + `<div class="home-shelves">${shelf('Continue watching', pref('resume') ? recentlyWatched : [], '', true)}
         ${shelf('Recently watched', recentHistory, 'history')}
         ${shelf('Continue reading', recentlyRead().slice(0, 8), 'reading', true)}
         ${state.connected ? remoteNotice() : connectionNotice()}
-        ${editorialGrid('Trending this week', trending.filter(item => item.key !== featuredFilm()?.key).slice(0, 6), '')}
+        ${renderHomeTrending(trending)}
         ${releaseIndex(state.collections.newMovies || [], state.collections.newTV || [])}
         ${shelf('Anime', (state.collections.anime || []).slice(0, 8), 'anime')}
         <section class="editorial-section library-entry"><h2>My Library</h2><nav aria-label="Library">${libraryTabs.map(([page, label]) => `<a class="section-link" href="#${page}">${label} ${icon('arrow')}</a>`).join('')}</nav></section>
         ${footer()}</div>`;
     for (const rail of main.querySelectorAll('.poster-rail')) rail.scrollLeft = scrollPositions.get(rail.parentElement.getAttribute('aria-label')) || 0;
     if (focusKey && focusShelf) main.querySelector(`.shelf[aria-label="${CSS.escape(focusShelf)}"] [data-key="${CSS.escape(focusKey)}"]`)?.focus({ preventScroll: true });
+    if (homeControl) main.querySelector(`[data-action="${homeControl.action}"][data-${homeControl.key ? 'key' : 'value'}="${CSS.escape(homeControl.key || homeControl.value)}"]`)?.focus({ preventScroll: true });
     observeRails();
     syncCardRatings();
     return;
@@ -1108,11 +1122,13 @@ function justWatchSearch(title) {
   return escape(url.href);
 }
 
-function episodeLabel(episode) {
+function episodeLabel(episode, includeRuntime = true) {
   if (!episode) return '';
   const number = episode.number ?? episode.episode_number;
   const season = episode.season ?? episode.season_number;
-  return [Number.isInteger(number) ? Number.isInteger(season) ? `S${season} E${number}` : `Episode ${number}` : '', episode.duration || episode.runtime ? `${episode.duration || episode.runtime} min` : ''].filter(Boolean).join(' · ');
+  const label = Number.isInteger(number) ? Number.isInteger(season) ? `S${season} E${number}` : `Episode ${number}` : '';
+  const duration = episode.duration || episode.runtime;
+  return [label, includeRuntime && duration ? `${duration} min` : ''].filter(Boolean).join(' · ');
 }
 
 function validEpisode(episode) {
@@ -1383,7 +1399,7 @@ function renderEpisodeRows(session) {
   const seen = eligible.filter(entry => watched[entry.key ? `${session.item.key}/${entry.key}` : cineSrcKey(session.item, episodeCoordinates(entry))]).length;
   const progressText = titlePage.querySelector('.season-progress');
   if (progressText) progressText.textContent = eligible.length
-    ? `${seen} of ${eligible.length} watched · ${seen === eligible.length ? 'Season complete' : `${eligible.length - seen} remaining`}` : '';
+    ? `${seen} of ${eligible.length} aired episodes watched${seen === entries.length ? ' · Season complete' : ''}` : '';
 }
 
 function updateEpisodeNavigation(session) {
@@ -1399,23 +1415,24 @@ function updateSeriesTracking(session) {
   const text = titlePage.querySelector('.series-tracking');
   const primary = titlePage.querySelector('[data-action="series-start"]');
   if (!text || !primary) return;
+  const label = primary.querySelector('span');
   const seasons = seriesSeasons(session);
   const total = session.item.episodes?.length || session.details?.number_of_episodes;
   const prefix = `${session.item.key}/`;
   const seen = Object.keys(watched).filter(key => key.startsWith(prefix) && !key.startsWith(`${prefix}cinesrc-s0e`)).length;
   const resume = pref('resume') ? resumeFor(session.item)?.[1] : null;
   const resumeEpisode = resume?.episode || (resume && session.item.episodes?.find(episode => progress[`${prefix}${episode.key}`] === resume));
-  const baseText = [total ? `${seen} of ${total} episodes watched · ${Math.max(0, total - seen)} remaining` : '', resume ? `Resume ${episodeLabel(resumeEpisode)} at ${timeCode(resume.time)}` : ''].filter(Boolean).join(' · ');
+  const baseText = [total ? `${seen} of ${total} episodes watched` : '', resume ? `Resume at ${timeCode(resume.time)}` : ''].filter(Boolean).join(' · ');
   const revision = (session.trackingRevision || 0) + 1;
   session.trackingRevision = revision;
   text.textContent = baseText;
-  primary.textContent = resume ? 'Continue watching' : seen ? 'Play next unwatched' : 'Start watching';
+  label.textContent = resume ? ['Resume', episodeLabel(resumeEpisode, false)].filter(Boolean).join(' ') : seen ? 'Play next unwatched' : 'Start watching';
   primary.disabled = !seasons.length;
   if (resume || !seasons.length) return;
   findSeriesEpisode(session).then(({ first, next }) => {
     if (active !== session || session.trackingRevision !== revision) return;
-    if (next) text.textContent = [baseText, `Next unwatched · ${[episodeLabel(next), next.title].filter(Boolean).join(' · ')}`].filter(Boolean).join(' · ');
-    else if (first) primary.textContent = 'Watch again';
+    if (next) label.textContent = ['Play', episodeLabel(next, false) || next.title].filter(Boolean).join(' ');
+    else if (first) label.textContent = 'Watch again';
     else primary.disabled = true;
   }).catch(() => {});
 }
@@ -1551,6 +1568,8 @@ async function loadTitle(session) {
     session.item.imdb ||= details.external_ids?.imdb_id || details.imdb_id;
     const facts = titlePage.querySelector('.title-facts');
     if (facts) facts.innerHTML = titleFacts(session);
+    const schedule = titlePage.querySelector('.details-schedule');
+    if (schedule) schedule.textContent = titleSchedule(details);
     const byline = titlePage.querySelector('.title-byline');
     if (byline) {
       byline.textContent = titleByline(details);
@@ -1559,9 +1578,17 @@ async function loadTitle(session) {
     const cast = titlePage.querySelector('.cast-section');
     if (cast && (details.credits?.cast?.length || details.credits?.crew?.length)) {
       cast.hidden = false;
+      titlePage.querySelector('[data-value="details-cast"]').hidden = false;
       const crew = details.credits.crew?.filter(person => ['Director', 'Writer', 'Screenplay', 'Director of Photography', 'Original Music Composer', 'Editor'].includes(person.job)).slice(0, 10) || [];
-      const personLink = person => escape(person.name);
-      cast.innerHTML = `<h2>Cast &amp; crew</h2><div class="cast-list">${(details.credits.cast || []).slice(0, 8).map(person => `<div class="cast-person">${person.profile_path ? `<img src="${imagePath(person.profile_path, 'w185')}" alt="" loading="lazy">` : `<span>${icon('user')}</span>`}<strong>${personLink(person)}</strong><small>${escape(person.character)}</small></div>`).join('')}</div>${crew.length ? `<dl class="crew-list">${crew.map(person => `<div><dt>${escape(person.job)}</dt><dd>${personLink(person)}</dd></div>`).join('')}</dl>` : ''}`;
+      const castList = (details.credits.cast || []).slice(0, 8).map(person => {
+        const portrait = imagePath(person.profile_path, 'w185');
+        return `<div class="cast-person">${portrait ? `<img src="${portrait}" alt="" loading="lazy">` : `<span aria-hidden="true">${icon('user')}</span>`}<div><strong>${escape(person.name)}</strong>${person.character ? `<small>${escape(person.character)}</small>` : ''}</div></div>`;
+      });
+      if (castList.length || crew.length) cast.innerHTML = `<h2>Cast &amp; crew</h2>${castList.length ? `<div class="cast-list">${castList.join('')}</div>` : ''}${crew.length ? `<dl class="crew-list">${crew.map(person => `<div><dt>${escape(person.job)}</dt><dd>${escape(person.name)}</dd></div>`).join('')}</dl>` : ''}`;
+      else {
+        cast.hidden = true;
+        titlePage.querySelector('[data-value="details-cast"]').hidden = true;
+      }
     }
     refreshTitleRating(session);
     if (facts && session.item.id && isAnime(session.item.originalLanguage, session.item.genreIds)) {
@@ -3031,9 +3058,10 @@ async function openTitle(item, watch = false, episodeKey, selection = null) {
   const canPlay = resumed || isArchive(item) || (item.type === 'movie' && hasCineSrcTitle(item) && (!item.date || hasReleased(item)));
   const back = `<a class="plain-link title-back" href="${media ? `#${titlePath(item)}` : escape(browseHash)}">${icon('chevron-left')} ${media ? `Back to ${escape(item.title)}` : 'Back to browse'}</a>`;
   const primary = !media && (item.type === 'tv'
-    ? '<button class="button primary" type="button" data-action="series-start" disabled>Start watching</button>'
-    : canPlay ? `<button class="button primary" type="button" data-action="${resumed && pref('resume') ? 'resume' : 'watch'}" data-key="${escape(item.key)}">${icon('play')} ${resumed && pref('resume') ? 'Resume' : 'Watch now'}</button>` : '');
+    ? `<button class="button primary" type="button" data-action="series-start" disabled>${icon('play')} <span>Start watching</span></button>`
+    : canPlay ? `<button class="button primary" type="button" data-action="${resumed && pref('resume') ? 'resume' : 'watch'}" data-key="${escape(item.key)}">${icon('play')} ${resumed && pref('resume') ? 'Resume' : 'Play'}</button>` : '');
   const about = `<p class="title-about"${item.description ? '' : ' hidden'}>${escape(item.description)}</p>`;
+  const hasEpisodes = item.type === 'tv' && !item.archiveId;
   titlePage.classList.toggle('is-playing', Boolean(media));
   titlePage.hidden = false;
   main.hidden = true;
@@ -3041,11 +3069,36 @@ async function openTitle(item, watch = false, episodeKey, selection = null) {
   const watchTitle = `<h1 id="title-heading" tabindex="-1">${escape(episode?.title || item.title)}</h1>`;
   titlePage.innerHTML = `${media
     ? `<div class="sr-only">${watchTitle}</div><div class="watch-stage"><div class="video-box"></div>${playbackNotice}</div>`
-    : `<section class="title-record screen-record">${item.backdrop ? `<div class="record-backdrop" aria-hidden="true"><img src="${escape(item.backdrop)}" alt="" fetchpriority="high"></div>` : ''}${back}<div class="record-copy">${item.poster ? `<img class="record-poster" src="${escape(item.poster)}" alt="">` : ''}<div class="record-information"><h1 id="title-heading" tabindex="-1">${escape(item.title)}</h1><div class="meta title-facts">${titleFacts(session)}</div><div class="watch-actions title-actions">${primary}${saveButton(item)}${watchStatusControl(item)}${item.type === 'movie' ? watchedButton(item) : ''}</div>${item.type === 'tv' ? '<p class="series-tracking" aria-live="polite"></p>' : ''}${about}<p class="title-byline" hidden></p>${ratingControl(item)}</div></div></section>`}
-    <div class="watch-body">
+    : `<section class="details-hero" aria-labelledby="title-heading">
+        ${item.backdrop ? `<div class="record-backdrop" aria-hidden="true"><img src="${escape(item.backdrop)}" alt="" fetchpriority="high"></div>` : ''}
+        <div class="details-hero-inner">
+          <div class="details-back">${back}</div>
+          <div class="details-hero-main">
+            ${!item.backdrop && item.poster ? `<img class="details-poster" src="${escape(item.poster)}" alt="">` : ''}
+            <div class="details-hero-copy">
+              <p class="details-format">${item.type === 'tv' ? 'TV series' : 'Movie'}</p>
+              ${watchTitle}
+              <div class="meta title-facts">${titleFacts(session)}</div>
+              ${about}
+              <p class="title-byline" hidden></p>
+              <div class="watch-actions title-actions">${primary}${saveButton(item)}${watchStatusControl(item)}${item.type === 'movie' ? watchedButton(item) : ''}</div>
+              ${item.type === 'tv' ? `<p class="series-tracking" aria-live="polite"></p><p class="details-schedule">${escape(titleSchedule(session.details))}</p>` : ''}
+            </div>
+          </div>
+          <div class="details-hero-footer">
+            <nav class="details-nav" aria-label="Title sections">
+              ${hasEpisodes ? '<button type="button" data-action="details-section" data-value="details-episodes">Episodes</button>' : ''}
+              <button type="button" data-action="details-section" data-value="details-cast" hidden>Cast &amp; crew</button>
+              <button type="button" data-action="details-section" data-value="details-related" hidden>Related</button>
+            </nav>
+            ${ratingControl(item)}
+          </div>
+        </div>
+      </section>`}
+    <div class="watch-body${media ? '' : ' details-body'}">
       ${media && !episode ? `<div class="title-overview">${about}${ratingControl(item)}</div>` : ''}
-      ${item.type === 'tv' && !item.archiveId ? `<section class="title-episodes episode-list" tabindex="-1" aria-label="Episodes">${episodesMarkup(session)}</section>` : ''}
-      ${!media ? '<section class="cast-section" hidden></section><section class="related-section" hidden></section>' : ''}
+      ${hasEpisodes ? `<section${media ? '' : ' id="details-episodes"'} class="title-episodes episode-list" tabindex="-1" aria-label="Episodes">${episodesMarkup(session)}</section>` : ''}
+      ${!media ? '<section id="details-cast" class="cast-section" tabindex="-1" aria-label="Cast and crew" hidden></section><section id="details-related" class="related-section shelf" tabindex="-1" aria-label="Related titles" hidden></section>' : ''}
       ${watchSource}
     </div>`;
 
@@ -3067,7 +3120,10 @@ async function loadRelated(session) {
     const related = results.map(localizeTitle).filter(item => item.key !== session.item.key).slice(0, 6);
     if (!section || !related.length) return;
     section.hidden = false;
-    section.innerHTML = `<h2>${session.item.type === 'tv' ? 'Related series' : 'Related films'}</h2>${grid(related)}`;
+    titlePage.querySelector('[data-value="details-related"]').hidden = false;
+    const title = session.item.type === 'tv' ? 'Related series' : 'Related films';
+    section.innerHTML = `<div class="section-head"><h2>${title}</h2>${railControls(title)}</div><div class="poster-rail">${related.map(item => titleCard(item)).join('')}</div>`;
+    observeRails(section);
     syncCardRatings(section);
   } catch { /* Recommendations are optional. */ }
 }
@@ -3085,14 +3141,20 @@ function titleFacts(session) {
   const duration = details?.runtime || item.duration;
   const genres = details?.genres?.slice(0, 3).map(genre => genre.name).join(' · ') || meta(item)[1];
   const seasons = details?.number_of_seasons ? `${details.number_of_seasons} ${details.number_of_seasons === 1 ? 'season' : 'seasons'}` : '';
-  const upcoming = details?.next_episode_to_air;
-  const upcomingDate = upcoming?.air_date >= new Date().toISOString().slice(0, 10) ? formatReleaseDate(upcoming.air_date) : '';
-  const nextEpisode = upcomingDate ? `Next episode ${episodeLabel(upcoming)} · Scheduled for ${upcomingDate}` : '';
-  const scheduledSeason = details?.seasons?.filter(entry => entry.season_number > 0 && entry.air_date > new Date().toISOString().slice(0, 10)).sort((a, b) => a.air_date.localeCompare(b.air_date))[0];
-  const seasonDate = formatReleaseDate(scheduledSeason?.air_date);
-  const nextSeason = seasonDate ? `Season ${scheduledSeason.season_number} · Scheduled for ${seasonDate}` : '';
-  const facts = item.type === 'tv' ? [date, seasons, seriesStatus(details?.status), genres, nextEpisode, nextSeason] : [date, duration ? `${duration} min` : '', genres];
+  const facts = item.type === 'tv' ? [date, seasons, seriesStatus(details?.status), genres] : [date, duration ? `${duration} min` : '', genres];
   return `${facts.filter(Boolean).map(value => `<span>${escape(value)}</span>`).join('')}${ratingBadge(item)}${imdbVotes(item)}${session.malRating ? `<span class="catalog-score">MAL ${session.malRating.toFixed(2)}</span>` : ''}`;
+}
+
+function titleSchedule(details) {
+  const today = new Date().toISOString().slice(0, 10);
+  const upcoming = details?.next_episode_to_air;
+  const upcomingDate = upcoming?.air_date >= today ? formatReleaseDate(upcoming.air_date) : '';
+  const scheduledSeason = details?.seasons?.filter(season => season.season_number > 0 && season.air_date > today).sort((a, b) => a.air_date.localeCompare(b.air_date))[0];
+  const seasonDate = formatReleaseDate(scheduledSeason?.air_date);
+  const nextEpisode = upcomingDate ? `${episodeLabel(upcoming, false) || 'Next episode'} airs ${upcomingDate}` : '';
+  const nextSeason = seasonDate && (!nextEpisode || scheduledSeason.season_number !== upcoming.season_number)
+    ? `Season ${scheduledSeason.season_number} premieres ${seasonDate}` : '';
+  return [nextEpisode, nextSeason].filter(Boolean).join(' · ');
 }
 
 function titleByline(details) {
@@ -3500,6 +3562,25 @@ document.addEventListener('click', event => {
     rememberBrowseFilters();
     refreshCatalog();
     main.querySelector(`[data-value="${CSS.escape(value)}"]`)?.focus({ preventScroll: true });
+  }
+  if (action === 'home-feature' && state.page === 'home' && item) {
+    state.featuredKey = key;
+    render();
+  }
+  if (action === 'home-trending' && state.page === 'home' && ['all', 'movie', 'tv'].includes(value)) {
+    state.homeTrending = value;
+    const rail = control.closest('.shelf').querySelector('.poster-rail');
+    if (rail) rail.scrollLeft = 0;
+    render();
+  }
+  if (action === 'details-section' && active && !active.media) {
+    const section = titlePage.querySelector(`#${CSS.escape(value)}`);
+    if (section && !section.hidden) {
+      titlePage.querySelector('.details-nav [aria-current]')?.removeAttribute('aria-current');
+      control.setAttribute('aria-current', 'location');
+      section.focus({ preventScroll: true });
+      section.scrollIntoView({ block: 'start', behavior: 'instant' });
+    }
   }
   if (action === 'rail' && control.getAttribute('aria-disabled') !== 'true') {
     const rail = control.closest('.shelf').querySelector('.poster-rail');
