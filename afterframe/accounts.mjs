@@ -1,38 +1,12 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { DatabaseSync } from 'node:sqlite';
-import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { comicChapterIdPattern, comicIdPattern } from './public/comic-ids.js';
 import { preferenceDefaults } from './public/playback.js';
 import { ratingOnTen, watchStatuses, watchStatus } from './public/library.js';
-import { migrateAccounts } from './account-migrations.mjs';
+import { openAccountStorage } from './account-storage.mjs';
 
-const directory = new URL('./data/', import.meta.url);
-mkdirSync(directory, { recursive: true });
-const db = new DatabaseSync(process.env.AFTERFRAME_DB || fileURLToPath(new URL('accounts.sqlite', directory)));
-db.exec(`
-  PRAGMA foreign_keys = ON;
-  PRAGMA busy_timeout = 3000;
-  CREATE TABLE IF NOT EXISTS accounts (
-    id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
-    salt TEXT NOT NULL, password_hash TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS sessions (
-    token_hash TEXT PRIMARY KEY, account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    expires INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS library (
-    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
-    PRIMARY KEY (account_id, kind, key)
-  );
-  CREATE TABLE IF NOT EXISTS provider_credentials (
-    provider TEXT PRIMARY KEY, credential TEXT NOT NULL
-  );
-`);
-
-migrateAccounts(db);
+const db = await openAccountStorage();
+export const accountStorageHealth = db.health;
 
 const hashPassword = promisify(scrypt);
 const work = { N: 2 ** 17, r: 8, p: 1, maxmem: 160 * 1024 ** 2 };
@@ -43,36 +17,58 @@ const cookieFlags = `Path=/; HttpOnly; SameSite=Strict${process.env.AFTERFRAME_O
 let hashing = false;
 const attempts = new Map();
 
-const accountByName = db.prepare('SELECT * FROM accounts WHERE username = ?');
-const addAccount = db.prepare('INSERT INTO accounts (username, salt, password_hash) VALUES (?, ?, ?)');
+const accountByName = db.prepare('SELECT * FROM accounts WHERE username = ?', 'SELECT * FROM accounts WHERE lower(username) = lower(?)');
+const addAccount = db.prepare('INSERT INTO accounts (username, salt, password_hash) VALUES (?, ?, ?) ON CONFLICT DO NOTHING RETURNING id');
 const addSession = db.prepare('INSERT INTO sessions (token_hash, account_id, expires) VALUES (?, ?, ?)');
 const removeSession = db.prepare('DELETE FROM sessions WHERE token_hash = ?');
 const removeAccountSessions = db.prepare('DELETE FROM sessions WHERE account_id = ?');
+const removeOtherSessions = db.prepare('DELETE FROM sessions WHERE account_id = ? AND token_hash <> ?');
 const updatePassword = db.prepare('UPDATE accounts SET salt = ?, password_hash = ? WHERE id = ?');
 const createRecovery = db.prepare('INSERT INTO recovery_codes VALUES (?, ?) ON CONFLICT(account_id) DO UPDATE SET code_hash = excluded.code_hash');
 const consumeRecovery = db.prepare('DELETE FROM recovery_codes WHERE account_id = ? AND code_hash = ?');
 const expireSessions = db.prepare('DELETE FROM sessions WHERE expires <= ?');
 const sessionAccount = db.prepare('SELECT accounts.id, accounts.username FROM sessions JOIN accounts ON accounts.id = sessions.account_id WHERE token_hash = ? AND expires > ?');
-const listLibrary = db.prepare('SELECT kind, key, value FROM library WHERE account_id = ? ORDER BY rowid');
+const listLibrary = db.prepare('SELECT kind, key, value FROM library WHERE account_id = ? ORDER BY rowid',
+  'SELECT kind, key, value FROM library WHERE account_id = ? ORDER BY sequence');
 const setEntry = db.prepare('INSERT INTO library (account_id, kind, key, value) VALUES (?, ?, ?, ?) ON CONFLICT (account_id, kind, key) DO UPDATE SET value = excluded.value');
 const removeEntry = db.prepare('DELETE FROM library WHERE account_id = ? AND kind = ? AND key = ?');
 const getEntry = db.prepare('SELECT value FROM library WHERE account_id = ? AND kind = ? AND key = ?');
 const getVersion = db.prepare('SELECT updated FROM playback_versions WHERE account_id = ? AND kind = ? AND key = ?');
-const setVersion = db.prepare('INSERT INTO playback_versions VALUES (?, ?, ?, ?) ON CONFLICT(account_id,kind,key) DO UPDATE SET updated = max(playback_versions.updated, excluded.updated)');
-const followedSeries = db.prepare(`SELECT account_id, value FROM library WHERE kind = 'saved' AND json_extract(value, '$.type') = 'tv'`);
+const versionSql = 'INSERT INTO playback_versions VALUES (?, ?, ?, ?) ON CONFLICT(account_id,kind,key) DO UPDATE SET updated = ';
+const setVersion = db.prepare(versionSql + 'max(playback_versions.updated, excluded.updated)',
+  versionSql + 'greatest(playback_versions.updated, excluded.updated)');
+const setWatchedEpisodes = db.prepare(
+  `INSERT INTO library (account_id, kind, key, value)
+   SELECT ?, 'watched', value, ? FROM json_each(?) WHERE true ON CONFLICT DO NOTHING`,
+  `INSERT INTO library (account_id, kind, key, value)
+   SELECT ?, 'watched', key, ? FROM jsonb_array_elements_text(?::jsonb) AS episodes(key) ON CONFLICT DO NOTHING`);
+const clearEpisodeProgress = db.prepare(
+  `DELETE FROM library WHERE account_id = ? AND kind = 'progress' AND key IN (SELECT value FROM json_each(?))`,
+  `DELETE FROM library WHERE account_id = ? AND kind = 'progress' AND key IN (SELECT jsonb_array_elements_text(?::jsonb))`);
+const setEpisodeVersions = db.prepare(
+  `INSERT INTO playback_versions (account_id, kind, key, updated)
+   SELECT ?, kinds.column1, episodes.value, ? FROM json_each(?) AS episodes CROSS JOIN (VALUES ('watched'), ('progress')) AS kinds
+   WHERE true ON CONFLICT (account_id, kind, key) DO UPDATE SET updated = max(playback_versions.updated, excluded.updated)`,
+  `INSERT INTO playback_versions (account_id, kind, key, updated)
+   SELECT ?, kinds.kind, episodes.key, ? FROM jsonb_array_elements_text(?::jsonb) AS episodes(key)
+   CROSS JOIN (VALUES ('watched'), ('progress')) AS kinds(kind)
+   ON CONFLICT (account_id, kind, key) DO UPDATE SET updated = greatest(playback_versions.updated, excluded.updated)`);
+const followedSeries = db.prepare(`SELECT account_id, value FROM library WHERE kind = 'saved' AND json_extract(value, '$.type') = 'tv'`,
+  `SELECT account_id, value FROM library WHERE kind = 'saved' AND value::jsonb->>'type' = 'tv'`);
 const getReleaseSnapshot = db.prepare('SELECT value FROM release_snapshots WHERE series_id = ?');
 const setReleaseSnapshot = db.prepare('INSERT INTO release_snapshots VALUES (?, ?) ON CONFLICT(series_id) DO UPDATE SET value = excluded.value');
-const addNotification = db.prepare('INSERT OR IGNORE INTO library (account_id, kind, key, value) VALUES (?, \'notifications\', ?, ?)');
+const addNotification = db.prepare(`INSERT INTO library (account_id, kind, key, value)
+  VALUES (?, 'notifications', ?, ?) ON CONFLICT DO NOTHING`);
 const readProviderCredential = db.prepare('SELECT credential FROM provider_credentials WHERE provider = ?');
 const writeProviderCredential = db.prepare(`INSERT INTO provider_credentials (provider, credential) VALUES (?, ?)
   ON CONFLICT (provider) DO UPDATE SET credential = excluded.credential`);
 
-export function providerCredential(provider) {
-  return readProviderCredential.get(provider)?.credential;
+export async function providerCredential(provider) {
+  return (await readProviderCredential.get(provider))?.credential;
 }
 
 export function saveProviderCredential(provider, credential) {
-  writeProviderCredential.run(provider, credential);
+  return writeProviderCredential.run(provider, credential);
 }
 
 function hashToken(token) {
@@ -83,20 +79,20 @@ function sessionToken(request) {
   return request.headers.cookie?.match(/(?:^|;\s*)afterframe_session=([a-f0-9]{64})(?:;|$)/)?.[1];
 }
 
-export function currentAccount(request) {
+export async function currentAccount(request) {
   const token = sessionToken(request);
-  return token ? sessionAccount.get(hashToken(token), Date.now()) ?? null : null;
+  return token ? (await sessionAccount.get(hashToken(token), Date.now())) ?? null : null;
 }
 
-export function readLibrary(id) {
+export async function readLibrary(id) {
   const result = Object.fromEntries(['saved', 'progress', 'reading', 'ratings', 'skips', 'watched', 'preferences', 'history', 'notifications'].map(kind => [kind, Object.create(null)]));
-  for (const row of listLibrary.all(id)) result[row.kind][row.key] = JSON.parse(row.value);
+  for (const row of await listLibrary.all(id)) result[row.kind][row.key] = JSON.parse(row.value);
   return result;
 }
 
-export function releaseTargets() {
+export async function releaseTargets() {
   const targets = new Map();
-  for (const row of followedSeries.all()) {
+  for (const row of await followedSeries.all()) {
     const item = JSON.parse(row.value);
     if (!Number.isSafeInteger(item.id) || item.id <= 0 || watchStatus(item) === 'dropped') continue;
     if (!targets.has(item.id)) targets.set(item.id, []);
@@ -106,28 +102,26 @@ export function releaseTargets() {
 }
 
 export function storeReleaseEvents(seriesId, followers, makeEvents) {
-  db.exec('BEGIN IMMEDIATE');
-  try {
-    const previous = JSON.parse(getReleaseSnapshot.get(seriesId)?.value ?? 'null');
+  return db.transaction(async () => {
+    await db.lockRelease(seriesId);
+    const previous = await releaseSnapshot(seriesId);
     const { snapshot, events } = makeEvents(previous);
-    for (const { accountId, title, watchKey } of followers) {
-      const followed = getEntry.get(accountId, 'saved', watchKey ?? `tv-${seriesId}`);
+    for (const { accountId, title, watchKey } of [...followers].sort((a, b) => a.accountId - b.accountId)) {
+      if (!events.length) break;
+      await db.lockAccount(accountId);
+      const followed = await getEntry.get(accountId, 'saved', watchKey ?? `tv-${seriesId}`);
       if (!followed || watchStatus(JSON.parse(followed.value)) === 'dropped') continue;
       for (const { key, message, preference, source } of events) {
-        if (getEntry.get(accountId, 'preferences', preference)?.value === 'false') continue;
-        addNotification.run(accountId, key, JSON.stringify({ seriesId, title, message, source, created: Date.now(), read: false }));
+        if ((await getEntry.get(accountId, 'preferences', preference))?.value === 'false') continue;
+        await addNotification.run(accountId, key, JSON.stringify({ seriesId, title, message, source, created: Date.now(), read: false }));
       }
     }
-    if (snapshot) setReleaseSnapshot.run(seriesId, JSON.stringify(snapshot));
-    db.exec('COMMIT');
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
-  }
+    if (snapshot) await setReleaseSnapshot.run(seriesId, JSON.stringify(snapshot));
+  });
 }
 
-export function releaseSnapshot(seriesId) {
-  return JSON.parse(getReleaseSnapshot.get(seriesId)?.value ?? 'null');
+export async function releaseSnapshot(seriesId) {
+  return JSON.parse((await getReleaseSnapshot.get(seriesId))?.value ?? 'null');
 }
 
 function status(code, error) {
@@ -187,15 +181,15 @@ function libraryValue(kind, value, key) {
 }
 
 export async function accountApi(request, response, path, body) {
-  const account = currentAccount(request);
+  const account = await currentAccount(request);
   if (path === '/api/account' && request.method === 'GET') {
-    return { code: 200, body: { account, library: account ? readLibrary(account.id) : null } };
+    return { code: 200, body: { account, library: account ? await readLibrary(account.id) : null } };
   }
   if (request.method !== 'POST') return status(405, 'Method unavailable.');
 
   if (path === '/api/account/signout') {
     const token = sessionToken(request);
-    if (token) removeSession.run(hashToken(token));
+    if (token) await removeSession.run(hashToken(token));
     response.setHeader('Set-Cookie', `${cookie}=; ${cookieFlags}; Max-Age=0`);
     return { code: 200, body: { account: null } };
   }
@@ -204,15 +198,15 @@ export async function accountApi(request, response, path, body) {
     if (!account) return status(401, 'Sign in first.');
     if (path.endsWith('/recovery-code')) {
       const code = randomBytes(24).toString('hex');
-      createRecovery.run(account.id, hashToken(code));
+      await createRecovery.run(account.id, hashToken(code));
       return { code: 200, body: { code } };
     }
     if (path.endsWith('/revoke-other')) {
-      db.prepare('DELETE FROM sessions WHERE account_id = ? AND token_hash <> ?').run(account.id, hashToken(sessionToken(request)));
+      await removeOtherSessions.run(account.id, hashToken(sessionToken(request)));
     } else {
       if (typeof body?.key !== 'string' || !/^[\w-]{1,100}$/.test(body.key)) return status(400, 'Invalid notification.');
-      const entry = getEntry.get(account.id, 'notifications', body.key);
-      if (entry) setEntry.run(account.id, 'notifications', body.key, JSON.stringify({ ...JSON.parse(entry.value), read: true }));
+      const entry = await getEntry.get(account.id, 'notifications', body.key);
+      if (entry) await setEntry.run(account.id, 'notifications', body.key, JSON.stringify({ ...JSON.parse(entry.value), read: true }));
     }
     return { code: 200, body: { ok: true } };
   }
@@ -227,26 +221,20 @@ export async function accountApi(request, response, path, body) {
     const timestamped = ['progress', 'reading', 'watched', 'history'].includes(kind);
     const now = Date.now();
     const timestamp = Math.min(Number.isSafeInteger(at) ? at : entry?.updated || now, now + 60000);
-    if (timestamped) db.exec('BEGIN IMMEDIATE');
-    try {
+    return db.transaction(async () => {
+      await db.lockAccount(account.id);
       if (timestamped) {
-        const previous = getVersion.get(account.id, kind, key)?.updated ?? JSON.parse(getEntry.get(account.id, kind, key)?.value || 'null')?.updated ?? 0;
+        const version = await getVersion.get(account.id, kind, key);
+        const previous = version ? Number(version.updated) : JSON.parse((await getEntry.get(account.id, kind, key))?.value || 'null')?.updated ?? 0;
         if (timestamp < previous) {
-          db.exec('ROLLBACK');
           return { code: 200, body: { ok: true, stale: true } };
         }
       }
-      if (entry === null) removeEntry.run(account.id, kind, key);
-      else setEntry.run(account.id, kind, key, JSON.stringify(entry));
-      if (timestamped) {
-        setVersion.run(account.id, kind, key, timestamp);
-        db.exec('COMMIT');
-      }
-    } catch (error) {
-      if (timestamped) db.exec('ROLLBACK');
-      throw error;
-    }
-    return { code: 200, body: { ok: true } };
+      if (entry === null) await removeEntry.run(account.id, kind, key);
+      else await setEntry.run(account.id, kind, key, JSON.stringify(entry));
+      if (timestamped) await setVersion.run(account.id, kind, key, timestamp);
+      return { code: 200, body: { ok: true } };
+    });
   }
 
   if (path === '/api/account/complete-series') {
@@ -255,29 +243,24 @@ export async function accountApi(request, response, path, body) {
     const key = item?.key;
     if (accountId !== account.id || item?.type !== 'tv' || typeof key !== 'string' || !/^[\w.-]{1,100}$/.test(key)
       || !Array.isArray(episodes) || episodes.length > 10000 || !episodes.every(episode => typeof episode === 'string' && /^[\w-]{1,40}$/.test(episode))) return status(400, 'Invalid series completion.');
-    const existing = getEntry.get(account.id, 'saved', key);
-    if (!existing) return status(409, 'Save the series before completing it.');
-    const previous = JSON.parse(existing.value);
-    if (previous.type !== 'tv') return status(400, 'This title is not a series.');
-    const updated = Date.now();
-    const saved = { ...previous, totalEpisodes: item.totalEpisodes || previous.totalEpisodes, watchStatus: 'completed', completedAt: updated };
-    const entry = { item: saved, updated };
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      setEntry.run(account.id, 'saved', key, JSON.stringify(saved));
-      for (const episode of new Set(episodes)) {
-        const mediaKey = `${key}/${episode}`;
-        if (!getEntry.get(account.id, 'watched', mediaKey)) setEntry.run(account.id, 'watched', mediaKey, JSON.stringify(entry));
-        setVersion.run(account.id, 'watched', mediaKey, updated);
-        removeEntry.run(account.id, 'progress', mediaKey);
-        setVersion.run(account.id, 'progress', mediaKey, updated);
+    return db.transaction(async () => {
+      await db.lockAccount(account.id);
+      const existing = await getEntry.get(account.id, 'saved', key);
+      if (!existing) return status(409, 'Save the series before completing it.');
+      const previous = JSON.parse(existing.value);
+      if (previous.type !== 'tv') return status(400, 'This title is not a series.');
+      const updated = Date.now();
+      const saved = { ...previous, totalEpisodes: item.totalEpisodes || previous.totalEpisodes, watchStatus: 'completed', completedAt: updated };
+      const entry = JSON.stringify({ item: saved, updated });
+      await setEntry.run(account.id, 'saved', key, JSON.stringify(saved));
+      if (episodes.length) {
+        const mediaKeys = JSON.stringify([...new Set(episodes)].map(episode => `${key}/${episode}`));
+        await setWatchedEpisodes.run(account.id, entry, mediaKeys);
+        await clearEpisodeProgress.run(account.id, mediaKeys);
+        await setEpisodeVersions.run(account.id, updated, mediaKeys);
       }
-      db.exec('COMMIT');
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw error;
-    }
-    return { code: 200, body: { saved, updated } };
+      return { code: 200, body: { saved, updated } };
+    });
   }
 
   if (!['/api/account/create', '/api/account/signin', '/api/account/reset'].includes(path)) return status(404, 'Account action unavailable.');
@@ -297,43 +280,51 @@ export async function accountApi(request, response, path, body) {
     entry.count++;
     attempts.set(key, entry);
   }
-  const existing = accountByName.get(username);
+  const existing = await accountByName.get(username);
   const creating = path.endsWith('/create');
   const resetting = path.endsWith('/reset');
   if (creating && process.env.AFTERFRAME_REGISTRATION === 'closed') return status(403, 'Registration is closed on this installation.');
   if (creating && existing) return status(409, 'That username is already in use.');
   const salt = creating || resetting ? randomBytes(24).toString('hex') : existing?.salt || guestSalt;
   let passwordHash;
+  if (hashing) return status(429, 'An account request is in progress. Try again in a moment.');
   hashing = true;
   try { passwordHash = await hashPassword(password, salt, 64, work); } finally { hashing = false; }
   if (resetting) {
     const code = typeof body.code === 'string' && /^[a-f0-9]{48}$/i.test(body.code) ? body.code.toLowerCase() : '';
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      if (!existing || !code || !consumeRecovery.run(existing.id, hashToken(code)).changes) {
-        db.exec('ROLLBACK');
-        return status(400, 'The username or recovery code is invalid.');
-      }
-      updatePassword.run(salt, passwordHash.toString('hex'), existing.id);
-      removeAccountSessions.run(existing.id);
-      db.exec('COMMIT');
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw error;
-    }
+    if (!existing || !code) return status(400, 'The username or recovery code is invalid.');
+    const reset = await db.transaction(async () => {
+      await db.lockAccount(existing.id);
+      if (!(await consumeRecovery.run(existing.id, hashToken(code))).changes) return false;
+      await updatePassword.run(salt, passwordHash.toString('hex'), existing.id);
+      await removeAccountSessions.run(existing.id);
+      return true;
+    });
+    if (!reset) return status(400, 'The username or recovery code is invalid.');
     attempts.delete(limitKey);
     return { code: 200, body: { ok: true } };
   }
   if (!creating && (!existing || !timingSafeEqual(passwordHash, Buffer.from(existing.password_hash, 'hex')))) return status(401, 'Username or password is incorrect.');
-  if (creating && accountByName.get(username)) return status(409, 'That username is already in use.');
-  const user = creating ? { id: Number(addAccount.run(username, salt, passwordHash.toString('hex')).lastInsertRowid), username }
-    : { id: existing.id, username: existing.username };
   const previous = sessionToken(request);
-  if (previous) removeSession.run(hashToken(previous));
   const token = randomBytes(32).toString('hex');
-  expireSessions.run(Date.now());
-  addSession.run(hashToken(token), user.id, Date.now() + maxAge * 1000);
+  await expireSessions.run(Date.now());
+  const user = await db.transaction(async () => {
+    let record;
+    if (creating) {
+      record = await addAccount.get(username, salt, passwordHash.toString('hex'));
+      if (!record) return null;
+      record.username = username;
+    } else {
+      await db.lockAccount(existing.id);
+      record = await accountByName.get(username);
+      if (record?.password_hash !== existing.password_hash || record?.salt !== existing.salt) return null;
+    }
+    if (previous) await removeSession.run(hashToken(previous));
+    await addSession.run(hashToken(token), record.id, Date.now() + maxAge * 1000);
+    return { id: record.id, username: record.username };
+  });
+  if (!user) return creating ? status(409, 'That username is already in use.') : status(401, 'Username or password is incorrect.');
   attempts.delete(limitKey);
   response.setHeader('Set-Cookie', `${cookie}=${token}; ${cookieFlags}; Max-Age=${maxAge}`);
-  return { code: creating ? 201 : 200, body: { account: user, library: readLibrary(user.id) } };
+  return { code: creating ? 201 : 200, body: { account: user, library: await readLibrary(user.id) } };
 }

@@ -20,7 +20,7 @@ Run the automated tests with `npm test` from the `afterframe` directory.
 
 ## React preview
 
-Home, search suggestions, and movie and series Details are available in a separate React frontend. The video player and other screens open under `/legacy/` on the same origin, so both interfaces share the same session and guest library.
+The React frontend includes Home, Movies, TV Shows, Anime, Comics, release listings, recommendations, search, title details and My Library. The video player, comic reader, settings and account screens open under `/legacy/` on the same origin, so both interfaces share the same session and guest library.
 
 Start the existing API from `afterframe` with `npm start`. In another terminal, run:
 
@@ -31,6 +31,39 @@ npm run dev
 ```
 
 Open [localhost:5174](http://localhost:5174/). Set `AFTERFRAME_API_URL` before starting Vite if the API uses a port other than 4173. Run `npm run build` in `apps/web` to type-check and build the frontend. If `apps/web/dist/index.html` exists when Node starts, the React build opens on the API server's main address and the classic interface remains at `/legacy/`. Use `AFTERFRAME_WEB_DIST` to select a different build directory.
+
+## Run with Docker Compose
+
+From the repository root, build and start the web frontend, API and PostgreSQL.
+
+```sh
+docker compose up -d --build --wait
+```
+
+Open [localhost:4173](http://localhost:4173/). If you already use `afterframe/.env` for catalog keys, run `docker compose --env-file afterframe/.env up -d --build --wait` to pass those keys to the API. Set `AFTERFRAME_PORT` if port 4173 is in use.
+
+Only the web port is published, on the local loopback interface. The web service proxies API, playback and reader requests over the Compose network. PostgreSQL stores signed-in accounts and library data in the `postgres-data` volume, which persists across container restarts and ordinary `docker compose down`.
+
+## Deploy to Railway
+
+Create two GitHub-backed services from the repository root named `web` and `api`, plus a PostgreSQL service named `Postgres`. Use the branch that contains the deployment configuration for both GitHub services. Add a public HTTPS domain to `web` and keep `api` and `Postgres` on the private network. Both app services use the root Dockerfile and `/api/health`.
+
+| Service | Variables |
+| --- | --- |
+| `web` | `AFTERFRAME_SERVICE=web`, `PORT=8080`, `AFTERFRAME_API_URL=http://${{api.RAILWAY_PRIVATE_DOMAIN}}:8080`, `AFTERFRAME_ORIGIN=https://your-public-domain` |
+| `api` | `AFTERFRAME_SERVICE=api`, `PORT=8080`, `AFTERFRAME_ORIGIN=https://your-public-domain`, `AFTERFRAME_ACCOUNTS_DATABASE_URL=${{Postgres.DATABASE_URL}}`, `DATABASE_URL=${{Postgres.DATABASE_URL}}` |
+
+Replace `https://your-public-domain` with the same HTTPS origin on both services. Set the catalog and rating credentials on the API service using the environment variable names below. Test the public URL from a second device. Sign in, save a title, reload the page and confirm that it remains in My Library. Sign in with the same test account on another device to check that the saved title appears there.
+
+## Move an existing account library to PostgreSQL
+
+The Node-only setup uses SQLite unless `AFTERFRAME_ACCOUNTS_DATABASE_URL` is set. `DATABASE_URL` independently enables the metadata cache. For an existing installation, stop writes to the SQLite source and take a database snapshot. Set `AFTERFRAME_ACCOUNTS_DATABASE_URL` in the shell to a reachable, empty Afterframe PostgreSQL database and run this from `afterframe`.
+
+```sh
+npm run import:accounts -- /path/to/accounts-snapshot.sqlite
+```
+
+The import retains account IDs, password hashes, libraries, playback preferences, recovery codes and release history. Sign in again on the destination and configure its integration keys through environment variables. The SQLite snapshot stays available for rollback.
 
 ## Library, search and releases
 
@@ -54,7 +87,7 @@ Point availability checks at `GET /api/health`. In HTTPS mode, API request logs 
 - **MyAnimeList** supplies anime and manga scores for titles with a verified MAL mapping. Set `MAL_CLIENT_ID` in `afterframe/.env` with a Client ID from your registered MyAnimeList application. [MyAnimeList API](https://myanimelist.net/apiconfig)
 - **PostgreSQL** is optional. Set `DATABASE_URL` in `afterframe/.env` to persist the metadata cache. Afterframe creates its cache table on first use and periodically refreshes recently expired records. It also reads `afterframe/data/metadata-pg.env` when present. Without PostgreSQL, metadata is cached in memory.
 
-API keys saved in Settings survive restarts and apply to all local profiles. They take precedence over `TMDB_READ_TOKEN`, `TMDB_API_KEY`, and `OMDB_API_KEY` in `afterframe/.env`. Accounts, API keys, personal ratings, and viewing history are stored in `afterframe/data/accounts.sqlite`. Git ignores the environment files and data directory.
+API keys saved in Settings survive restarts and apply to all local profiles. They take precedence over `TMDB_READ_TOKEN`, `TMDB_API_KEY`, and `OMDB_API_KEY` in `afterframe/.env`. With the default SQLite setup, accounts, API keys, personal ratings, and viewing history are stored in `afterframe/data/accounts.sqlite`. Git ignores environment files and the data directory.
 
 Afterframe uses Inter for interface text and Instrument Sans for display text. The display font stack also accepts Founders Grotesk when it is available in the browser.
 

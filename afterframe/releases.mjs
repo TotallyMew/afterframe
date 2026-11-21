@@ -44,7 +44,7 @@ export function monitorReleases(loadDetails, canLoad, loadSeason) {
     if (running) return;
     running = true;
     try {
-      const targets = releaseTargets();
+      const targets = await releaseTargets();
       const series = [...targets.keys()].sort((a, b) => a - b);
       const announcements = await verifiedAnnouncements().catch(() => {
         console.error('Unable to load the verified announcement feed.');
@@ -53,7 +53,7 @@ export function monitorReleases(loadDetails, canLoad, loadSeason) {
       for (const { seriesId, season, source } of announcements) {
         const followers = targets.get(seriesId);
         if (!followers) continue;
-        storeReleaseEvents(seriesId, followers, previous => ({ snapshot: previous, events: [
+        await storeReleaseEvents(seriesId, followers, previous => ({ snapshot: previous, events: [
           { key: `verified-${seriesId}-s${season}`, message: `Season ${season} was announced.`, preference: 'notifySeasonSchedules', source },
         ] }));
       }
@@ -64,11 +64,11 @@ export function monitorReleases(loadDetails, canLoad, loadSeason) {
           const details = await loadDetails(seriesId);
           const now = new Date();
           const last = details.last_episode_to_air;
-          const baseline = releaseSnapshot(seriesId);
+          const baseline = await releaseSnapshot(seriesId);
           const change = releaseEvents(seriesId, last, baseline, now);
           const crossedMultiple = change.events.length && last.episode_number > (last.season_number === baseline.season ? baseline.episode + 1 : 1);
           const confirmed = crossedMultiple ? (await loadSeason(seriesId, last.season_number).catch(() => null))?.episodes || [] : [];
-          storeReleaseEvents(seriesId, targets.get(seriesId), previous => releaseEvents(seriesId, last, previous, now, confirmed));
+          await storeReleaseEvents(seriesId, targets.get(seriesId), previous => releaseEvents(seriesId, last, previous, now, confirmed));
         } catch { /* Keep the previous baseline on a provider failure. */ }
       }
       cursor += 20;

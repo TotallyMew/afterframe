@@ -83,7 +83,10 @@ test('the SQLite migration doubles legacy ratings exactly once', () => {
 
 test('playback conflicts, release deduplication and one-time recovery', async () => {
   const oldDatabase = process.env.AFTERFRAME_DB;
+  const oldPostgres = process.env.AFTERFRAME_ACCOUNTS_DATABASE_URL;
   process.env.AFTERFRAME_DB = ':memory:';
+  if (process.env.AFTERFRAME_TEST_POSTGRES_URL) process.env.AFTERFRAME_ACCOUNTS_DATABASE_URL = process.env.AFTERFRAME_TEST_POSTGRES_URL;
+  else delete process.env.AFTERFRAME_ACCOUNTS_DATABASE_URL;
   let accountApi, readLibrary, storeReleaseEvents, releaseEvents;
   try {
     ({ accountApi, readLibrary, storeReleaseEvents } = await import('./accounts.mjs'));
@@ -91,6 +94,8 @@ test('playback conflicts, release deduplication and one-time recovery', async ()
   } finally {
     if (oldDatabase === undefined) delete process.env.AFTERFRAME_DB;
     else process.env.AFTERFRAME_DB = oldDatabase;
+    if (oldPostgres === undefined) delete process.env.AFTERFRAME_ACCOUNTS_DATABASE_URL;
+    else process.env.AFTERFRAME_ACCOUNTS_DATABASE_URL = oldPostgres;
   }
   let cookie;
   const response = { setHeader: (_, value) => { cookie = value.split(';')[0]; } };
@@ -119,7 +124,7 @@ test('playback conflicts, release deduplication and one-time recovery', async ()
   assert.equal(Object.values(library.history)[0].coverage, 44);
   const completion = await call('complete-series', { accountId, item, episodes: ['s1e1', 's1e2'] }, firstSession);
   assert.equal(completion.code, 200);
-  const completed = readLibrary(accountId);
+  const completed = await readLibrary(accountId);
   assert.equal(completed.saved[item.key].watchStatus, 'completed');
   assert.equal(Object.hasOwn(completed.watched, `${item.key}/s1e1`), true);
   assert.equal(Object.hasOwn(completed.watched, `${item.key}/s1e2`), true);
@@ -131,10 +136,10 @@ test('playback conflicts, release deduplication and one-time recovery', async ()
   const fresh = { season_number: 2, episode_number: 2, air_date: '2025-11-06' };
   const season = [{ ...fresh, episode_number: 1, air_date: '2025-11-04' }, { ...fresh, episode_number: 3, air_date: '2025-12-01' }];
   const followers = [{ accountId, title: item.title }];
-  storeReleaseEvents(item.id, followers, previous => releaseEvents(item.id, old, previous, date));
+  await storeReleaseEvents(item.id, followers, previous => releaseEvents(item.id, old, previous, date));
   await write('preferences', 'notifySeasonStarts', false);
-  for (let i = 0; i < 2; i++) storeReleaseEvents(item.id, followers, previous => releaseEvents(item.id, fresh, previous, date, season));
-  assert.deepEqual(Object.keys(readLibrary(accountId).notifications), ['tmdb-8001-s2e1', 'tmdb-8001-s2e2']);
+  for (let i = 0; i < 2; i++) await storeReleaseEvents(item.id, followers, previous => releaseEvents(item.id, fresh, previous, date, season));
+  assert.deepEqual(Object.keys((await readLibrary(accountId)).notifications), ['tmdb-8001-s2e1', 'tmdb-8001-s2e2']);
   assert.equal(releaseEvents(item.id, { ...fresh, air_date: '2025-12-01' }, null, date).events.length, 0);
 
   const recovery = await call('recovery-code', {}, firstSession);

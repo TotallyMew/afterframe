@@ -1,0 +1,50 @@
+services:
+  web:
+    build:
+      context: .
+      target: web
+    environment:
+      PORT: ${AFTERFRAME_PORT:-4173}
+      AFTERFRAME_API_URL: http://api:8080
+    ports:
+      - "127.0.0.1:${AFTERFRAME_PORT:-4173}:${AFTERFRAME_PORT:-4173}"
+    depends_on:
+      api:
+        condition: service_healthy
+  api:
+    build:
+      context: .
+      target: api
+    environment:
+      PORT: 8080
+      AFTERFRAME_WEB_PORT: ${AFTERFRAME_PORT:-4173}
+      AFTERFRAME_ACCOUNTS_DATABASE_URL: postgresql://afterframe:afterframe-local@db:5432/afterframe
+      DATABASE_URL: postgresql://afterframe:afterframe-local@db:5432/afterframe
+      TMDB_READ_TOKEN: ${TMDB_READ_TOKEN:-}
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
+      OMDB_API_KEY: ${OMDB_API_KEY:-}
+      MAL_CLIENT_ID: ${MAL_CLIENT_ID:-}
+      AFTERFRAME_REGISTRATION: ${AFTERFRAME_REGISTRATION:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health',{headers:{host:'localhost:'+process.env.AFTERFRAME_WEB_PORT}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: afterframe
+      POSTGRES_USER: afterframe
+      POSTGRES_PASSWORD: afterframe-local
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U afterframe -d afterframe"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+volumes:
+  postgres-data:
