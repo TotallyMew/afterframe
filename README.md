@@ -9,20 +9,19 @@ Movies and shows have dedicated records with artwork, cast and crew, ratings, re
 Install Node.js 22.19 or newer, then run these commands from the repository root.
 
 ```sh
-cd afterframe
 npm ci
-npm start
+npm start --workspace @afterframe/api
 ```
 
 Open [localhost:4173](http://localhost:4173/). The server listens on the loopback interface. Set `PORT` in the environment or in `afterframe/.env` to choose another port.
 
-Run the automated tests with `npm test` from the `afterframe` directory.
+Run `npm test --workspace @afterframe/api` from the repository root. The API code and tests live in `apps/api`. The `afterframe` directory holds the classic frontend and its local configuration and data. The previous `cd afterframe`, `npm ci` and `npm start` commands still work.
 
 ## React preview
 
 The React frontend includes Home, Movies, TV Shows, Anime, Comics, release listings, recommendations, search, title details and My Library. The video player, comic reader, settings and account screens open under `/legacy/` on the same origin, so both interfaces share the same session and guest library.
 
-Start the existing API from `afterframe` with `npm start`. In another terminal, run:
+Start the API from the repository root with `npm start --workspace @afterframe/api`. In another terminal, run:
 
 ```sh
 cd apps/web
@@ -57,10 +56,10 @@ Replace `https://your-public-domain` with the same HTTPS origin on both services
 
 ## Move an existing account library to PostgreSQL
 
-The Node-only setup uses SQLite unless `AFTERFRAME_ACCOUNTS_DATABASE_URL` is set. `DATABASE_URL` independently enables the metadata cache. For an existing installation, stop writes to the SQLite source and take a database snapshot. Set `AFTERFRAME_ACCOUNTS_DATABASE_URL` in the shell to a reachable, empty Afterframe PostgreSQL database and run this from `afterframe`.
+The Node-only setup uses SQLite unless `AFTERFRAME_ACCOUNTS_DATABASE_URL` is set. `DATABASE_URL` independently enables the metadata cache. For an existing installation, stop writes to the SQLite source and take a database snapshot. Set `AFTERFRAME_ACCOUNTS_DATABASE_URL` in the shell to a reachable, empty Afterframe PostgreSQL database and run this from the repository root.
 
 ```sh
-npm run import:accounts -- /path/to/accounts-snapshot.sqlite
+npm run import:accounts --workspace @afterframe/api -- /path/to/accounts-snapshot.sqlite
 ```
 
 The import retains account IDs, password hashes, libraries, playback preferences, recovery codes and release history. Sign in again on the destination and configure its integration keys through environment variables. The SQLite snapshot stays available for rollback.

@@ -1,7 +1,7 @@
-import { cacheMetadata } from './metadata.mjs';
+import { cacheMetadata } from '../catalog/metadata.mjs';
 import { lectorChapters, lectorPageList } from './lectormanga.mjs';
 import { scansChapters, scansPageList } from './mangascans.mjs';
-import { comicChapterIdPattern, comicChapterIdSource, comicIdSource } from './public/comic-ids.js';
+import { comicChapterIdPattern, comicChapterIdSource, comicIdSource } from '../../../afterframe/public/comic-ids.js';
 import { weebChapters, weebPageList } from './weebcentral.mjs';
 
 const mangaRoute = new RegExp(`^/api/comics/(${comicIdSource})(?:/chapters(?:/(${comicChapterIdSource}))?)?$`, 'i');

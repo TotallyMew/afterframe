@@ -1,6 +1,6 @@
-import { cacheMetadata } from './metadata.mjs';
+import { cacheMetadata } from '../catalog/metadata.mjs';
 import { decodeHtml, normalizedTitle, seriesQueries, sourceHtml, titleMatcher } from './comic-sources.mjs';
-import { weebIdSource } from './public/comic-ids.js';
+import { weebIdSource } from '../../../afterframe/public/comic-ids.js';
 
 const origin = 'https://weebcentral.com';
 const minute = 60_000;

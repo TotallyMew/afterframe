@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { releaseSnapshot, releaseTargets, storeReleaseEvents } from './accounts.mjs';
+import { releaseSnapshot, releaseTargets, storeReleaseEvents } from '../accounts/accounts.mjs';
 
 const checkInterval = 15 * 60000;
 

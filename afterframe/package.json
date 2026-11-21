@@ -4,13 +4,13 @@
   "type": "module",
   "scripts": {
     "start": "node --use-system-ca --env-file-if-exists=data/metadata-pg.env --env-file-if-exists=.env server.mjs",
-    "import:accounts": "node --use-system-ca import-accounts.mjs",
-    "test": "node --test"
+    "import:accounts": "node --use-system-ca ../apps/api/accounts/import-accounts.mjs",
+    "test": "npm --workspace @afterframe/api test"
   },
   "engines": {
     "node": ">=22.19"
   },
   "dependencies": {
-    "pg": "^8.23.1"
+    "@afterframe/api": "*"
   }
 }

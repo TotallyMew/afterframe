@@ -1,5 +1,5 @@
-import { archiveCatalog } from './public/catalog.js';
-import { archiveCategories, matchesCatalog } from './public/discover.js';
+import { archiveCatalog } from '../../../afterframe/public/catalog.js';
+import { archiveCategories, matchesCatalog } from '../../../afterframe/public/discover.js';
 
 export const archiveIdPattern = /^[a-z0-9][a-z0-9_.-]{0,99}$/i;
 const origin = 'https://archive.org';

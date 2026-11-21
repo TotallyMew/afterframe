@@ -1,6 +1,6 @@
-import { cacheMetadata } from './metadata.mjs';
+import { cacheMetadata } from '../catalog/metadata.mjs';
 import { decodeHtml, normalizedTitle, seriesQueries, sourceHtml, titleMatcher } from './comic-sources.mjs';
-import { chapterNumberSource } from './public/comic-ids.js';
+import { chapterNumberSource } from '../../../afterframe/public/comic-ids.js';
 
 const origin = 'https://manga-scans.com';
 const minute = 60_000;

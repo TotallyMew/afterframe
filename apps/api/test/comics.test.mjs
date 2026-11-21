@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { comicsApi } from './comics.mjs';
+import { comicsApi } from '../comics/comics.mjs';
 
 test('chapter ranges and reader links follow the same ordered list of chapters', async t => {
   const uuid = number => `00000000-0000-0000-0000-${String(number).padStart(12, '0')}`;

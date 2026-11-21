@@ -149,7 +149,7 @@ async function postgresStorage(connectionString) {
 export async function openAccountStorage() {
   if (process.env.AFTERFRAME_ACCOUNTS_DATABASE_URL) return postgresStorage(process.env.AFTERFRAME_ACCOUNTS_DATABASE_URL);
   if (process.env.AFTERFRAME_DB) return sqliteStorage(process.env.AFTERFRAME_DB);
-  const directory = new URL('./data/', import.meta.url);
+  const directory = new URL('../../../afterframe/data/', import.meta.url);
   mkdirSync(directory, { recursive: true });
   return sqliteStorage(fileURLToPath(new URL('accounts.sqlite', directory)));
 }

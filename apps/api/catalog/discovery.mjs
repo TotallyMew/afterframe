@@ -1,6 +1,6 @@
 import { cacheMetadata } from './metadata.mjs';
 import { animeCatalogTitles } from './anime.mjs';
-import { recommendationProfile } from './public/library.js';
+import { recommendationProfile } from '../../../afterframe/public/library.js';
 import { malRating } from './mal.mjs';
 
 export async function recommendations(library, tmdb, tmdbEnabled) {

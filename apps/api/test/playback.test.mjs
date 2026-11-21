@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { activeSkipSegment, bufferedIntervals, completionReached, samplePlayback, viewingSession } from './public/playback.js';
-import { playbackLanguage, samePlaybackLanguage } from './public/subtitles.js';
+import { activeSkipSegment, bufferedIntervals, completionReached, samplePlayback, viewingSession } from '../../../afterframe/public/playback.js';
+import { playbackLanguage, samePlaybackLanguage } from '../../../afterframe/public/subtitles.js';
 
 test('credits follow matched segments and preserve gaps between them', () => {
   const first = { kind: 'credits', start: 80, end: 85 };
@@ -42,13 +42,17 @@ test('remembered subtitle language matches provider names and language codes', (
 
 test('a new signed-in session receives the account’s playback language settings', async () => {
   const oldDatabase = process.env.AFTERFRAME_DB;
+  const oldPostgres = process.env.AFTERFRAME_ACCOUNTS_DATABASE_URL;
   process.env.AFTERFRAME_DB = ':memory:';
+  delete process.env.AFTERFRAME_ACCOUNTS_DATABASE_URL;
   let accountApi;
   try {
-    ({ accountApi } = await import('./accounts.mjs'));
+    ({ accountApi } = await import('../accounts/accounts.mjs'));
   } finally {
     if (oldDatabase === undefined) delete process.env.AFTERFRAME_DB;
     else process.env.AFTERFRAME_DB = oldDatabase;
+    if (oldPostgres === undefined) delete process.env.AFTERFRAME_ACCOUNTS_DATABASE_URL;
+    else process.env.AFTERFRAME_ACCOUNTS_DATABASE_URL = oldPostgres;
   }
   let session;
   const response = { setHeader: (_, value) => { session = value.split(';')[0]; } };

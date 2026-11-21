@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import { openAccountStorage } from './account-storage.mjs';
-import { ratingOnTen } from './public/library.js';
+import { ratingOnTen } from '../../../afterframe/public/library.js';
 
 const file = process.argv[2];
 if (!file || !process.env.AFTERFRAME_ACCOUNTS_DATABASE_URL) {

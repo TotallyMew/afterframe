@@ -19,9 +19,12 @@ CMD ["node", "apps/web/server.mjs"]
 FROM node:22-bookworm-slim AS api
 WORKDIR /app
 ENV NODE_ENV=production AFTERFRAME_HOST=::
-COPY afterframe/package.json afterframe/package-lock.json afterframe/
-RUN npm ci --omit=dev --prefix afterframe
-COPY --chown=node:node afterframe/ afterframe/
+COPY package.json package-lock.json ./
+COPY apps/api/package.json apps/api/
+COPY afterframe/package.json afterframe/
+RUN npm ci --omit=dev --workspace=@afterframe/api \
+    && install -d -o node -g node /app/afterframe/data
+COPY afterframe/public/ afterframe/public/
 COPY apps/api/ apps/api/
 USER node
 CMD ["node", "--use-system-ca", "apps/api/server.mjs"]

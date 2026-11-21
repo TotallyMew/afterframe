@@ -1,8 +1,8 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { comicChapterIdPattern, comicIdPattern } from './public/comic-ids.js';
-import { preferenceDefaults } from './public/playback.js';
-import { ratingOnTen, watchStatuses, watchStatus } from './public/library.js';
+import { comicChapterIdPattern, comicIdPattern } from '../../../afterframe/public/comic-ids.js';
+import { preferenceDefaults } from '../../../afterframe/public/playback.js';
+import { ratingOnTen, watchStatuses, watchStatus } from '../../../afterframe/public/library.js';
 import { openAccountStorage } from './account-storage.mjs';
 
 const db = await openAccountStorage();

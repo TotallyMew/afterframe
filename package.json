@@ -1,0 +1,5 @@
+{
+  "name": "afterframe-workspace",
+  "private": true,
+  "workspaces": ["apps/api", "afterframe"]
+}

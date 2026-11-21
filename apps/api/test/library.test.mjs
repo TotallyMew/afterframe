@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
-import { migrateAccounts } from './account-migrations.mjs';
-import { recommendations } from './discovery.mjs';
-import { malRating } from './mal.mjs';
-import { recommendationProfile, titleProgress } from './public/library.js';
+import { migrateAccounts } from '../accounts/account-migrations.mjs';
+import { recommendations } from '../catalog/discovery.mjs';
+import { malRating } from '../catalog/mal.mjs';
+import { recommendationProfile, titleProgress } from '../../../afterframe/public/library.js';
 
 const item = { key: 'tv-8001', id: 8001, title: 'Fixture series', type: 'tv', genreIds: [18], totalEpisodes: 10 };
 
@@ -89,8 +89,8 @@ test('playback conflicts, release deduplication and one-time recovery', async ()
   else delete process.env.AFTERFRAME_ACCOUNTS_DATABASE_URL;
   let accountApi, readLibrary, storeReleaseEvents, releaseEvents;
   try {
-    ({ accountApi, readLibrary, storeReleaseEvents } = await import('./accounts.mjs'));
-    ({ releaseEvents } = await import('./releases.mjs'));
+    ({ accountApi, readLibrary, storeReleaseEvents } = await import('../accounts/accounts.mjs'));
+    ({ releaseEvents } = await import('../catalog/releases.mjs'));
   } finally {
     if (oldDatabase === undefined) delete process.env.AFTERFRAME_DB;
     else process.env.AFTERFRAME_DB = oldDatabase;

@@ -1,0 +1,16 @@
+{
+  "name": "@afterframe/api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --use-system-ca --env-file-if-exists=../../afterframe/data/metadata-pg.env --env-file-if-exists=../../afterframe/.env --env-file-if-exists=.env server.mjs",
+    "import:accounts": "node --use-system-ca accounts/import-accounts.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "dependencies": {
+    "pg": "^8.23.1"
+  }
+}
