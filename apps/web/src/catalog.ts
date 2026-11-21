@@ -44,6 +44,19 @@ export interface Title {
   totalEpisodes?: number;
 }
 
+export interface Comic {
+  key: string;
+  id: string;
+  type: 'comic';
+  title: string;
+  format?: string;
+  year?: number;
+  poster?: string;
+  status?: string;
+  updated?: number;
+  genres?: { id: string; name: string }[];
+}
+
 export interface Episode {
   season_number: number;
   episode_number: number;
@@ -81,7 +94,20 @@ export interface Details extends RawTitle {
   };
 }
 
-export interface TitleResults { results: RawTitle[] }
+export interface TitleResults { results: RawTitle[]; nextPage?: number | null; total?: number | null }
+
+export const catalogGenres = [
+  'Action', 'Adventure', 'Animation', 'Comedy', 'Crime', 'Documentary', 'Drama', 'Family',
+  'Fantasy', 'History', 'Horror', 'Music', 'Mystery', 'Romance', 'Science Fiction', 'Thriller', 'War', 'Western', 'Anime',
+];
+
+export function webHref(route: string) {
+  return `/#${route}`;
+}
+
+export function routeWithParams(route: string, params: URLSearchParams) {
+  return params.size ? `${route}?${params}` : route;
+}
 
 const genres: Record<number, string> = {
   12: 'Adventure', 14: 'Fantasy', 16: 'Animation', 18: 'Drama', 27: 'Horror',
@@ -137,6 +163,16 @@ export function titleHref(item: Pick<Title, 'type' | 'id'>) {
 
 export function legacyHref(route: string, panel?: 'settings' | 'account') {
   return `/legacy/${panel ? `?panel=${panel}` : ''}#${route}`;
+}
+
+export function libraryItemHref(item: Title | Comic) {
+  if (item.type === 'comic') return webHref(`comic/${encodeURIComponent(item.id)}`);
+  if (Number.isSafeInteger(item.id) && item.id > 0 && /^(movie|tv)-\d+$/.test(item.key) && !item.archiveId) return titleHref(item);
+  return legacyHref(`edition/${encodeURIComponent(item.key)}`);
+}
+
+export function comicCover(poster?: string) {
+  return poster?.replace(/^https:\/\/uploads\.mangadex\.org\/covers\/(.+)\.512\.jpg$/, '/comic-cover/$1.256.jpg');
 }
 
 export function playHref(item: Pick<Title, 'type' | 'id'>, episode?: EpisodePosition) {

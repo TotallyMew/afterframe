@@ -182,6 +182,67 @@ a.af-episode-title:hover { color: var(--color-af-accent); }
 .af-menu nav { display: grid; }
 .af-menu nav a { padding: 11px 3px; border-bottom: 1px solid var(--color-af-line); }
 
+.af-directory { padding-block: clamp(28px, 5vw, 70px) 70px; }
+.af-directory-heading { margin-bottom: clamp(22px, 3.2vw, 40px); }
+.af-directory-heading h1 { font-size: clamp(40px, 6vw, 74px); }
+.af-directory-heading p { margin-top: 9px; }
+.af-directory-tabs { margin-bottom: 20px; }
+.af-route-tabs { display: flex; flex-wrap: wrap; gap: 6px 23px; border-bottom: 1px solid var(--color-af-line); }
+.af-route-tabs a { padding: 9px 0 12px; color: var(--color-af-muted); border-bottom: 2px solid transparent; }
+.af-route-tabs a:hover, .af-route-tabs a[aria-current] { color: var(--color-af-text); }
+.af-route-tabs a[aria-current] { border-bottom-color: var(--color-af-accent); }
+.af-field-bar { display: flex; align-items: end; flex-wrap: wrap; gap: 10px 14px; margin-block: 18px 25px; }
+.af-field-bar label, .af-filter-panel label, .af-library-card > label { display: grid; gap: 4px; font-size: 13px; color: var(--color-af-muted); }
+.af-input, .af-field-bar select, .af-filter-panel select, .af-library-card select { padding: 8px 9px; min-height: 40px; max-width: 100%; background: var(--color-af-surface); border: 1px solid var(--color-af-line); border-radius: 5px; color: var(--color-af-text); }
+.af-more-filters { position: relative; }
+.af-more-filters summary { cursor: pointer; min-height: 40px; padding: 8px 3px; color: var(--color-af-muted); }
+.af-filter-panel { position: absolute; z-index: 2; right: 0; top: 100%; display: grid; grid-template-columns: repeat(2, minmax(110px, 1fr)); gap: 10px; width: max-content; max-width: calc(100vw - 2 * var(--gutter)); padding: 15px; background: var(--color-af-surface); border: 1px solid var(--color-af-line); border-radius: 6px; box-shadow: 0 8px 25px #0008; }
+.af-results-count { color: var(--color-af-muted); font-size: 13px; margin-block: 18px 14px; }
+.af-poster-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); column-gap: clamp(10px, 1.5vw, 22px); row-gap: clamp(18px, 2.2vw, 35px); }
+.af-pagination { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 28px; }
+.af-release-week { margin-block: 26px; }
+.af-release-week h2 { margin-bottom: 12px; font-size: clamp(21px, 3vw, 27px); }
+.af-release-row { display: grid; grid-template-columns: 70px minmax(105px, 195px) minmax(0, 1fr) auto; align-items: center; gap: clamp(9px, 2vw, 24px); padding-block: 13px; border-top: 1px solid var(--color-af-line); }
+.af-release-date { color: var(--color-af-muted); font-size: 13px; }
+.af-release-image { aspect-ratio: 16/9; background: var(--color-af-surface); overflow: hidden; border-radius: 5px; }
+.af-release-image img { width: 100%; height: 100%; object-fit: cover; }
+.af-release-copy { min-width: 0; }
+.af-release-copy h3, .af-activity-row h3 { font-size: 17px; font-weight: 650; }
+.af-release-copy .af-overview { max-width: 67ch; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.af-discovery-shelves { margin-top: 28px; }
+.af-comic-intro { display: grid; grid-template-columns: minmax(130px, 230px) minmax(0, 1fr); align-items: start; gap: clamp(17px, 4vw, 55px); margin-bottom: 34px; }
+.af-comic-cover { width: 100%; aspect-ratio: 2/3; border-radius: 5px; object-fit: cover; background: var(--color-af-surface); }
+.af-activity-row { display: flex; justify-content: space-between; align-items: center; gap: 12px 22px; padding-block: 14px; border-bottom: 1px solid var(--color-af-line); }
+.af-activity-row [class~="af-actions"] { margin: 0; }
+.af-activity-row a:hover, .af-release-copy a:hover { color: var(--color-af-accent); }
+.af-empty-state { padding-block: 20px; }
+.af-library-card { min-width: 0; display: grid; align-content: start; gap: 7px; }
+
+@media (max-width: 1050px) {
+  .af-poster-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .af-filter-panel { left: 0; right: auto; }
+}
+
+@media (max-width: 800px) {
+  .af-poster-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
+@media (max-width: 590px) {
+  .af-poster-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .af-release-row { grid-template-columns: 77px minmax(0, 1fr) auto; }
+  .af-release-date { grid-column: 1/-1; }
+  .af-release-copy .af-overview { display: none; }
+  .af-comic-intro { grid-template-columns: minmax(0, 1fr); }
+  .af-comic-cover { width: min(40%, 155px); }
+  .af-more-filters[open] { width: 100%; }
+  .af-filter-panel { position: static; width: 100%; }
+  .af-activity-row { flex-wrap: wrap; }
+}
+
+@media (max-width: 380px) {
+  .af-poster-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 @media (min-width: 1080px) {
   .af-episode-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

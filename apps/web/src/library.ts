@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { canMarkCompleted, episodeKey, isAired, post, request, type Details, type Episode, type EpisodePosition, type Title } from './catalog';
+import { canMarkCompleted, episodeKey, isAired, post, request, type Comic, type Details, type Episode, type EpisodePosition, type Title } from './catalog';
 
 export const watchStatuses = {
   planned: 'Plan to Watch',
@@ -10,7 +10,7 @@ export const watchStatuses = {
 } as const;
 
 export type WatchStatus = keyof typeof watchStatuses;
-type SavedTitle = Title & { added: number; watchStatus?: WatchStatus; completedAt?: number };
+export type SavedTitle = (Title | Comic) & { added: number; watchStatus?: WatchStatus; completedAt?: number };
 type WatchedEntry = { item: Title; updated: number };
 type PersonalRating = { item: Title; score: number; scale?: number; updated: number };
 export type Progress = {
@@ -23,12 +23,18 @@ export type Progress = {
 };
 
 type Preferences = Partial<Record<'resume' | 'blur' | 'hideSynopsis' | 'confirmRemoval' | 'compact', boolean>>;
-type Library = {
+export type Reading = { item: Comic; chapter: string; label: string; page: number; language: string; listPage: number; updated: number };
+export type History = { item: Title; episode?: EpisodePosition; mediaKey: string; updated: number; duration: number; time: number; coverage: number; completed: boolean };
+type Notification = { seriesId: number; title: string; message: string; source?: string; read: boolean; created: number };
+export type Library = {
   saved: Record<string, SavedTitle>;
   watched: Record<string, WatchedEntry>;
   ratings: Record<string, PersonalRating>;
   progress: Record<string, Progress>;
   preferences: Preferences;
+  reading: Record<string, Reading>;
+  history: Record<string, History>;
+  notifications: Record<string, Notification>;
 };
 type Account = { id: number; username: string };
 type Session = { account: Account | null; library: Library };
@@ -44,6 +50,7 @@ function guestLibrary(): Library {
     saved: readGuest('saved', {}), watched: readGuest('watched', {}),
     ratings: readGuest('ratings', {}), progress: readGuest('progress', {}),
     preferences: readGuest('preferences', {}),
+    reading: readGuest('reading', {}), history: readGuest('history', {}), notifications: {},
   };
 }
 
@@ -73,6 +80,32 @@ export function progressPercent(entry: Progress) {
   return entry.duration > 0 ? Math.min(100, Math.floor(seconds / entry.duration * 100)) : 0;
 }
 
+export function titleCoverage(item: Title, library: Library) {
+  if (library.watched[item.key] || library.saved[item.key]?.watchStatus === 'completed') return 100;
+  const prefix = `${item.key}/`;
+  const completeEpisodes = Object.keys(library.watched).filter(key => key.startsWith(prefix) && !key.startsWith(`${prefix}cinesrc-s0e`)).length;
+  const latest = Object.entries(library.progress).filter(([key]) => !library.watched[key] && (key === item.key || key.startsWith(prefix)))
+    .sort(([, a], [, b]) => b.updated - a.updated)[0]?.[1];
+  const partial = latest ? progressPercent(latest) : 0;
+  const total = item.totalEpisodes;
+  if (item.type === 'tv' && total && (completeEpisodes || partial)) return Math.max(1, Math.min(100, Math.floor((completeEpisodes + partial / 100) / total * 100)));
+  return partial ? Math.min(item.type === 'tv' ? 99 : 100, partial) : completeEpisodes ? 1 : 0;
+}
+
+export function guestRecommendations(library: Library) {
+  const compact = (item: Title) => ({ key: item.key, id: item.id, title: item.title.slice(0, 120), type: item.type, genreIds: item.genreIds?.slice(0, 12) });
+  const latest = <T extends { updated: number }>(records: Record<string, T>, limit: number) =>
+    Object.values(records).sort((a, b) => b.updated - a.updated).slice(0, limit);
+  const saved = Object.values(library.saved).sort((a, b) => b.added - a.added)
+    .filter((item): item is SavedTitle & Title => item.type !== 'comic').slice(0, 75);
+  return {
+    history: latest(library.history, 60).map(({ item, mediaKey, completed, coverage, duration, updated }) => ({ item: compact(item), mediaKey, completed, coverage, duration, updated })),
+    saved: Object.fromEntries(saved.map(item => [item.key, { ...compact(item), watchStatus: item.watchStatus }])),
+    ratings: latest(library.ratings, 50).map(({ item, score, scale }) => ({ item: compact(item), score, scale })),
+    watched: latest(library.watched, 50).filter(({ item }) => item.type === 'movie').map(({ item }) => ({ item: compact(item) })),
+  };
+}
+
 export async function getSeason(id: number, season: number, signal?: AbortSignal) {
   const result = await request<{ episodes: Episode[] }>(`/api/tv/${id}/season/${season}`, { signal });
   return result.episodes ?? [];
@@ -99,7 +132,9 @@ export function useLibrary() {
     try {
       const { account, library } = await request<ApiAccount>('/api/account');
       if (current !== revision.current) return;
-      setSession({ account, library: account ? { saved: {}, watched: {}, ratings: {}, progress: {}, preferences: {}, ...library } : guestLibrary() });
+      setSession({ account, library: account
+        ? { saved: {}, watched: {}, ratings: {}, progress: {}, preferences: {}, reading: {}, history: {}, notifications: {}, ...library }
+        : guestLibrary() });
       setReady(true);
       setError('');
     } catch {
@@ -147,10 +182,10 @@ export function useLibrary() {
     });
   }
 
-  function toggleSaved(item: Title) {
+  function toggleSaved(item: Title | Comic) {
     const exists = Boolean(session.library.saved[item.key]);
     if (exists && session.library.preferences.confirmRemoval !== false && !confirm('Remove this title from your watchlist?')) return;
-    return edit('saved', item.key, exists ? null : { ...item, added: Date.now(), watchStatus: 'planned' });
+    return edit('saved', item.key, exists ? null : { ...item, added: Date.now(), ...(item.type !== 'comic' ? { watchStatus: 'planned' as const } : {}) });
   }
 
   function toggleWatched(item: Title, key = item.key) {
@@ -163,7 +198,7 @@ export function useLibrary() {
 
   function setStatus(item: Title, value: WatchStatus, details: Details) {
     const saved = session.library.saved[item.key];
-    if (!saved) return;
+    if (!saved || saved.type === 'comic') return;
     if (item.type !== 'tv' || value !== 'completed') {
       return edit('saved', item.key, { ...saved, totalEpisodes: item.totalEpisodes ?? saved.totalEpisodes, watchStatus: value });
     }
@@ -194,7 +229,16 @@ export function useLibrary() {
     });
   }
 
-  return { ...session, ready, saving, error, refresh, toggleSaved, toggleWatched, rate, setStatus };
+  function markNotification(key: string) {
+    return change(async ({ library }) => {
+      const item = library.notifications[key];
+      if (!item || item.read) return library;
+      await post('/api/account/notifications-read', { key });
+      return { ...library, notifications: { ...library.notifications, [key]: { ...item, read: true } } };
+    });
+  }
+
+  return { ...session, ready, saving, error, refresh, toggleSaved, toggleWatched, rate, setStatus, markNotification };
 }
 
 export type LibraryControls = ReturnType<typeof useLibrary>;

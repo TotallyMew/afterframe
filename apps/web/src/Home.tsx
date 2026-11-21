@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
-  legacyHref, normalizeTitle, normalizeTitles, playHref, request, resumeHref, titleHref, today,
+  legacyHref, normalizeTitle, normalizeTitles, playHref, request, resumeHref, titleHref, today, webHref,
   type CatalogRating, type MediaType, type RawTitle, type Title, type TitleResults,
 } from './catalog';
 import { ActionLink, Icon, MediaCard, SaveButton, Score, Shelf } from './components';
@@ -126,7 +126,7 @@ export function Home({ controls }: { controls: LibraryControls }) {
       </div> : !data && <p className="af-state" role="status">Loading the catalogue…</p>}
     </div>}
     <div className="af-wrap af-content">
-      {resume.length > 0 && <Shelf title="Continue Watching" href={legacyHref('history')} landscape>
+      {resume.length > 0 && <Shelf title="Continue Watching" href={webHref('history')} landscape>
         {resume.map(([key, entry]) => {
           const episode = entry.episode;
           const remaining = Math.ceil((entry.duration - entry.time) / 60);
@@ -145,7 +145,7 @@ export function Home({ controls }: { controls: LibraryControls }) {
         {trending.length ? trending.slice(0, 12).map(item => <MediaCard key={item.key} item={withRating(item)} controls={controls} landscape />)
           : <p className="af-state">No trending titles for this filter.</p>}
       </Shelf>}
-      {data && collections.map(([key, label, path]) => data[key].length > 0 && <Shelf title={label} key={key} href={legacyHref(path)}>
+      {data && collections.map(([key, label, path]) => data[key].length > 0 && <Shelf title={label} key={key} href={webHref(path)}>
         {data[key].slice(0, 8).map(item => <MediaCard key={item.key} item={withRating(item)} controls={controls} />)}
       </Shelf>)}
       {data?.partial && <p className="af-state" role="status">Some shelves are unavailable. <button type="button" className="af-text-link" onClick={retry}>Retry</button></p>}

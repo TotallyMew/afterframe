@@ -1,6 +1,6 @@
 import { Dialog } from '@base-ui/react/dialog';
 import { Children, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
-import { legacyHref, normalizeTitles, request, titleHref, type CatalogRating, type Title, type TitleResults } from './catalog';
+import { legacyHref, normalizeTitles, request, titleHref, webHref, type CatalogRating, type Comic, type Title, type TitleResults } from './catalog';
 import type { LibraryControls } from './library';
 
 const glyphs = {
@@ -26,12 +26,13 @@ export function ActionLink({ href, primary = false, children }: { href: string; 
   return <a className={`af-button ${primary ? 'af-primary' : 'af-secondary'}`} href={href}>{children}</a>;
 }
 
-export function SaveButton({ item, controls, compact = false }: { item: Title; controls: LibraryControls; compact?: boolean }) {
+export function SaveButton({ item, controls, compact = false }: { item: Title | Comic; controls: LibraryControls; compact?: boolean }) {
   const saved = Boolean(controls.library.saved[item.key]);
+  const list = item.type === 'comic' ? 'Reading list' : 'Watchlist';
   return <button type="button" className={compact ? 'af-icon-button af-card-save' : 'af-button af-secondary'}
-    aria-pressed={saved} aria-label={compact ? `${saved ? 'Remove from' : 'Add to'} watchlist: ${item.title}` : undefined}
+    aria-pressed={saved} aria-label={compact ? `${saved ? 'Remove from' : 'Add to'} ${list}: ${item.title}` : undefined}
     disabled={!controls.ready || controls.saving} onClick={() => void controls.toggleSaved(item)}>
-    <Icon name={saved ? 'check' : 'plus'} />{!compact && (saved ? 'In Watchlist' : 'Watchlist')}
+    <Icon name={saved ? 'check' : 'plus'} />{!compact && (saved ? `In ${list}` : list)}
   </button>;
 }
 
@@ -141,7 +142,7 @@ function Search({ open, close }: { open: boolean; close: () => void }) {
     event.preventDefault();
     if (!query.trim()) return;
     if (results[selected]) { window.location.assign(titleHref(results[selected])); close(); }
-    else if (!pending && !error) window.location.assign(legacyHref(`search=${encodeURIComponent(query.trim())}`));
+    else if (!pending && !error) { window.location.assign(webHref(`search=${encodeURIComponent(query.trim())}`)); close(); }
   }
 
   function onKey(event: KeyboardEvent<HTMLInputElement>) {
@@ -169,7 +170,7 @@ function Search({ open, close }: { open: boolean; close: () => void }) {
             <Icon name="right" />
           </a>)}
         </div>
-        {results.length > 0 && <a href={legacyHref(`search=${encodeURIComponent(query.trim())}`)} className="af-text-link af-all-results">See all results</a>}
+        {results.length > 0 && <a href={webHref(`search=${encodeURIComponent(query.trim())}`)} onClick={close} className="af-text-link af-all-results">See all results</a>}
       </form>
     </Dialog.Popup>
   </Dialog.Portal>;
@@ -177,6 +178,7 @@ function Search({ open, close }: { open: boolean; close: () => void }) {
 
 export function Header({ controls, route }: { controls: LibraryControls; route: string }) {
   const [search, setSearch] = useState(false);
+  const path = route.split('?')[0];
   useEffect(() => {
     const shortcut = (event: globalThis.KeyboardEvent) => {
       if (event.defaultPrevented || event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable=true]')) return;
@@ -192,14 +194,14 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
     <a className="af-brand" href="/#home"><img src="/art/favicon.svg" alt="" />afterframe</a>
     <nav className="af-nav" aria-label="Main navigation">
       <a href="/#home" aria-current={route === 'home' ? 'page' : undefined}>Home</a>
-      {pages.map(([label, path]) => <a href={legacyHref(path)} key={path} aria-current={route.startsWith(path === 'movies' ? 'movie/' : 'tv/') && ['movies', 'tv'].includes(path) ? 'page' : undefined}>{label}</a>)}
+      {pages.map(([label, link]) => <a href={webHref(link)} key={link} aria-current={path === link || (link === 'movies' && path.startsWith('movie/')) || (link === 'tv' && path.startsWith('tv/')) ? 'page' : undefined}>{label}</a>)}
     </nav>
     <div className="af-tools">
       <Dialog.Root open={search} onOpenChange={setSearch}>
         <Dialog.Trigger className="af-icon-button" aria-label="Search"><Icon name="search" /><span>Search</span></Dialog.Trigger>
         {search && <Search open={search} close={() => setSearch(false)} />}
       </Dialog.Root>
-      <a className="af-icon-button" href={legacyHref('watchlist')} aria-label="My Library"><Icon name="bookmark" /><span>Library</span></a>
+      <a className="af-icon-button" href={webHref('watchlist')} aria-label="My Library"><Icon name="bookmark" /><span>Library</span></a>
       <a className="af-icon-button af-settings" href={legacyHref('home', 'settings')} aria-label="Settings"><Icon name="settings" /></a>
       <a className="af-account" href={legacyHref('home', 'account')}>{controls.account?.username ?? 'Sign in'}</a>
       <Dialog.Root>
@@ -209,7 +211,7 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
           <Dialog.Popup className="af-modal af-menu">
             <header className="af-section-head"><Dialog.Title>Browse</Dialog.Title><Dialog.Close className="af-icon-button" aria-label="Close navigation"><Icon name="close" /></Dialog.Close></header>
             <nav aria-label="Browse menu">
-              {pages.map(([label, path]) => <a href={legacyHref(path)} key={path}>{label}</a>)}
+              {pages.map(([label, path]) => <Dialog.Close render={<a href={webHref(path)} />} key={path} nativeButton={false}>{label}</Dialog.Close>)}
               <a href={legacyHref('home', 'settings')}>Settings</a>
             </nav>
           </Dialog.Popup>
