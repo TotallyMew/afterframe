@@ -41,6 +41,8 @@ docker compose up -d --build --wait
 
 Open [localhost:4173](http://localhost:4173/). If you already use `afterframe/.env` for catalog keys, run `docker compose --env-file afterframe/.env up -d --build --wait` to pass those keys to the API. Set `AFTERFRAME_PORT` if port 4173 is in use.
 
+The Compose database starts with its own library and settings. If you saved your catalog key through Settings in the Node-only installation, enter it in Settings on the Docker instance or provide it through the API environment.
+
 Only the web port is published, on the local loopback interface. The web service proxies API, playback and reader requests over the Compose network. PostgreSQL stores signed-in accounts and library data in the `postgres-data` volume, which persists across container restarts and ordinary `docker compose down`.
 
 ## Deploy to Railway

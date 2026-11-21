@@ -27,6 +27,6 @@ RUN npm ci --omit=dev --workspace=@afterframe/api \
 COPY afterframe/public/ afterframe/public/
 COPY apps/api/ apps/api/
 USER node
-CMD ["node", "--use-system-ca", "apps/api/server.mjs"]
+CMD ["node", "apps/api/server.mjs"]
 
 FROM ${AFTERFRAME_SERVICE} AS runtime
