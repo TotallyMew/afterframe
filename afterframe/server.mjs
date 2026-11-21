@@ -4,7 +4,7 @@ import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { extname, join } from 'node:path';
+import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { archiveCatalog, archiveFileUrl } from './public/catalog.js';
 import { archiveEdition, archiveIdPattern } from './archive.mjs';
@@ -19,6 +19,7 @@ import { cacheMetadata, cachedRatings, hasOmdbKey, imdbRating, refreshMetadataPe
 
 const port = Number(process.env.PORT || 4173);
 const publicDirectory = fileURLToPath(new URL('./public/', import.meta.url));
+const webDirectory = process.env.AFTERFRAME_WEB_DIST ? resolve(process.env.AFTERFRAME_WEB_DIST) : null;
 const catalog = new Map(archiveCatalog.map(item => [item.key, item]));
 const localHosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
 const publicOrigin = process.env.AFTERFRAME_ORIGIN ? new URL(process.env.AFTERFRAME_ORIGIN) : null;
@@ -369,9 +370,12 @@ async function relayArchive(request, response, pathname) {
 }
 
 async function serveFile(request, response, pathname) {
-  const path = pathname === '/' ? '/index.html' : pathname;
-  if (!/^\/(?:art\/)?[a-z0-9][\w.-]*$/i.test(path) || !mime[extname(path)]) return json(response, 404, { error: 'Not found.' });
-  const file = join(publicDirectory, path.slice(1));
+  const legacy = pathname.startsWith('/legacy/') ? pathname.slice('/legacy'.length) : pathname;
+  const path = legacy === '/' ? '/index.html' : legacy;
+  const builtFile = webDirectory && (pathname === '/' || /^\/assets\/[a-z0-9][\w.-]*$/i.test(path));
+  const allowed = builtFile || /^\/(?:art\/)?[a-z0-9][\w.-]*$/i.test(path);
+  if (!allowed || !mime[extname(path)]) return json(response, 404, { error: 'Not found.' });
+  const file = join(builtFile ? webDirectory : publicDirectory, path.slice(1));
   const info = await stat(file).catch(() => null);
   if (!info?.isFile()) return json(response, 404, { error: 'Not found.' });
   response.writeHead(200, { 'content-type': mime[extname(path)], 'content-length': info.size, 'cache-control': 'no-cache' });

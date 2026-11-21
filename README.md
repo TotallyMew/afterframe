@@ -18,6 +18,20 @@ Open [localhost:4173](http://localhost:4173/). The server listens on the loopbac
 
 Run the automated tests with `npm test` from the `afterframe` directory.
 
+## React preview
+
+Home, search suggestions, and movie and series Details are available in a separate React frontend. The video player and other screens open under `/legacy/` on the same origin, so both interfaces share the same session and guest library.
+
+Start the existing API from `afterframe` with `npm start`. In another terminal, run:
+
+```sh
+cd apps/web
+npm ci
+npm run dev
+```
+
+Open [localhost:5174](http://localhost:5174/). Set `AFTERFRAME_API_URL` before starting Vite if the API uses a port other than 4173. Run `npm run build` in `apps/web` to type-check and build the frontend. Set `AFTERFRAME_WEB_DIST` to the absolute path of `apps/web/dist` when starting the Node server to serve the build, API, and classic interface through one origin.
+
 ## Library, search and releases
 
 - **My Library** includes title search, watch statuses, progress and rating filters, and a session history. Register or sign in to keep these records on the server and resume on another browser connected to the same installation. Existing five-star ratings are doubled once to preserve their relative scores on the 1–10 scale.

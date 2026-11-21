@@ -3951,3 +3951,14 @@ const discoveryPages = createDiscoveryPages({
   },
 });
 route();
+if (location.pathname === '/legacy/') {
+  const brand = document.querySelector('.brand');
+  brand.href = '/#home';
+  const panel = new URLSearchParams(location.search).get('panel');
+  if (panel === 'account' || panel === 'settings') {
+    initialAccount.then(() => {
+      if (panel === 'account') openAccount();
+      else openSettings();
+    });
+  }
+}
