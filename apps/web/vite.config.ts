@@ -23,7 +23,7 @@ const proxy = {
   '/stream/': apiProxy,
   '/comic-cover/': apiProxy,
   '/comic-page/': apiProxy,
-  '/legacy/': { ...apiProxy, rewrite: (path: string) => path.replace(/^\/legacy\//, '/') },
+  '/legacy/': apiProxy,
 };
 
 export default defineConfig({

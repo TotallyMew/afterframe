@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -19,7 +19,8 @@ import { cacheMetadata, cachedRatings, hasOmdbKey, imdbRating, refreshMetadataPe
 
 const port = Number(process.env.PORT || 4173);
 const publicDirectory = fileURLToPath(new URL('./public/', import.meta.url));
-const webDirectory = process.env.AFTERFRAME_WEB_DIST ? resolve(process.env.AFTERFRAME_WEB_DIST) : null;
+const webDirectory = resolve(process.env.AFTERFRAME_WEB_DIST || fileURLToPath(new URL('../apps/web/dist/', import.meta.url)));
+const hasWebBuild = existsSync(join(webDirectory, 'index.html'));
 const catalog = new Map(archiveCatalog.map(item => [item.key, item]));
 const localHosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
 const publicOrigin = process.env.AFTERFRAME_ORIGIN ? new URL(process.env.AFTERFRAME_ORIGIN) : null;
@@ -372,7 +373,7 @@ async function relayArchive(request, response, pathname) {
 async function serveFile(request, response, pathname) {
   const legacy = pathname.startsWith('/legacy/') ? pathname.slice('/legacy'.length) : pathname;
   const path = legacy === '/' ? '/index.html' : legacy;
-  const builtFile = webDirectory && (pathname === '/' || /^\/assets\/[a-z0-9][\w.-]*$/i.test(path));
+  const builtFile = hasWebBuild && (pathname === '/' || /^\/assets\/[a-z0-9][\w.-]*$/i.test(pathname));
   const allowed = builtFile || /^\/(?:art\/)?[a-z0-9][\w.-]*$/i.test(path);
   if (!allowed || !mime[extname(path)]) return json(response, 404, { error: 'Not found.' });
   const file = join(builtFile ? webDirectory : publicDirectory, path.slice(1));

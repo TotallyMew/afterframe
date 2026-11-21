@@ -30,7 +30,7 @@ npm ci
 npm run dev
 ```
 
-Open [localhost:5174](http://localhost:5174/). Set `AFTERFRAME_API_URL` before starting Vite if the API uses a port other than 4173. Run `npm run build` in `apps/web` to type-check and build the frontend. Set `AFTERFRAME_WEB_DIST` to the absolute path of `apps/web/dist` when starting the Node server to serve the build, API, and classic interface through one origin.
+Open [localhost:5174](http://localhost:5174/). Set `AFTERFRAME_API_URL` before starting Vite if the API uses a port other than 4173. Run `npm run build` in `apps/web` to type-check and build the frontend. If `apps/web/dist/index.html` exists when Node starts, the React build opens on the API server's main address and the classic interface remains at `/legacy/`. Use `AFTERFRAME_WEB_DIST` to select a different build directory.
 
 ## Library, search and releases
 

@@ -1,5 +1,5 @@
 import { Dialog } from '@base-ui/react/dialog';
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { Children, useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import { legacyHref, normalizeTitles, request, titleHref, type CatalogRating, type Title, type TitleResults } from './catalog';
 import type { LibraryControls } from './library';
 
@@ -42,24 +42,48 @@ export function Score({ rating, mal }: { rating?: CatalogRating; mal?: number })
   </>;
 }
 
-export function MediaCard({ item, controls, href, context, percent }: {
-  item: Title; controls: LibraryControls; href?: string; context?: string; percent?: number;
+export function MediaCard({ item, controls, href, context, percent, landscape = false }: {
+  item: Title; controls: LibraryControls; href?: string; context?: string; percent?: number; landscape?: boolean;
 }) {
-  const label = [item.year, item.genre].filter(Boolean).join(' · ');
+  const label = [item.year, landscape ? item.type === 'tv' ? 'TV series' : 'Movie' : item.genre].filter(Boolean).join(' · ');
+  const art = landscape ? item.backdrop || item.poster : item.poster;
   return <article className="af-media-card">
     <a href={href ?? titleHref(item)}>
-      <span className="af-poster">{item.poster ? <img src={item.poster} alt="" loading="lazy" /> : <Icon name="film" />}</span>
+      <span className={`af-poster ${landscape ? 'af-landscape' : ''} ${landscape && !item.backdrop && item.poster ? 'af-landscape-fallback' : ''}`}>
+        {art ? <img src={art} alt="" loading="lazy" /> : <Icon name="film" />}
+        {context && <span className="af-resume-icon"><Icon name="play" /></span>}
+        {percent != null && <progress className="af-progress af-card-progress" max={100} value={percent} aria-label={`${item.title} progress`} />}
+      </span>
       <strong>{item.title}</strong>
       <span className="af-card-meta">{context || label}</span>
       {!context && <Score rating={item.rating} />}
-      {percent != null && percent > 0 && <progress className="af-progress" max={100} value={percent} aria-label={`${item.title} progress`} />}
     </a>
     {!context && <SaveButton item={item} controls={controls} compact />}
   </article>;
 }
 
-export function Shelf({ title, children, href, actions }: { title: string; children: ReactNode; href?: string; actions?: ReactNode }) {
+export function Shelf({ title, children, href, actions, landscape = false }: {
+  title: string; children: ReactNode; href?: string; actions?: ReactNode; landscape?: boolean;
+}) {
   const rail = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ previous: false, next: false });
+  const childCount = Children.count(children);
+
+  useEffect(() => {
+    const node = rail.current;
+    if (!node) return;
+    const measure = () => {
+      const previous = node.scrollLeft > 1;
+      const next = node.scrollWidth - node.clientWidth - node.scrollLeft > 1;
+      setEdges(current => current.previous === previous && current.next === next ? current : { previous, next });
+    };
+    const resize = new ResizeObserver(measure);
+    resize.observe(node);
+    node.addEventListener('scroll', measure, { passive: true });
+    measure();
+    return () => { resize.disconnect(); node.removeEventListener('scroll', measure); };
+  }, [childCount, landscape]);
+
   function scroll(direction: number) {
     const node = rail.current;
     node?.scrollBy({ left: direction * node.clientWidth * .8, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth' });
@@ -69,11 +93,13 @@ export function Shelf({ title, children, href, actions }: { title: string; child
       <h2>{title}</h2>
       <div className="af-shelf-controls">
         {actions}{href && <a className="af-text-link" href={href}>View all</a>}
-        <button type="button" className="af-icon-button" aria-label={`Scroll ${title} left`} onClick={() => scroll(-1)}><Icon name="left" /></button>
-        <button type="button" className="af-icon-button" aria-label={`Scroll ${title} right`} onClick={() => scroll(1)}><Icon name="right" /></button>
+        {(edges.previous || edges.next) && <>
+          <button type="button" className="af-icon-button" aria-label={`Scroll ${title} left`} disabled={!edges.previous} onClick={() => scroll(-1)}><Icon name="left" /></button>
+          <button type="button" className="af-icon-button" aria-label={`Scroll ${title} right`} disabled={!edges.next} onClick={() => scroll(1)}><Icon name="right" /></button>
+        </>}
       </div>
     </header>
-    <div className="af-rail" ref={rail}>{children}</div>
+    <div className={`af-rail ${landscape ? 'af-wide-rail' : ''}`} ref={rail}>{children}</div>
   </section>;
 }
 
