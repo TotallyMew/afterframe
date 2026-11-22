@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { activeSkipSegment, bufferedIntervals, completionReached, samplePlayback, viewingSession } from '../../../afterframe/public/playback.js';
+import { activeSkipSegment, bufferedIntervals, completionReached, movieDurationMismatch, samplePlayback, viewingSession } from '../../../afterframe/public/playback.js';
 import { playbackLanguage, samePlaybackLanguage } from '../../../afterframe/public/subtitles.js';
+
+test('a large runtime discrepancy is flagged while ordinary release differences remain playable', () => {
+  assert.equal(movieDurationMismatch(173, 86 * 60 + 3), true);
+  assert.equal(movieDurationMismatch(100, 113 * 60), false);
+  assert.equal(movieDurationMismatch(36, 50 * 60), false);
+  assert.equal(movieDurationMismatch(undefined, 86 * 60), false);
+  assert.equal(movieDurationMismatch(173, Infinity), false);
+});
 
 test('credits follow matched segments and preserve gaps between them', () => {
   const first = { kind: 'credits', start: 80, end: 85 };

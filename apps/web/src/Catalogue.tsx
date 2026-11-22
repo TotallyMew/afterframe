@@ -1,9 +1,9 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
-  catalogGenres, formatDate, legacyHref, normalizeTitles, request, routeWithParams, titleHref, webHref,
-  type CatalogRating, type MediaType, type Title, type TitleResults,
+  catalogGenres, formatDate, normalizeTitles, request, routeWithParams, titleHref, webHref,
+  type CatalogRating, type MediaType, type RatingCoverage, type Title, type TitleResults,
 } from './catalog';
-import { ActionLink, Icon, MediaCard, SaveButton, Score } from './components';
+import { ActionLink, Artwork, CatalogProblem, Icon, Loading, MediaCard, SaveButton, Score } from './components';
 import type { LibraryControls } from './library';
 
 const sortOptions = [['popular', 'Popular'], ['newest', 'Newest'], ['oldest', 'Oldest']] as const;
@@ -36,6 +36,50 @@ export function RouteTabs({ tabs, active, label }: { tabs: readonly (readonly [s
   </nav>;
 }
 
+const resultFilterLabels: Record<string, (value: string) => string> = {
+  query: value => `Title: ${value}`,
+  q: value => `Search: ${value}`,
+  category: value => value,
+  genre: value => value,
+  decade: value => `${value}s`,
+  imdb: value => `IMDb ≥ ${value}`,
+  from: value => `From ${value}`,
+  to: value => `Through ${value}`,
+  runtime: value => runtimeOptions.find(([key]) => key === value)?.[1] ?? '',
+  after: value => `Added from ${value}`,
+  before: value => `Added through ${value}`,
+  rating: value => `Personal rating ≥ ${value}`,
+  coverage: value => ({ unstarted: 'Unstarted', started: 'Started', complete: 'Complete' })[value] ?? '',
+};
+
+export function ResultsSummary({ count, route, filters, clear, labels = {}, loading = false }: {
+  count?: number | null; route: string; filters: URLSearchParams; clear: string; loading?: boolean;
+  labels?: Record<string, (value: string) => string>;
+}) {
+  const display = { ...resultFilterLabels, ...labels };
+  const active = [...filters].flatMap(([key, value]) => {
+    if (!value) return [];
+    const label = display[key]?.(value);
+    return label ? [{ key, label }] : [];
+  });
+  const remove = (key: string) => {
+    const remaining = new URLSearchParams(filters);
+    remaining.delete(key);
+    remaining.delete('page');
+    return webHref(routeWithParams(route, remaining));
+  };
+  if (count == null && !active.length && !loading) return null;
+  return <div className="af-results-bar">
+    {(count != null || loading) && <p className="af-meta af-results-count" role="status">{loading ? 'Loading titles…' : `${count!.toLocaleString()} ${count === 1 ? 'title' : 'titles'}`}</p>}
+    {active.length > 0 && <>
+      <ul className="af-applied-filters" aria-label="Applied filters">
+        {active.map(({ key, label }) => <li key={key}><a href={remove(key)} aria-label={`Remove filter ${label}`}>{label}<Icon name="close" /></a></li>)}
+      </ul>
+      <a className="af-text-link" href={clear}>Clear filters</a>
+    </>}
+  </div>;
+}
+
 function filterRoute(route: string, values: FormData, current: URLSearchParams) {
   const params = new URLSearchParams();
   if (current.get('type')) params.set('type', current.get('type')!);
@@ -47,35 +91,45 @@ function filterRoute(route: string, values: FormData, current: URLSearchParams) 
 function weekOf(date: string) {
   const day = new Date(`${date}T12:00:00Z`);
   day.setUTCDate(day.getUTCDate() - (day.getUTCDay() + 6) % 7);
-  return day.toISOString().slice(0, 10);
+  return Number.isFinite(day.getTime()) ? day.toISOString().slice(0, 10) : '';
 }
+
+const releaseDay = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
 
 function Releases({ items, controls }: { items: Title[]; controls: LibraryControls }) {
   const groups = new Map<string, Title[]>();
-  for (const item of items) if (item.date && /^\d{4}-\d{2}-\d{2}$/.test(item.date)) {
-    const week = weekOf(item.date);
+  for (const item of items) {
+    const week = item.date && /^\d{4}-\d{2}-\d{2}$/.test(item.date) ? weekOf(item.date) : '';
     const group = groups.get(week) ?? [];
     group.push(item);
     groups.set(week, group);
   }
-  return [...groups].map(([week, releases]) => <section className="af-release-week" key={week} aria-label={`Week of ${formatDate(week)}`}>
-    <h2>Week of {formatDate(week)}</h2>
+  return [...groups].map(([week, releases]) => <section className="af-release-week" key={week} aria-label={week ? `Week of ${formatDate(week)}` : 'Date unavailable'}>
+    <h2>{week ? `Week of ${formatDate(week)}` : 'Date unavailable'}</h2>
     {releases.map(item => <article className="af-release-row" key={item.key}>
-      <time dateTime={item.date} className="af-release-date">
-        <span>{new Intl.DateTimeFormat(undefined, { month: 'short', timeZone: 'UTC' }).format(new Date(item.date!))}</span>
-        <strong>{Number(item.date!.slice(-2))}</strong>
-      </time>
+      {week ? <time dateTime={item.date} className="af-release-date">
+        {releaseDay.format(new Date(item.date!))}
+      </time> : <span className="af-release-date">TBD</span>}
       <a href={titleHref(item)} className="af-release-image" tabIndex={-1} aria-hidden="true">
-        {item.backdrop || item.poster ? <img src={item.backdrop || item.poster} alt="" loading="lazy" /> : <Icon name="film" />}
+        <Artwork src={item.backdrop || item.poster} loading="lazy" fallback={<Icon name="film" />} />
       </a>
       <div className="af-release-copy">
         <h3><a href={titleHref(item)}>{item.title}</a></h3>
         <div className="af-meta">{item.genre}<Score rating={item.rating} /></div>
-        {item.description && <p>{item.description}</p>}
+        {item.description && <p className="af-overview">{item.description}</p>}
       </div>
-      <div className="af-release-save"><SaveButton item={item} controls={controls} /></div>
+      <div className="af-release-save"><SaveButton item={item} controls={controls} compact /></div>
     </article>)}
   </section>);
+}
+
+type CachedCatalogue = { items: Title[]; next: number | null; total: number | null; ratingCoverage?: RatingCoverage };
+
+function recentCatalogue(route: string): CachedCatalogue | null {
+  try {
+    const value = JSON.parse(sessionStorage.getItem('afterframe.catalogue') ?? 'null');
+    return value?.route === route && value.at > Date.now() - 120000 ? value.data : null;
+  } catch { return null; }
 }
 
 export function Catalogue({ route, controls }: { route: string; controls: LibraryControls }) {
@@ -88,16 +142,29 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
   const selected = search ? params.get('type') ?? '' : type;
   const heading = search ? `Results for “${text}”` : releases ? 'New Releases'
     : params.get('collection') === 'gems' ? 'Hidden gems' : type === 'tv' ? 'TV Shows' : 'Movies';
-  const [items, setItems] = useState<Title[]>([]);
+  const [cached] = useState(() => recentCatalogue(route));
+  const [items, setItems] = useState<Title[]>(cached?.items ?? []);
   const [page, setPage] = useState(1);
-  const [next, setNext] = useState<number | null>(null);
-  const [total, setTotal] = useState<number | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [next, setNext] = useState<number | null>(cached?.next ?? null);
+  const [ratingCoverage, setRatingCoverage] = useState<RatingCoverage | undefined>(cached?.ratingCoverage);
+  const [total, setTotal] = useState<number | null>(cached?.total ?? null);
+  const [loading, setLoading] = useState(!cached);
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [formError, setFormError] = useState('');
+  const form = useRef<HTMLFormElement>(null);
+  const clear = webHref(routeWithParams(path, new URLSearchParams([...params].filter(([key]) => key === 'type' || key === 'collection'))));
+  const sortLabel = (value: string) => value !== 'popular' ? sortOptions.find(([key]) => key === value)?.[1] ?? '' : '';
 
   useEffect(() => {
+    if (!loading && items.length) {
+      try { sessionStorage.setItem('afterframe.catalogue', JSON.stringify({ route, at: Date.now(), data: { items, next, total, ratingCoverage } })); }
+      catch { /* Storage is optional. */ }
+    }
+  }, [items, next, total, route, loading, ratingCoverage]);
+
+  useEffect(() => {
+    if (cached && page === 1 && attempt === 0) return;
     const task = new AbortController();
     const [inputPath, inputQuery = ''] = route.split('?', 2);
     const queryParams = new URLSearchParams(inputQuery);
@@ -117,18 +184,21 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
         setItems(current => page === 1 ? video : [...new Map([...current, ...video].map(item => [item.key, item])).values()]);
         setNext(result.nextPage ?? null);
         setTotal(result.total ?? null);
-        if (!video.length) return;
-        const keys = video.map(item => `${item.type}:${item.id}`);
+        setRatingCoverage(result.ratingCoverage);
+        const keys = video.filter(item => !item.rating).map(item => `${item.type}:${item.id}`);
+        if (!keys.length) return;
         request<{ ratings: Record<string, CatalogRating> }>(`/api/imdb/cached?titles=${keys.join(',')}`, { signal: task.signal })
           .then(({ ratings }) => {
-            if (!task.signal.aborted) setItems(current => current.map(item => ({
-              ...item, rating: item.rating ?? ratings[`${item.type}:${item.id}`] ?? ratings[item.key],
-            })));
+            if (task.signal.aborted || !Object.keys(ratings).length) return;
+            setItems(current => current.map(item => {
+              const rating = ratings[`${item.type}:${item.id}`] ?? ratings[item.key];
+              return rating && !item.rating ? { ...item, rating } : item;
+            }));
           }).catch(() => {});
       }).catch(problem => { if (!task.signal.aborted) setError(problem.message); })
       .finally(() => { if (!task.signal.aborted) setLoading(false); });
     return () => task.abort();
-  }, [route, search, releases, type, page, attempt]);
+  }, [route, search, releases, type, page, attempt, cached]);
 
   function setType(value: MediaType | '') {
     const nextParams = new URLSearchParams(params);
@@ -142,7 +212,7 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
     const values = new FormData(event.currentTarget);
     const from = Number(values.get('from'));
     const to = Number(values.get('to'));
-    if (from && to && from > to) { setFormError('The starting year must come before the ending year.'); return; }
+    if (from && to && from > to) { setFormError('The starting year must come before the ending year.'); form.current?.querySelector<HTMLInputElement>('[name=from]')?.focus(); return; }
     setFormError('');
     window.location.hash = filterRoute(path, values, params);
   }
@@ -155,32 +225,45 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
       ]} />
       {search && <a className="af-text-link" href={webHref(`comics?q=${encodeURIComponent(text)}`)}>Search comics <Icon name="right" /></a>}
     </div>}
-    <form className="af-field-bar" onSubmit={submit}>
+    <form className="af-field-bar" ref={form} onSubmit={submit}>
       <SelectField label="Genre" name="category" empty="All genres" value={params.get('category') || params.get('genre') || ''} options={catalogGenres.map(genre => [genre, genre])} />
       {!releases && <SelectField label="Decade" name="decade" empty="Any decade" value={params.get('decade') || ''} options={decadeOptions} />}
       {!search && <InputField label="Minimum IMDb rating" name="imdb" type="number" min="1" max="10" step="0.1" placeholder="Any" defaultValue={params.get('imdb') || ''} />}
       {!search && !releases && <SelectField label="Sort by" name="sort" value={params.get('sort') || 'popular'} options={sortOptions} />}
-      <details className="af-more-filters">
+      <details className="af-more-filters" open={['from', 'to', 'runtime'].some(key => params.has(key)) || undefined}>
         <summary className="af-button af-secondary">More filters</summary>
         <div className="af-filter-panel">
-          {!releases && <><InputField label="From year" name="from" type="number" min="1870" max="2099" defaultValue={params.get('from') || ''} />
+          {!releases && <><InputField label="From year" aria-describedby={formError ? "year-error" : undefined} aria-invalid={Boolean(formError)} name="from" type="number" min="1870" max="2099" defaultValue={params.get('from') || ''} />
             <InputField label="Through year" name="to" type="number" min="1870" max="2099" defaultValue={params.get('to') || ''} /></>}
           {!search && <SelectField label={type === 'tv' ? 'Episode runtime' : 'Runtime'} name="runtime" empty="Any length" value={params.get('runtime') || ''} options={runtimeOptions} />}
         </div>
       </details>
-      <button type="submit" className="af-button af-secondary">Apply filters</button>
-      {params.size > (params.has('type') ? 1 : 0) && <a className="af-text-link" href={webHref(routeWithParams(path, params.has('type') ? new URLSearchParams({ type: params.get('type')! }) : new URLSearchParams()))}>Clear filters</a>}
+      <button type="submit" className="af-button af-primary">Apply filters</button>
     </form>
-    {formError && <p className="af-state" role="alert">{formError}</p>}
-    {typeof total === 'number' && !releases && <p className="af-meta af-results-count">{total.toLocaleString()} titles</p>}
+    {formError && <p className="af-state" id="year-error" role="alert">{formError}</p>}
+    <ResultsSummary count={total ?? (!loading && !error ? items.length : null)} loading={loading && page === 1 && !items.length} route={path} filters={params} clear={clear} labels={{ sort: sortLabel }} />
     {items.length > 0 && (releases ? <Releases items={items} controls={controls} /> :
-      <div className="af-poster-grid">{items.map(item => <MediaCard item={item} controls={controls} key={item.key} />)}</div>)}
-    {loading && <p className="af-state" role="status">Loading titles…</p>}
-    {error && <div className="af-state" role="alert">{error} <button type="button" className="af-text-link" onClick={() => { setError(''); setLoading(true); setAttempt(value => value + 1); }}>Retry</button>
-      {error.includes('Connect') && <ActionLink href={legacyHref('home', 'settings')}>Open settings</ActionLink>}</div>}
-    {!loading && !error && !items.length && <p className="af-state">{next ? 'No titles on this page match the filters.' : 'No matching titles.'}</p>}
-    {next && !loading && !error && <div className="af-pagination">
-      <button type="button" className="af-button af-secondary" onClick={() => { setLoading(true); setPage(next); }}>Load more titles</button>
+      <div className="af-poster-grid">{items.map((item, index) => <MediaCard item={item} controls={controls} key={item.key} eager={index < 6} />)}</div>)}
+    {params.get('imdb') && !loading && !error && <div className="af-rating-coverage">
+      <p className="af-meta" role="status">{ratingCoverage?.total
+        ? `IMDb ratings known for ${ratingCoverage.rated} of ${ratingCoverage.total} titles on the latest page. Titles without a score are excluded.`
+        : 'The IMDb filter checks each page separately and excludes titles without a known score.'}</p>
+      {ratingCoverage && ratingCoverage.rated < ratingCoverage.total && <>
+        <button type="button" className="af-text-link" onClick={() => { setLoading(true); setAttempt(value => value + 1); }}>Retry rating lookup</button>
+        <a className="af-text-link" href={webHref(routeWithParams(path, new URLSearchParams([...params].filter(([key]) => key !== 'imdb'))))}>Remove IMDb filter</a>
+      </>}
+    </div>}
+    {loading && page === 1 && <Loading label="" shape={releases ? 'releases' : 'posters'} />}
+    {error && page === 1 && <CatalogProblem error={error} retry={() => { setError(''); setLoading(true); setAttempt(value => value + 1); }} />}
+    {!loading && !error && !items.length && <p className="af-state" role="status">{ratingCoverage && ratingCoverage.total > 0 && !ratingCoverage.rated ? 'IMDb ratings are unavailable for this page.' : next ? 'No titles on this page match the filters.' : 'No matching titles.'}</p>}
+    {page > 1 && <p className="af-meta" role="status">{loading ? 'Loading more titles…' : error || `${items.length} titles shown`}</p>}
+    {(next || page > 1 && (loading || error)) && <div className="af-pagination">
+      <button type="button" className="af-button af-secondary" aria-disabled={loading} onClick={() => {
+        if (loading) return;
+        setLoading(true);
+        if (error) { setError(''); setAttempt(value => value + 1); }
+        else if (next) setPage(next);
+      }}>{error ? 'Retry loading more' : loading ? 'Loading more…' : 'Load more titles'}</button>
     </div>}
   </div>;
 }

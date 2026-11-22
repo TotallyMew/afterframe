@@ -1,0 +1,108 @@
+.af-modal.af-account-modal {
+  top: clamp(.5rem, 5dvh, 3rem);
+  width: min(34rem, calc(100% - 1rem));
+  max-height: calc(100dvh - 2 * clamp(.5rem, 5dvh, 3rem));
+  padding: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.af-account-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--af-space-3);
+  padding: var(--af-space-3) clamp(1rem, 4vw, 1.75rem);
+  border-bottom: 1px solid var(--af-divider);
+}
+
+.af-account-content {
+  display: grid;
+  gap: var(--af-space-4);
+  padding: var(--af-space-5) clamp(1rem, 4vw, 1.75rem);
+}
+
+.af-account-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--af-space-2);
+}
+
+.af-account-form label {
+  font-size: var(--af-type-secondary);
+  font-weight: 650;
+}
+
+.af-account-form label:not(:first-child),
+.af-account-form > button[type=submit] {
+  margin-top: var(--af-space-2);
+}
+
+.af-account-form .af-input { width: 100%; }
+.af-account-form .af-text-link { min-height: var(--af-touch-control); }
+
+.af-account-password {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--af-space-2);
+}
+
+.af-account-profile {
+  display: flex;
+  align-items: center;
+  gap: var(--af-space-4);
+  overflow-wrap: anywhere;
+}
+
+.af-account-avatar {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 3rem;
+  height: 3rem;
+  border-radius: var(--af-radius);
+  font: 700 1.375rem/1 var(--af-display);
+  background: var(--af-selection-fill);
+  color: var(--af-selection);
+}
+
+.af-account-profile h3,
+.af-account-security h3 { font-weight: 650; }
+
+.af-account-security {
+  display: grid;
+  gap: var(--af-space-3);
+  border-top: 1px solid var(--af-divider);
+  padding-top: var(--af-space-4);
+}
+
+.af-account-confirm,
+.af-account-recovery {
+  display: grid;
+  gap: var(--af-space-2);
+  padding: var(--af-space-3);
+  border: 1px solid var(--af-divider);
+  border-radius: var(--af-radius);
+  background: var(--af-canvas);
+}
+
+.af-account-confirm h4 { font-weight: 650; }
+.af-account-recovery output { overflow-wrap: anywhere; user-select: all; font-family: monospace; }
+.af-account-feedback[role=alert] { color: var(--af-selection); }
+
+.af-account-notice {
+  position: fixed;
+  z-index: 8;
+  inset: auto var(--af-gutter) max(var(--af-space-4), env(safe-area-inset-bottom)) auto;
+  padding: var(--af-space-3) var(--af-space-4);
+  border: 1px solid var(--af-control-edge);
+  border-radius: var(--af-radius);
+  background: var(--af-panel);
+  color: var(--af-ink);
+  font-size: var(--af-type-secondary);
+}
+
+@media (max-width: 22rem) {
+  .af-account-password { grid-template-columns: minmax(0, 1fr); }
+  .af-account-password button { justify-self: start; }
+}

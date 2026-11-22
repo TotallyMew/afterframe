@@ -6,6 +6,7 @@ pool?.on('error', () => { /* Metadata remains available from TMDb. */ });
 let omdbKey = process.env.OMDB_API_KEY?.trim();
 const requests = new Map();
 const memory = new Map();
+const writes = new Map();
 let schema;
 let quotaDay;
 let used = 0;
@@ -22,6 +23,22 @@ async function dbQuery(sql, values) {
   } catch {
     return undefined;
   }
+}
+
+export function peekMetadata(key) {
+  const saved = memory.get(key);
+  return saved?.expires > Date.now() ? saved.payload : undefined;
+}
+
+function persistMetadata(key, payload, expires) {
+  if (!pool || (writes.size >= 100 && !writes.has(key))) return;
+  const write = (writes.get(key) || Promise.resolve()).then(() => dbQuery(`
+    INSERT INTO afterframe_metadata (cache_key, payload, expires_at) VALUES ($1, $2, $3)
+    ON CONFLICT (cache_key) DO UPDATE SET payload = EXCLUDED.payload, expires_at = EXCLUDED.expires_at`,
+  [key, JSON.stringify(payload), new Date(expires)]));
+  writes.set(key, write);
+  const finish = () => { if (writes.get(key) === write) writes.delete(key); };
+  void write.then(finish, finish);
 }
 
 export async function cacheMetadata(key, ttl, load, refresh = false) {
@@ -41,9 +58,7 @@ export async function cacheMetadata(key, ttl, load, refresh = false) {
       const expires = Date.now() + ttl;
       if (memory.size >= 600) memory.delete(memory.keys().next().value);
       memory.set(key, { payload, expires });
-      await dbQuery(`INSERT INTO afterframe_metadata (cache_key, payload, expires_at) VALUES ($1, $2, $3)
-        ON CONFLICT (cache_key) DO UPDATE SET payload = EXCLUDED.payload, expires_at = EXCLUDED.expires_at`,
-      [key, JSON.stringify(payload), new Date(expires)]);
+      persistMetadata(key, payload, expires);
       return payload;
     } catch (error) {
       if (saved || stored) return saved ? saved.payload : stored.payload;
@@ -54,7 +69,7 @@ export async function cacheMetadata(key, ttl, load, refresh = false) {
   return pending;
 }
 
-export async function imdbRating(id) {
+export async function imdbRating(id, strict = false) {
   if (!omdbKey || !/^tt\d{7,12}$/.test(id || '')) return null;
   return cacheMetadata(`imdb:${id}`, 7 * 86400000, async () => {
     const day = new Date().toISOString().slice(0, 10);
@@ -71,7 +86,7 @@ export async function imdbRating(id) {
     const score = Number(data.imdbRating);
     const votes = Number(String(data.imdbVotes || '').replaceAll(',', ''));
     return score > 0 && score <= 10 && Number.isInteger(votes) && votes > 0 ? { score, votes } : null;
-  }).catch(() => null);
+  }).catch(error => { if (strict) throw error; return null; });
 }
 
 function requestOmdb(key, id) {
@@ -106,15 +121,19 @@ export async function validateOmdbKey(key) {
 export async function cachedRatings(keys) {
   const ratings = {};
   for (const key of keys) {
-    const details = memory.get(`title:${key}:`)?.payload;
+    const details = peekMetadata(`title:${key}:`) || peekMetadata(`basic:${key}:`);
     const id = details?.external_ids?.imdb_id || details?.imdb_id;
-    const rating = memory.get(`imdb:${id}`)?.payload;
+    const rating = peekMetadata(`imdb:${id}`);
     if (rating) ratings[key.replace(':', '-')] = rating;
   }
+  const missing = keys.filter(key => !ratings[key.replace(':', '-')]);
+  if (!missing.length) return ratings;
   const result = await dbQuery(`SELECT left(substr(t.cache_key, 7), -1) AS title, r.payload
     FROM afterframe_metadata t JOIN afterframe_metadata r ON r.cache_key =
       'imdb:' || COALESCE(t.payload #>> '{external_ids,imdb_id}', t.payload ->> 'imdb_id')
-    WHERE t.cache_key = ANY($1::text[]) AND r.payload <> 'null'::jsonb`, [keys.map(key => `title:${key}:`)]);
+    WHERE t.cache_key = ANY($1::text[]) AND r.payload <> 'null'::jsonb
+    ORDER BY t.expires_at`,
+  [missing.flatMap(key => [`title:${key}:`, `basic:${key}:`])]);
   for (const row of result?.rows || []) ratings[row.title.replace(':', '-')] = row.payload;
   return ratings;
 }

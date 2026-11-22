@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { comicsApi } from '../comics/comics.mjs';
+import { mkdtemp, rm, rmdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { comicPageResponse, comicsApi } from '../comics/comics.mjs';
 
 test('chapter ranges and reader links follow the same ordered list of chapters', async t => {
   const uuid = number => `00000000-0000-0000-0000-${String(number).padStart(12, '0')}`;
@@ -35,6 +38,7 @@ test('chapter ranges and reader links follow the same ordered list of chapters',
   };
 
   const first = await load({});
+  const preview = await load({ scope: 'native' });
   const second = await load({ page: 3, chapter: alternate.id });
   const last = await load({ page: 200 });
 
@@ -44,6 +48,8 @@ test('chapter ranges and reader links follow the same ordered list of chapters',
     { start: '100', end: 'Afterword' },
   ]);
   assert.equal(first.totalChapters, 107);
+  assert.equal(preview.preview, true);
+  assert.deepEqual(preview.results, first.results);
   assert.equal(first.mainChapters, 105);
   const entries = [...first.results, ...second.results, ...last.results];
   assert.equal(new Set(entries.map(entry => entry.id)).size, entries.length);
@@ -72,7 +78,13 @@ test('native MangaDex pages are served through the local image route', async t =
   const titleId = '00000000-0000-0000-0000-000000001001';
   const chapterId = '00000000-0000-0000-0000-000000001002';
   const hash = '0123456789abcdef0123456789abcdef';
+  let manifests = 0;
+  let chapters = 0;
+  let rejectImage = false;
   t.mock.method(globalThis, 'fetch', async url => {
+    if (String(url).startsWith('https://uploads.mangadex.org/')) {
+      return rejectImage ? new Response(null, { status: 404 }) : new Response('image', { headers: { 'content-type': 'image/jpeg' } });
+    }
     if (url.pathname === `/manga/${titleId}`) {
       return Response.json({ result: 'ok', data: {
         id: titleId,
@@ -81,6 +93,7 @@ test('native MangaDex pages are served through the local image route', async t =
       } });
     }
     if (url.pathname === `/chapter/${chapterId}`) {
+      chapters++;
       return Response.json({ result: 'ok', data: {
         id: chapterId,
         attributes: { chapter: '1', translatedLanguage: 'en', pages: 1 },
@@ -88,6 +101,7 @@ test('native MangaDex pages are served through the local image route', async t =
       } });
     }
     assert.equal(url.pathname, `/at-home/server/${chapterId}`);
+    manifests++;
     return Response.json({ result: 'ok',
       baseUrl: 'https://uploads.mangadex.org',
       chapter: { hash, data: ['page.jpg'], dataSaver: [] },
@@ -96,5 +110,36 @@ test('native MangaDex pages are served through the local image route', async t =
 
   const result = await comicsApi(`/api/comics/${titleId}/chapters/${chapterId}`, new URLSearchParams());
   assert.equal(result.status, 200);
+  assert.equal(result.body.transcript, undefined);
   assert.deepEqual(result.body.pages, [`/comic-page/${titleId}/${chapterId}/1`]);
+  const folder = await mkdtemp(join(tmpdir(), 'afterframe-transcripts-'));
+  const file = join(folder, 'transcripts.json');
+  const previousFile = process.env.AFTERFRAME_COMIC_TRANSCRIPTS_FILE;
+  try {
+    const entry = `${titleId}/${chapterId}`;
+    await writeFile(file, JSON.stringify({ [entry]: { pages: ['Page one text', 'Wrong extra page'], source: 'https://example.com/source' } }));
+    process.env.AFTERFRAME_COMIC_TRANSCRIPTS_FILE = file;
+    const supplied = await comicsApi(`/api/comics/${titleId}/chapters/${chapterId}`, new URLSearchParams());
+    assert.deepEqual(supplied.body.transcript, { pages: ['Page one text'], source: 'https://example.com/source' });
+    await writeFile(file, '{malformed');
+    const noTranscript = await comicsApi(`/api/comics/${titleId}/chapters/${chapterId}`, new URLSearchParams());
+    assert.equal(noTranscript.status, 200);
+    assert.equal(noTranscript.body.transcript, undefined);
+  } finally {
+    if (previousFile === undefined) delete process.env.AFTERFRAME_COMIC_TRANSCRIPTS_FILE;
+    else process.env.AFTERFRAME_COMIC_TRANSCRIPTS_FILE = previousFile;
+    await rm(file, { force: true });
+    await rmdir(folder);
+  }
+  const [first, second] = await Promise.all(result.body.pages.concat(result.body.pages)
+    .map(path => comicPageResponse(path, new AbortController().signal)));
+  assert.equal(await first.text(), 'image');
+  assert.equal(await second.text(), 'image');
+  assert.equal(chapters, 1);
+  assert.equal(manifests, 1);
+  rejectImage = true;
+  assert.equal(await comicPageResponse(result.body.pages[0], new AbortController().signal), null);
+  const refreshed = await comicsApi(`/api/comics/${titleId}/chapters/${chapterId}`, new URLSearchParams());
+  assert.equal(refreshed.status, 200);
+  assert.equal(manifests, 2);
 });

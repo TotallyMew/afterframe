@@ -25,6 +25,20 @@ test('MAL scores use the official endpoint and the mapped ID', async t => {
   }
 });
 
+test('explicit rating checks distinguish service errors from missing titles', async t => {
+  const previous = process.env.MAL_CLIENT_ID;
+  process.env.MAL_CLIENT_ID = 'test-fixture';
+  try {
+    t.mock.method(globalThis, 'fetch', async url => new Response(null, { status: url.includes('912346?') ? 503 : 404 }));
+    assert.equal(await malRating('manga', 912346), null);
+    await assert.rejects(malRating('manga', 912346, true), /unavailable/);
+    assert.equal(await malRating('manga', 912347, true), null);
+  } finally {
+    if (previous === undefined) delete process.env.MAL_CLIENT_ID;
+    else process.env.MAL_CLIENT_ID = previous;
+  }
+});
+
 test('per-episode coverage contributes to series progress without completing the whole series', () => {
   const watched = { 'tv-8001/e1': {} };
   assert.equal(titleProgress(item, { 'tv-8001/e2': { ranges: [[0, 50]], duration: 100 } }, watched), 15);
@@ -122,6 +136,16 @@ test('playback conflicts, release deduplication and one-time recovery', async ()
   assert.equal(library.ratings[item.key].score, 9);
   assert.equal(library.progress[mediaKey], undefined);
   assert.equal(Object.values(library.history)[0].coverage, 44);
+  const ratedAgain = await write('ratings', item.key, { item, score: 8, scale: 10 });
+  assert.equal(ratedAgain.body.prior.score, 9);
+  await write('ratings', item.key, { item, score: 10, scale: 10 }, Date.now() + 30, secondSession);
+  const undo = await call('library', {
+    accountId, kind: 'ratings', key: item.key, value: ratedAgain.body.prior,
+    at: Date.now() + 60, expectedAt: ratedAgain.body.revision,
+  }, firstSession);
+  assert.equal(undo.body.stale, true);
+  assert.equal((await readLibrary(accountId)).ratings[item.key].score, 10);
+
   const completion = await call('complete-series', { accountId, item, episodes: ['s1e1', 's1e2'] }, firstSession);
   assert.equal(completion.code, 200);
   const completed = await readLibrary(accountId);

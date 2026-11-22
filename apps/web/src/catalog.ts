@@ -94,7 +94,8 @@ export interface Details extends RawTitle {
   };
 }
 
-export interface TitleResults { results: RawTitle[]; nextPage?: number | null; total?: number | null }
+export interface RatingCoverage { total: number; rated: number }
+export interface TitleResults { results: RawTitle[]; nextPage?: number | null; total?: number | null; ratingCoverage?: RatingCoverage }
 
 export const catalogGenres = [
   'Action', 'Adventure', 'Animation', 'Comedy', 'Crime', 'Documentary', 'Drama', 'Family',
@@ -117,11 +118,23 @@ const genres: Record<number, string> = {
   10759: 'Action & Adventure', 10762: 'Kids', 10765: 'Sci-Fi & Fantasy', 10768: 'War & Politics',
 };
 
+export class RequestError extends Error {
+  constructor(message: string, readonly status: number) { super(message); }
+}
+
 export async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(path, options);
+  const deadline = AbortSignal.timeout(30000);
+  const signal = options?.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
+  let response: Response;
+  try { response = await fetch(path, { ...options, signal }); }
+  catch (error) {
+    if (deadline.aborted) throw new Error('The request took too long. Try again.');
+    if (options?.signal?.aborted) throw error;
+    throw new Error('Could not connect to Afterframe. Try again.');
+  }
   const result = await response.json().catch(() => null);
   if (!response.ok || result === null) {
-    throw new Error(result?.error || `Afterframe returned an unexpected response (${response.status}).`);
+    throw new RequestError(result?.error || `Afterframe returned an unexpected response (${response.status}).`, response.status);
   }
   return result as T;
 }
@@ -153,22 +166,47 @@ export function normalizeTitle(raw: RawTitle, type = raw.media_type): Title {
   };
 }
 
-export function normalizeTitles(raw: RawTitle[] = []) {
-  return raw.map(item => normalizeTitle(item));
+export function normalizeTitles(raw: RawTitle[]) {
+  if (!Array.isArray(raw)) throw new Error('The catalog returned an invalid list of titles.');
+  return raw.filter(item => item && Number.isSafeInteger(item.id)).map(item => normalizeTitle(item));
 }
 
 export function titleHref(item: Pick<Title, 'type' | 'id'>) {
-  return `/#${item.type}/${item.id}`;
+  return recordHref(`${item.type}/${item.id}`);
 }
 
-export function legacyHref(route: string, panel?: 'settings' | 'account') {
-  return `/legacy/${panel ? `?panel=${panel}` : ''}#${route}`;
+export function playerHref(route: string, back = location.hash || '#home') {
+  const params = back ? new URLSearchParams({ return: `/${back}` }) : undefined;
+  return `/player/${params ? `?${params}` : ''}#${route}`;
+}
+
+export function rememberRoute(invoker: Element | null = null) {
+  const focused = invoker ?? document.activeElement;
+  const focus = focused instanceof HTMLAnchorElement ? focused.getAttribute('href') : focused?.getAttribute('aria-label');
+  try { sessionStorage.setItem(`afterframe.view:${location.hash || '#home'}`, JSON.stringify({ y: scrollY, focus })); }
+  catch { /* Browsing still works without session storage. */ }
+}
+
+export function previousBrowse(fallback: string) {
+  const back = new URLSearchParams(location.hash.split('?')[1]).get('back');
+  return back && /^#(?:home|movies|tv|new|anime|comics|search|watchlist|watched|ratings|reading|history|recommendations)(?:[?=]|$)/.test(back)
+    ? `/${back}` : webHref(fallback);
+}
+
+function recordHref(route: string) {
+  const prior = location.hash;
+  return webHref(prior && !prior.startsWith(`#${route}`) && !/^#(?:movie|tv|comic)\//.test(prior)
+    ? `${route}?back=${encodeURIComponent(prior)}` : route);
+}
+
+export function comicDetailsHref(id: string) {
+  return recordHref(`comic/${encodeURIComponent(id)}`);
 }
 
 export function libraryItemHref(item: Title | Comic) {
-  if (item.type === 'comic') return webHref(`comic/${encodeURIComponent(item.id)}`);
+  if (item.type === 'comic') return comicDetailsHref(item.id);
   if (Number.isSafeInteger(item.id) && item.id > 0 && /^(movie|tv)-\d+$/.test(item.key) && !item.archiveId) return titleHref(item);
-  return legacyHref(`edition/${encodeURIComponent(item.key)}`);
+  return playerHref(`edition/${encodeURIComponent(item.key)}`);
 }
 
 export function comicCover(poster?: string) {
@@ -176,13 +214,13 @@ export function comicCover(poster?: string) {
 }
 
 export function playHref(item: Pick<Title, 'type' | 'id'>, episode?: EpisodePosition) {
-  return legacyHref(`${item.type}/${item.id}/${episode ? `s${episode.season}e${episode.number}` : 'watch'}`);
+  return playerHref(`${item.type}/${item.id}/${episode ? `s${episode.season}e${episode.number}` : 'watch'}`);
 }
 
 export function resumeHref(item: Title, key: string, episode?: EpisodePosition) {
   if (Number.isInteger(item.id) && /^(movie|tv)-\d+$/.test(item.key) && !item.archiveId && (item.type === 'movie' || episode)) return playHref(item, episode);
   const editionEpisode = key.startsWith(`${item.key}/`) ? key.slice(item.key.length + 1) : '';
-  return legacyHref(`edition/${encodeURIComponent(item.key)}/watch${editionEpisode ? `/${encodeURIComponent(editionEpisode)}` : ''}`);
+  return playerHref(`edition/${encodeURIComponent(item.key)}/watch${editionEpisode ? `/${encodeURIComponent(editionEpisode)}` : ''}`);
 }
 
 export function episodePosition(episode: Episode): EpisodePosition {

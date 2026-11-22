@@ -15,7 +15,7 @@ import { catalogAnimeRating, malRating } from './catalog/mal.mjs';
 import { comicCoverResponse, comicPageResponse, comicsApi, reportComicPage } from './comics/comics.mjs';
 import { animeSource } from './catalog/anime.mjs';
 import { catalogFilters, discoverParams, isAnime, matchesCatalog } from '../../afterframe/public/discover.js';
-import { cacheMetadata, cachedRatings, hasOmdbKey, imdbRating, refreshMetadataPeriodically, setOmdbKey, validateOmdbKey } from './catalog/metadata.mjs';
+import { cacheMetadata, cachedRatings, hasOmdbKey, imdbRating, peekMetadata, refreshMetadataPeriodically, setOmdbKey, validateOmdbKey } from './catalog/metadata.mjs';
 import { applySecurityHeaders, publicOrigin } from './http-settings.mjs';
 
 const port = Number(process.env.PORT || 4173);
@@ -79,14 +79,16 @@ async function discover(type, page, filters, collection) {
   const params = { language: 'en-US', page, include_adult: 'false', ...discoverParams(type, filters, collection) };
   const data = await cacheMetadata(`discover:${type}:${JSON.stringify(params)}`, 30 * 60000, () => tmdb(`/discover/${type}`, params));
   let results = data.results.filter(item => !item.adult).map(item => ({ ...item, media_type: type }));
+  let ratingCoverage;
   if (filters.imdb) {
     const facts = await catalogFacts(results.map(item => `${type}:${item.id}`));
+    ratingCoverage = { total: results.length, rated: results.filter(item => facts[`${type}-${item.id}`]?.rating?.score > 0).length };
     results = results.flatMap(item => {
       const info = facts[`${type}-${item.id}`];
       return info?.rating?.score >= filters.imdb ? [{ ...item, catalog_facts: info }] : [];
     });
   }
-  return { results, total: filters.imdb ? null : data.total_results, nextPage: page < Math.min(data.total_pages, 500) ? page + 1 : null };
+  return { results, total: filters.imdb ? null : data.total_results, ...(ratingCoverage ? { ratingCoverage } : {}), nextPage: page < Math.min(data.total_pages, 500) ? page + 1 : null };
 }
 
 function titleMetadata(type, id, season, refresh = false) {
@@ -96,15 +98,22 @@ function titleMetadata(type, id, season, refresh = false) {
     : tmdb(path, { language: 'en-US', append_to_response: 'watch/providers,external_ids,credits' }), refresh);
 }
 
+function basicTitle(type, id) {
+  return peekMetadata(`title:${type}:${id}:`) ?? cacheMetadata(`basic:${type}:${id}:`, 12 * 3600000,
+    () => tmdb(`/${type}/${id}`, { language: 'en-US', ...(type === 'tv' ? { append_to_response: 'external_ids' } : {}) }));
+}
+
 async function catalogFacts(keys) {
   const cached = await cachedRatings(keys);
   const facts = {};
-  for (let index = 0; index < keys.length; index += 5) {
-    await Promise.all(keys.slice(index, index + 5).map(async key => {
+  let index = 0;
+  async function loadFacts() {
+    while (index < keys.length) {
+      const key = keys[index++];
       const [type, id] = key.split(':');
       const cardKey = `${type}-${id}`;
       try {
-        const details = type === 'tv' || !cached[cardKey] ? await titleMetadata(type, id) : null;
+        const details = type === 'tv' || (!cached[cardKey] && hasOmdbKey()) ? await basicTitle(type, id) : null;
         const external = details?.external_ids?.imdb_id || details?.imdb_id;
         facts[cardKey] = {
           rating: cached[cardKey] || await imdbRating(external),
@@ -113,8 +122,9 @@ async function catalogFacts(keys) {
       } catch {
         if (cached[cardKey]) facts[cardKey] = { rating: cached[cardKey] };
       }
-    }));
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(5, keys.length) }, loadFacts));
   return facts;
 }
 
@@ -181,12 +191,12 @@ async function handleApi(request, response, url) {
 
   if (pathname === '/api/anime-discovery' && request.method === 'GET') return json(response, 200, await seasonalAnime(searchParams));
   const mal = pathname.match(/^\/api\/mal\/(anime|manga)\/([1-9]\d{0,9})$/);
-  if (mal && request.method === 'GET') return json(response, 200, { rating: await malRating(mal[1], mal[2]) });
+  if (mal && request.method === 'GET') return json(response, 200, { rating: await malRating(mal[1], mal[2], searchParams.get('status') === '1') });
   const catalogMal = pathname.match(/^\/api\/mal\/catalog\/(movie|tv)\/([1-9]\d{0,9})$/);
   if (catalogMal && request.method === 'GET') {
     const season = searchParams.get('season') || '1';
     if (!/^\d{1,4}$/.test(season)) return json(response, 400, { error: 'Invalid season.' });
-    return json(response, 200, { rating: await catalogAnimeRating(catalogMal[1], catalogMal[2], season) });
+    return json(response, 200, { rating: await catalogAnimeRating(catalogMal[1], catalogMal[2], season, searchParams.get('status') === '1') });
   }
   if (pathname === '/api/recommendations' && ['GET', 'POST'].includes(request.method)) {
     const account = await currentAccount(request);
@@ -226,7 +236,7 @@ async function handleApi(request, response, url) {
       return json(response, 502, { error: 'The anime player is temporarily unavailable.' });
     }
   }
-  if (pathname === '/api/imdb') return json(response, 200, { rating: await imdbRating(searchParams.get('id')) });
+  if (pathname === '/api/imdb') return json(response, 200, { rating: await imdbRating(searchParams.get('id'), searchParams.get('status') === '1') });
   if (pathname === '/api/imdb/cached') {
     const keys = [...new Set((searchParams.get('titles') || '').split(','))].filter(key => /^(movie|tv):[1-9]\d{0,9}$/.test(key)).slice(0, 100);
     return json(response, 200, { ratings: keys.length ? await cachedRatings(keys) : {} });
@@ -284,7 +294,7 @@ async function handleApi(request, response, url) {
     return item ? json(response, 200, item) : json(response, 404, { error: 'A playable licensed video is unavailable for this Archive item.' });
   }
 
-  const route = pathname.match(/^\/api\/(movie|tv)\/(\d{1,10})(?:\/season\/(\d{1,4}))?$/);
+  const route = pathname.match(/^\/api\/(movie|tv)\/(\d{1,10})(?:(?:\/season\/(\d{1,4}))|(\/playback))?$/);
   if (!route && !['/api/search', '/api/trending', '/api/browse', '/api/home'].includes(pathname)) return json(response, 404, { error: 'Not found.' });
   if (!tmdbCredential) return json(response, 503, { error: 'Connect the catalog in Settings to use the full catalog.' });
 
@@ -317,8 +327,13 @@ async function handleApi(request, response, url) {
       ['newTV', 'tv', 'newest', 'new', ''],
       ['anime', 'tv', 'popular', '', 'Anime'],
     ];
-    const sections = await Promise.allSettled(collections.map(([, type, sort, collection, category]) =>
-      discover(type, 1, { sort, category, decade: 0 }, collection)));
+    const load = ([, type, sort, collection, category]) => discover(type, 1, { sort, category, decade: 0 }, collection);
+    const section = searchParams.get('section');
+    if (section !== null) {
+      const selected = collections.find(([key]) => key === section);
+      return selected ? json(response, 200, await load(selected)) : json(response, 400, { error: 'Choose a home section.' });
+    }
+    const sections = await Promise.allSettled(collections.map(load));
     return json(response, 200, Object.fromEntries(sections.flatMap((section, index) =>
       section.status === 'fulfilled' ? [[collections[index][0], section.value.results]] : [])));
   }
@@ -331,8 +346,8 @@ async function handleApi(request, response, url) {
     return json(response, 200, { results, nextPage: page < Math.min(data.total_pages, 500) ? page + 1 : null });
   }
 
-  const [, type, id, season] = route;
-  return json(response, 200, await titleMetadata(type, id, season));
+  const [, type, id, season, playback] = route;
+  return json(response, 200, await (playback ? basicTitle(type, id) : titleMetadata(type, id, season)));
 }
 
 async function relayArchive(request, response, pathname) {
@@ -363,7 +378,7 @@ async function relayArchive(request, response, pathname) {
     await upstream.body?.cancel();
     return json(response, 502, { error: 'The video source could not serve this stream.' });
   }
-  const headers = { 'cache-control': 'no-store' };
+  const headers = { 'cache-control': item && upstream.ok ? 'private, max-age=3600' : 'no-store' };
   for (const name of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified']) {
     const value = upstream.headers.get(name);
     if (value) headers[name] = value;
@@ -374,15 +389,27 @@ async function relayArchive(request, response, pathname) {
 }
 
 async function serveFile(request, response, pathname) {
-  const legacy = pathname.startsWith('/legacy/') ? pathname.slice('/legacy'.length) : pathname;
-  const path = legacy === '/' ? '/index.html' : legacy;
+  if (pathname === '/' && !hasWebBuild) {
+    return json(response, 503, { error: 'The web client has not been built. Run npm run build in apps/web or use the web service.' });
+  }
+  const path = pathname === '/' ? '/index.html' : pathname === '/player/' ? '/player.html' : pathname;
   const builtFile = hasWebBuild && (pathname === '/' || /^\/assets\/[a-z0-9][\w.-]*$/i.test(pathname));
   const allowed = builtFile || /^\/(?:art\/)?[a-z0-9][\w.-]*$/i.test(path);
   if (!allowed || !mime[extname(path)]) return json(response, 404, { error: 'Not found.' });
   const file = join(builtFile ? webDirectory : publicDirectory, path.slice(1));
   const info = await stat(file).catch(() => null);
   if (!info?.isFile()) return json(response, 404, { error: 'Not found.' });
-  response.writeHead(200, { 'content-type': mime[extname(path)], 'content-length': info.size, 'cache-control': 'no-cache' });
+  const etag = `W/"${info.size.toString(16)}-${info.mtimeMs.toString(16)}"`;
+  const cacheHeaders = {
+    etag,
+    'cache-control': builtFile && pathname.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache',
+  };
+  const validators = request.headers['if-none-match']?.split(',').map(value => value.trim().replace(/^W\//, ''));
+  if (['GET', 'HEAD'].includes(request.method) && (validators?.includes('*') || validators?.includes(etag.slice(2)))) {
+    response.writeHead(304, cacheHeaders);
+    return response.end();
+  }
+  response.writeHead(200, { ...cacheHeaders, 'content-type': mime[extname(path)], 'content-length': info.size });
   if (request.method === 'HEAD') return response.end();
   await pipeline(createReadStream(file), response);
 }
@@ -404,6 +431,10 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname.startsWith('/api/')) return await handleApi(request, response, url);
     if (!['GET', 'HEAD'].includes(request.method)) return json(response, 405, { error: 'Method unavailable.' });
+    if (/^\/legacy\/?$/.test(url.pathname)) {
+      response.writeHead(302, { location: `/${url.search}`, 'cache-control': 'no-store' });
+      return response.end();
+    }
     if (url.pathname.startsWith('/comic-page/')) {
       const controller = new AbortController();
       response.once('close', () => controller.abort());

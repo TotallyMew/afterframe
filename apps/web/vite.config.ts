@@ -9,7 +9,7 @@ const apiProxy: ProxyOptions = {
   changeOrigin: true,
   configure(proxy) {
     proxy.on('proxyReq', (outgoing, incoming) => {
-      // The legacy API checks Origin against Host on writes.
+      // The API checks Origin against Host on writes.
       if (incoming.headers.origin === `http://${incoming.headers.host}`) {
         outgoing.setHeader('origin', backend.origin);
       }
@@ -23,7 +23,8 @@ const proxy = {
   '/stream/': apiProxy,
   '/comic-cover/': apiProxy,
   '/comic-page/': apiProxy,
-  '/legacy/': apiProxy,
+  '/player/': apiProxy,
+  '^/[a-z0-9][\\w.-]*\\.(?:css|js|vtt)$': apiProxy,
 };
 
 export default defineConfig({

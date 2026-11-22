@@ -10,16 +10,18 @@ Install Node.js 22.19 or newer, then run these commands from the repository root
 
 ```sh
 npm ci
+npm ci --prefix apps/web
+npm run build --prefix apps/web
 npm start --workspace @afterframe/api
 ```
 
 Open [localhost:4173](http://localhost:4173/). The server listens on the loopback interface. Set `PORT` in the environment or in `afterframe/.env` to choose another port.
 
-Run `npm test --workspace @afterframe/api` from the repository root. The API code and tests live in `apps/api`. The `afterframe` directory holds the classic frontend and its local configuration and data. The previous `cd afterframe`, `npm ci` and `npm start` commands still work.
+Run `npm test --workspace @afterframe/api` from the repository root. The API and tests live in `apps/api`. The web app lives in `apps/web`. The `afterframe` directory holds media assets, the player, and local configuration and data.
 
-## React preview
+## Web development
 
-The React frontend includes Home, Movies, TV Shows, Anime, Comics, release listings, recommendations, search, title details and My Library. The video player, comic reader, settings and account screens open under `/legacy/` on the same origin, so both interfaces share the same session and guest library.
+Comics, account controls, and Settings open inside the web app. Movies and series open a dedicated video player on the same origin, sharing the session and library. Bookmarks for the former interface redirect to their current destinations.
 
 Start the API from the repository root with `npm start --workspace @afterframe/api`. In another terminal, run:
 
@@ -29,7 +31,7 @@ npm ci
 npm run dev
 ```
 
-Open [localhost:5174](http://localhost:5174/). Set `AFTERFRAME_API_URL` before starting Vite if the API uses a port other than 4173. Run `npm run build` in `apps/web` to type-check and build the frontend. If `apps/web/dist/index.html` exists when Node starts, the React build opens on the API server's main address and the classic interface remains at `/legacy/`. Use `AFTERFRAME_WEB_DIST` to select a different build directory.
+Open [localhost:5174](http://localhost:5174/). Set `AFTERFRAME_API_URL` before starting Vite if the API uses a port other than 4173. Run `npm run build` in `apps/web` to type-check and build the frontend. Restart the API to serve a new build from its main address. Use `AFTERFRAME_WEB_DIST` to select a different build directory.
 
 ## Run with Docker Compose
 
@@ -47,7 +49,11 @@ Only the web port is published, on the local loopback interface. The web service
 
 ## Deploy to Railway
 
-Create two GitHub-backed services from the repository root named `web` and `api`, plus a PostgreSQL service named `Postgres`. Use the branch that contains the deployment configuration for both GitHub services. Add a public HTTPS domain to `web` and keep `api` and `Postgres` on the private network. Both app services use the root Dockerfile and `/api/health`.
+Use two services named `web` and `api`, plus a PostgreSQL service named `Postgres`. Add a public HTTPS domain to `web` and route its API traffic over the private network. Set the healthcheck path to `/api/health` on both app services.
+
+For image-backed services, build both Docker targets from the same revision for `linux/amd64`. Publish matching versioned `web-<version>` and `api-<version>` tags, then select the corresponding Source Image in each Railway service. Verify both deployments are active and confirm that the public web URL serves the new frontend and returns 200 from `/api/health`. The previous tags provide a rollback target.
+
+For GitHub-backed services, use the repository root and the branch containing the deployment configuration for both services. Railway builds the root Dockerfile and uses `AFTERFRAME_SERVICE` to select the corresponding target.
 
 | Service | Variables |
 | --- | --- |
@@ -115,5 +121,8 @@ Choose a chapter language to see chapters that open in the built-in reader. Afte
 The reader offers single-page and vertical-scroll layouts, page fit controls, and fullscreen. Use the page picker or **← / →** in single-page mode, and press **F** for fullscreen. Afterframe remembers your layout and fit on this browser.
 
 **My Library → Reading** shows your reading list and your last page for each title. Guest activity stays in the browser, and signed-in progress belongs to the local account. Comics use MangaDex's public API without an API key. Chapter coverage varies by title and language.
+
+To supply publisher-authorized chapter text, set `AFTERFRAME_COMIC_TRANSCRIPTS_FILE` on the API to a JSON file. Use keys of the form `comic-id/chapter-edition-id` and values such as `{"pages":["Text for page 1","","Text for page 3"],"source":"https://publisher.example/transcript"}`. Page entries follow the exact edition's page order. Empty strings mark unavailable pages. The reader shows the transcript and labels editions whose text is unavailable. In Docker or Railway, mount the transcript file on the API and point the variable at its container path.
+
 
 Afterframe credits MangaDex and the scanlation groups listed on each chapter. Set `MANGADEX_BLOCKED_GROUPS` in `afterframe/.env` to the comma-separated group IDs to exclude from chapter lists and the reader in response to [MangaDex group removal requests](https://gitlab.com/mangadex-pub/mangadex-api-docs/-/blob/main/index.md).

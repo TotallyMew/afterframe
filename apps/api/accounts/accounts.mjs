@@ -204,6 +204,7 @@ export async function accountApi(request, response, path, body) {
     if (path.endsWith('/revoke-other')) {
       await removeOtherSessions.run(account.id, hashToken(sessionToken(request)));
     } else {
+      if (body?.accountId != null && account.id !== body.accountId) return status(409, 'The signed-in account changed.');
       if (typeof body?.key !== 'string' || !/^[\w-]{1,100}$/.test(body.key)) return status(400, 'Invalid notification.');
       const entry = await getEntry.get(account.id, 'notifications', body.key);
       if (entry) await setEntry.run(account.id, 'notifications', body.key, JSON.stringify({ ...JSON.parse(entry.value), read: true }));
@@ -213,27 +214,28 @@ export async function accountApi(request, response, path, body) {
 
   if (path === '/api/account/library') {
     if (!account) return status(401, 'Sign in to update this library.');
-    const { accountId, kind, key, value, at } = body || {};
+    const { accountId, kind, key, value, at, expectedAt } = body || {};
     if (account.id !== accountId) return status(409, 'The signed-in account changed. Reload to update the library.');
     if (!['saved', 'ratings', 'progress', 'reading', 'skips', 'watched', 'preferences', 'history'].includes(kind) || typeof key !== 'string' || !/^[a-z0-9][\w.-]*(?:\/[\w-]+)?$/i.test(key) || key.length > 145) return status(400, 'Invalid library entry.');
     const entry = libraryValue(kind, value, key);
     if (entry === undefined) return status(400, 'Invalid library entry.');
-    const timestamped = ['progress', 'reading', 'watched', 'history'].includes(kind);
+    if (expectedAt != null && !Number.isSafeInteger(expectedAt)) return status(400, 'Invalid library revision.');
     const now = Date.now();
     const timestamp = Math.min(Number.isSafeInteger(at) ? at : entry?.updated || now, now + 60000);
     return db.transaction(async () => {
       await db.lockAccount(account.id);
-      if (timestamped) {
-        const version = await getVersion.get(account.id, kind, key);
-        const previous = version ? Number(version.updated) : JSON.parse((await getEntry.get(account.id, kind, key))?.value || 'null')?.updated ?? 0;
-        if (timestamp < previous) {
-          return { code: 200, body: { ok: true, stale: true } };
-        }
+      const entryBefore = await getEntry.get(account.id, kind, key);
+      const prior = JSON.parse(entryBefore?.value || 'null');
+      const version = await getVersion.get(account.id, kind, key);
+      const previous = version ? Number(version.updated) : prior?.updated ?? prior?.added ?? 0;
+      if (timestamp < previous || expectedAt != null && expectedAt !== previous) {
+        return { code: 200, body: { ok: true, stale: true } };
       }
+      const revision = Math.max(previous + 1, timestamp);
       if (entry === null) await removeEntry.run(account.id, kind, key);
       else await setEntry.run(account.id, kind, key, JSON.stringify(entry));
-      if (timestamped) await setVersion.run(account.id, kind, key, timestamp);
-      return { code: 200, body: { ok: true } };
+      await setVersion.run(account.id, kind, key, revision);
+      return { code: 200, body: { ok: true, revision, prior } };
     });
   }
 
@@ -249,10 +251,12 @@ export async function accountApi(request, response, path, body) {
       if (!existing) return status(409, 'Save the series before completing it.');
       const previous = JSON.parse(existing.value);
       if (previous.type !== 'tv') return status(400, 'This title is not a series.');
-      const updated = Date.now();
+      const version = await getVersion.get(account.id, 'saved', key);
+      const updated = Math.max(Date.now(), Number(version?.updated ?? 0) + 1);
       const saved = { ...previous, totalEpisodes: item.totalEpisodes || previous.totalEpisodes, watchStatus: 'completed', completedAt: updated };
       const entry = JSON.stringify({ item: saved, updated });
       await setEntry.run(account.id, 'saved', key, JSON.stringify(saved));
+      await setVersion.run(account.id, 'saved', key, updated);
       if (episodes.length) {
         const mediaKeys = JSON.stringify([...new Set(episodes)].map(episode => `${key}/${episode}`));
         await setWatchedEpisodes.run(account.id, entry, mediaKeys);

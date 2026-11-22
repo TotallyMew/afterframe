@@ -1,62 +1,85 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
-  legacyHref, normalizeTitle, normalizeTitles, playHref, request, resumeHref, titleHref, today, webHref,
+  normalizeTitle, normalizeTitles, playHref, request, resumeHref, titleHref, today, webHref,
   type CatalogRating, type MediaType, type RawTitle, type Title, type TitleResults,
 } from './catalog';
-import { ActionLink, Icon, MediaCard, SaveButton, Score, Shelf } from './components';
+import { ActionLink, Artwork, CatalogProblem, HeroBackdrop, Icon, Loading, MediaCard, SaveButton, Score, Shelf } from './components';
+import { ComicCard, readerHref } from './Comics';
 import { progressPercent, resumeEntries, resumeFor, type LibraryControls } from './library';
 
-interface CollectionData { newMovies?: RawTitle[]; newTV?: RawTitle[]; anime?: RawTitle[] }
-interface HomeData { trending: Title[]; newMovies: Title[]; newTV: Title[]; anime: Title[]; partial: boolean }
 const collections = [
   ['newMovies', 'New movies', 'new'],
   ['newTV', 'New series', 'new?type=tv'],
   ['anime', 'Anime', 'anime'],
 ] as const;
+type ShelfKey = 'trending' | typeof collections[number][0];
+type ShelfResult = { titles: Title[] } | { error: string };
+type ShelfResponse = TitleResults & Partial<Record<ShelfKey, RawTitle[]>>;
+const shelves: readonly [ShelfKey, string][] = [
+  ['trending', '/api/trending'],
+  ...collections.map(([key]): [ShelfKey, string] => [key, `/api/home?section=${key}`]),
+];
 
 export function Home({ controls }: { controls: LibraryControls }) {
-  const [data, setData] = useState<HomeData>();
-  const [error, setError] = useState('');
-  const [reload, setReload] = useState(0);
+  const [data, setData] = useState<Partial<Record<ShelfKey, ShelfResult>>>({});
   const [filter, setFilter] = useState<MediaType | 'all'>('all');
   const [featuredKey, setFeaturedKey] = useState('');
   const [ratings, setRatings] = useState<Record<string, CatalogRating>>({});
   const [featuredDetails, setFeaturedDetails] = useState<Title>();
 
+  const jobs = useRef<Partial<Record<ShelfKey, AbortController>>>({});
+  const [retrying, setRetrying] = useState<Partial<Record<ShelfKey, boolean>>>({});
+
+  function loadShelf(key: ShelfKey) {
+    const path = shelves.find(([name]) => name === key)?.[1];
+    if (!path) return;
+    jobs.current[key]?.abort();
+    const task = new AbortController();
+    const { signal } = task;
+    jobs.current[key] = task;
+    setRetrying(state => ({ ...state, [key]: true }));
+    request<ShelfResponse>(path, { signal }).then(result => {
+      if (signal.aborted) return;
+      const titles = normalizeTitles(result.results ?? result[key] ?? []);
+      setData(current => ({ ...current, [key]: { titles } }));
+    }).catch(problem => {
+      if (!signal.aborted) setData(current => ({ ...current, [key]: { error: problem.message } }));
+    }).finally(() => { if (!signal.aborted) setRetrying(state => ({ ...state, [key]: false })); });
+  }
+
   useEffect(() => {
     document.title = 'Afterframe · Movies, TV & Comics';
-    const controller = new AbortController();
-    const { signal } = controller;
-    Promise.allSettled([
-      request<TitleResults>('/api/trending', { signal }),
-      request<CollectionData>('/api/home', { signal }),
-    ]).then(([trending, home]) => {
-      if (signal.aborted) return;
-      if (trending.status === 'rejected' && home.status === 'rejected') {
-        setError(trending.reason.message || 'Could not load the catalogue.');
-        return;
-      }
-      const collection = home.status === 'fulfilled' ? home.value : {};
-      const next: HomeData = {
-        trending: normalizeTitles(trending.status === 'fulfilled' ? trending.value.results : []),
-        newMovies: normalizeTitles(collection.newMovies),
-        newTV: normalizeTitles(collection.newTV),
-        anime: normalizeTitles(collection.anime),
-        partial: trending.status === 'rejected' || home.status === 'rejected',
-      };
-      setData(next);
-      const keys = [...new Set([...next.trending, ...next.newMovies, ...next.newTV, ...next.anime].map(item => `${item.type}:${item.id}`))];
-      if (keys.length) request<{ ratings: Record<string, CatalogRating> }>(`/api/imdb/cached?titles=${keys.join(',')}`, { signal })
-        .then(({ ratings }) => { if (!signal.aborted) setRatings(current => ({ ...ratings, ...current })); }).catch(() => {});
-    });
-    return () => controller.abort();
-  }, [reload]);
+    for (const [key] of shelves) loadShelf(key);
+    return () => { for (const task of Object.values(jobs.current)) task?.abort(); };
+  }, []);
+
+  const visibleKeys = shelves.flatMap(([key]) => {
+    const shelf = data[key];
+    return shelf && 'titles' in shelf ? shelf.titles.slice(0, key === 'trending' ? 20 : 8).map(item => `${item.type}:${item.id}`) : [];
+  });
+  const ratingKeys = [...new Set(visibleKeys)].join(',');
+  useEffect(() => {
+    if (!ratingKeys) return;
+    const task = new AbortController();
+    request<{ ratings: Record<string, CatalogRating> }>(`/api/imdb/cached?titles=${ratingKeys}`, { signal: task.signal })
+      .then(({ ratings }) => { if (!task.signal.aborted) setRatings(current => ({ ...ratings, ...current })); }).catch(() => {});
+    return () => task.abort();
+  }, [ratingKeys]);
+
+  function shelfTitles(key: ShelfKey) {
+    const shelf = data[key];
+    return shelf && 'titles' in shelf ? shelf.titles : [];
+  }
+  const failures = Object.values(data).flatMap(shelf => 'error' in shelf ? [shelf.error] : []);
+  const refreshing = Object.values(retrying).some(Boolean);
+  const error = failures.length === shelves.length && !refreshing ? failures[0] : '';
+  const pending = Object.keys(data).length < shelves.length || failures.length === shelves.length && refreshing;
 
   function withRating(item: Title) {
     return { ...item, rating: ratings[`${item.type}:${item.id}`] ?? item.rating };
   }
 
-  const featuredChoices = [...new Map([...(data?.trending ?? []), ...(data?.newMovies ?? [])]
+  const featuredChoices = [...new Map([...shelfTitles('trending'), ...(data.trending ? shelfTitles('newMovies') : [])]
     .filter(item => item.type === 'movie' && item.backdrop && item.date && item.date <= today())
     .map(item => [item.key, item])).values()].slice(0, 3).map(withRating);
   const featured = featuredChoices.find(item => item.key === featuredKey) ?? featuredChoices[0];
@@ -81,11 +104,18 @@ export function Home({ controls }: { controls: LibraryControls }) {
   const featureIndex = featuredChoices.findIndex(item => item.key === featured?.key);
   const featureDuration = featuredDetails?.key === featured?.key ? featuredDetails?.duration : featured?.duration;
   const featuredResume = featured && resumeFor(controls.library, featured);
-  const likelyTrending = (data?.trending ?? []).filter(item => filter === 'all' || item.type === filter);
+  const likelyTrending = shelfTitles('trending').filter(item => filter === 'all' || item.type === filter);
   const freshTrending = likelyTrending.filter(item => item.key !== featured?.key);
   const trending = freshTrending.length ? freshTrending : likelyTrending;
-  const resume = controls.ready ? resumeEntries(controls.library).slice(0, 12) : [];
-  const retry = () => { setError(''); setReload(value => value + 1); };
+  const resume = resumeEntries(controls.library).slice(0, 12);
+  const reading = Object.values(controls.library.reading).sort((a, b) => b.updated - a.updated).slice(0, 8);
+  const retry = () => { for (const [key] of shelves) if (data[key] && 'error' in data[key]!) loadShelf(key); };
+  const shelfStatus = (key: ShelfKey, label: string) => {
+    const shelf = data[key];
+    if (!shelf || 'error' in shelf && retrying[key]) return <section className="af-section" key={key}><h2>{label}</h2><Loading label={`Loading ${label.toLowerCase()}…`} /></section>;
+    if ('error' in shelf) return <section className="af-section" key={key}><h2>{label}</h2><CatalogProblem error={shelf.error} retry={() => loadShelf(key)} /></section>;
+    return null;
+  };
 
   function switchFeature(direction: number) {
     const next = (featureIndex + direction + featuredChoices.length) % featuredChoices.length;
@@ -93,37 +123,46 @@ export function Home({ controls }: { controls: LibraryControls }) {
   }
 
   return <>
-    {featured ? <section className="af-hero af-home-hero" aria-label="Featured film">
-      <img className="af-backdrop" src={featured.backdrop} alt="" fetchPriority="high" />
-      <div className="af-wrap af-hero-inner">
-        <div className="af-copy">
-          <p className="af-kicker">Featured film</p>
-          <h1>{featured.title}</h1>
-          <p className="af-meta">{[featured.year, featured.genre, featureDuration ? `${featureDuration} min` : ''].filter(Boolean).join(' · ')} <Score rating={featured.rating} /></p>
-          {featured.description && <p className="af-overview af-home-overview">{featured.description}</p>}
-          <div className="af-actions">
-            <ActionLink href={playHref(featured)} primary><Icon name="play" />{featuredResume ? 'Resume' : 'Play'}</ActionLink>
-            <SaveButton item={featured} controls={controls} />
-            <a className="af-text-link af-feature-details" href={titleHref(featured)}>Details <Icon name="right" /></a>
-          </div>
-        </div>
-        {featuredChoices.length > 1 && <div className="af-feature-choices" role="group" aria-label="Featured titles">
-          <button type="button" className="af-icon-button" aria-label="Previous featured film" onClick={() => switchFeature(-1)}><Icon name="left" /></button>
-          <div className="af-feature-indicators">
-            {featuredChoices.map(item => <button type="button" key={item.key} aria-pressed={item.key === featured.key}
-              aria-label={`Feature ${item.title}`} onClick={() => setFeaturedKey(item.key)} />)}
-          </div>
-          <button type="button" className="af-icon-button" aria-label="Next featured film" onClick={() => switchFeature(1)}><Icon name="right" /></button>
-        </div>}
+    {featured ? <section className="af-wrap af-hero af-home-hero" aria-label="Featured film">
+      <div className="af-feature-artwork">
+        <HeroBackdrop src={featured.backdrop} sizes="(max-width: 760px) 100vw, min(58vw, 850px)" />
       </div>
-    </section> : <div className="af-wrap af-title-page">
-      <h1>Home</h1>
-      {error ? <div className="af-state" role="alert"><p>{error}</p>
-        <div className="af-actions">
-          <button type="button" className="af-button af-primary" onClick={retry}>Retry</button>
-          <ActionLink href={legacyHref('home', 'settings')}>Open settings</ActionLink>
+      <div className="af-copy">
+        <h1>{featured.title}</h1>
+        <div className="af-meta af-title-facts">
+          {[featured.year, featured.genre, featureDuration ? `${featureDuration} min` : ''].filter(Boolean).map(fact => <span key={fact}>{fact}</span>)}
+          <Score rating={featured.rating} />
         </div>
-      </div> : !data && <p className="af-state" role="status">Loading the catalogue…</p>}
+        {featured.description && <p className="af-overview af-home-overview">{featured.description}</p>}
+        <div className="af-actions">
+          <ActionLink href={playHref(featured)} primary><Icon name="play" />{featuredResume ? 'Resume' : 'Play'}</ActionLink>
+          <SaveButton item={featured} controls={controls} />
+          <a className="af-text-link af-feature-details" href={titleHref(featured)}>Details <Icon name="right" /></a>
+        </div>
+      </div>
+      {featuredChoices.length > 1 && <div className="af-feature-choices" role="group" aria-label="Featured titles">
+        <button type="button" className="af-icon-button" aria-label="Previous featured film" onClick={() => switchFeature(-1)}><Icon name="left" /></button>
+        <div className="af-feature-indicators">
+          {featuredChoices.map(item => <button type="button" key={item.key} aria-pressed={item.key === featured.key}
+            aria-label={`Feature ${item.title}`} title={item.title} onClick={() => setFeaturedKey(item.key)}>
+            <Artwork src={item.backdrop?.replace('/w1280/', '/w300/')} loading="lazy" fallback={<Icon name="film" />} />
+          </button>)}
+        </div>
+        <button type="button" className="af-icon-button" aria-label="Next featured film" onClick={() => switchFeature(1)}><Icon name="right" /></button>
+      </div>}
+    </section> : pending ? <div className="af-wrap af-home-hero af-home-loading" data-route-loading>
+      <div className="af-feature-artwork" aria-hidden="true" />
+      <div className="af-copy">
+        <h1 className="sr-only">Home</h1>
+        <span className="af-feature-title-placeholder" aria-hidden="true" />
+        <p className="af-meta" role="status">Loading the catalog…</p>
+      </div>
+    </div> : <div className="af-wrap af-title-page">
+      <h1>Home</h1>
+      {error ? <CatalogProblem error={error} retry={retry} />
+        : shelves.every(([key]) => !shelfTitles(key).length) && <div className="af-state">
+          <p role="status">No featured titles are available yet.</p><ActionLink href={webHref('comics')}>Browse comics</ActionLink>
+        </div>}
     </div>}
     <div className="af-wrap af-content">
       {resume.length > 0 && <Shelf title="Continue Watching" href={webHref('history')} landscape>
@@ -136,7 +175,13 @@ export function Home({ controls }: { controls: LibraryControls }) {
             percent={progressPercent(entry)} />;
         })}
       </Shelf>}
-      {(data?.trending.length ?? 0) > 0 && <Shelf title="Trending this week" landscape actions={
+      {reading.length > 0 && <Shelf title="Continue reading" href={webHref('reading')}>
+        {reading.map(entry => <ComicCard item={entry.item} controls={controls} key={entry.item.key}
+          href={readerHref(entry.item, entry.chapter, entry.language, entry.listPage, entry.page)}
+          context={`${entry.label} · Page ${entry.page}`} />)}
+      </Shelf>}
+      {!error && !pending && shelfStatus('trending', 'Trending this week')}
+      {shelfTitles('trending').length > 0 && <Shelf title="Trending this week" landscape actions={
         <div className="af-filters" role="group" aria-label="Filter trending">
           {([['all', 'All'], ['movie', 'Movies'], ['tv', 'TV Shows']] as const).map(([value, label]) =>
             <button type="button" key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</button>)}
@@ -145,10 +190,9 @@ export function Home({ controls }: { controls: LibraryControls }) {
         {trending.length ? trending.slice(0, 12).map(item => <MediaCard key={item.key} item={withRating(item)} controls={controls} landscape />)
           : <p className="af-state">No trending titles for this filter.</p>}
       </Shelf>}
-      {data && collections.map(([key, label, path]) => data[key].length > 0 && <Shelf title={label} key={key} href={webHref(path)}>
-        {data[key].slice(0, 8).map(item => <MediaCard key={item.key} item={withRating(item)} controls={controls} />)}
-      </Shelf>)}
-      {data?.partial && <p className="af-state" role="status">Some shelves are unavailable. <button type="button" className="af-text-link" onClick={retry}>Retry</button></p>}
+      {collections.map(([key, label, path]) => shelfTitles(key).length ? <Shelf title={label} key={key} href={webHref(path)}>
+        {shelfTitles(key).slice(0, 8).map(item => <MediaCard key={item.key} item={withRating(item)} controls={controls} />)}
+      </Shelf> : !error && !pending && shelfStatus(key, label))}
     </div>
   </>;
 }

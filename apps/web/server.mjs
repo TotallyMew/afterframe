@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { access, stat } from 'node:fs/promises';
 import { createServer, request as proxyRequest } from 'node:http';
 import { extname } from 'node:path';
 import { pipeline } from 'node:stream/promises';
@@ -12,6 +12,9 @@ if (upstream.protocol !== 'http:' || upstream.href !== `${upstream.origin}/`) {
   throw new Error('AFTERFRAME_API_URL must be the private HTTP origin of the Afterframe API.');
 }
 const build = new URL('./dist/', import.meta.url);
+await access(new URL('index.html', build)).catch(() => {
+  throw new Error('Build the Afterframe web client before starting the web service.');
+});
 const assets = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.woff2': 'font/woff2',
@@ -53,10 +56,13 @@ const server = createServer(async (request, response) => {
   }
   if (!request.url.startsWith('/')) return reply(response, 400, 'Invalid request path.');
   const path = request.url.split('?')[0];
+  if (/^\/legacy\/?$/.test(path) && ['GET', 'HEAD'].includes(request.method)) {
+    response.writeHead(302, { location: `/${request.url.slice(path.length)}`, 'cache-control': 'no-store' });
+    return response.end();
+  }
   const staticFile = path === '/' ? 'index.html' : /^\/assets\/[a-z0-9][\w.-]*$/i.test(path) ? path.slice(1) : null;
   if (!staticFile) {
-    // Legacy screens share the public origin with the React frontend and use these same API and media paths.
-    if (/^\/(?:api|art|legacy|stream|comic-cover|comic-page)\//.test(path) || /^\/[a-z0-9][\w.-]*\.(?:css|js|vtt)$/i.test(path)) {
+    if (/^\/(?:api|art|player|stream|comic-cover|comic-page)\//.test(path) || /^\/[a-z0-9][\w.-]*\.(?:css|js|vtt)$/i.test(path)) {
       return forward(request, response, railwayHealth ? publicOrigin?.host || `localhost:${port}` : request.headers.host);
     }
     return reply(response, 404, 'Not found.');

@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { cacheMetadata } from '../catalog/metadata.mjs';
 import { lectorChapters, lectorPageList } from './lectormanga.mjs';
 import { scansChapters, scansPageList } from './mangascans.mjs';
@@ -24,6 +25,8 @@ const maxFeed = 10_000;
 const blockedGroups = new Set((process.env.MANGADEX_BLOCKED_GROUPS || '').toLowerCase().split(/[\s,]+/).filter(Boolean));
 const blockedGroupKey = [...blockedGroups].sort().join(',');
 const minute = 60_000;
+const pageManifests = new Map();
+const pendingManifests = new Map();
 let nextRequestAt = 0;
 
 function failure(status, message) {
@@ -202,19 +205,26 @@ function chapter({ id, attributes, relationships }) {
   };
 }
 
+function nativeChapterFeed(id, language, offset = 0) {
+  const params = readableFeedParams(language);
+  params.set('includes[]', 'scanlation_group');
+  params.set('order[chapter]', 'asc');
+  params.set('order[createdAt]', 'asc');
+  params.set('limit', feedLimit);
+  params.set('offset', offset);
+  return cacheMetadata(`comics:feed:${id}:${language}:${offset}:${blockedGroupKey}`, 5 * minute, async () => {
+    const result = await mangaDex(`/manga/${id}/feed`, params);
+    return { entries: result.data.map(chapter).filter(Boolean), total: result.total, count: result.data.length };
+  });
+}
+
 function nativeChapters(id, language) {
   return cacheMetadata(`comics:native-chapters:${id}:${language}:${blockedGroupKey}`, 5 * minute, async () => {
-    const params = readableFeedParams(language);
-    params.set('includes[]', 'scanlation_group');
-    params.set('order[chapter]', 'asc');
-    params.set('order[createdAt]', 'asc');
-    params.set('limit', feedLimit);
     const entries = [];
     for (let offset = 0; offset + feedLimit <= maxFeed; offset += feedLimit) {
-      params.set('offset', offset);
-      const result = await mangaDex(`/manga/${id}/feed`, params);
-      entries.push(...result.data.map(chapter).filter(Boolean));
-      if (!result.data.length || offset + feedLimit >= result.total) break;
+      const result = await nativeChapterFeed(id, language, offset);
+      entries.push(...result.entries);
+      if (!result.count || offset + feedLimit >= result.total) break;
     }
     return entries;
   });
@@ -251,6 +261,10 @@ async function chapters(item, search) {
   const requested = search.get('lang');
   let language = requested || 'en';
   if (!languagePattern.test(language)) throw failure(400, 'Choose a valid chapter language.');
+  if (search.get('scope') === 'native') {
+    const { entries } = await nativeChapterFeed(item.id, language);
+    return { results: combineChapters(entries, []).slice(0, chaptersPerPage).flat(), language, preview: true };
+  }
   let { page } = paging(search, chaptersPerPage);
   let { groups, error } = await chapterCollection(item, language);
   if (!groups.length && !requested && item.languages.some(code => code !== language)) {
@@ -292,15 +306,15 @@ function chapterSource(id) {
 async function alternateChapter(item, id, source) {
   const chapter = (await source.chapters(item)).find(entry => entry.id === id);
   if (!chapter) return null;
-  return { chapter, images: await source.pages(item, id) };
+  return { chapter: { ...chapter, number: chapterNumber(chapter.number) }, pages: await source.pages(item, id) };
 }
 
 async function alternatePages(item, id, source) {
-  const entry = await alternateChapter(item, id, source);
+  const entry = await pageManifest(item.id, id, () => alternateChapter(item, id, source));
   if (!entry) throw failure(404, 'This chapter is unavailable for this title.');
   return {
-    chapter: { ...entry.chapter, number: chapterNumber(entry.chapter.number) },
-    pages: entry.images.map((_, index) => `/comic-page/${item.id}/${id}/${index + 1}`),
+    chapter: entry.chapter,
+    pages: entry.pages.map((_, index) => `/comic-page/${item.id}/${id}/${index + 1}`),
   };
 }
 
@@ -309,27 +323,48 @@ export async function comicPageResponse(pathname, signal) {
   if (!match) return null;
   const [, id, chapterId, page] = match;
   const source = chapterSource(chapterId);
-  let url;
-  if (source) {
+  const key = `${id}/${chapterId}`;
+  const entry = await pageManifest(id, chapterId, async () => {
+    if (!source) return nativePages(id, chapterId);
     const item = await details(id).catch(error => {
       if (error.status === 404) return null;
       throw error;
     });
     if (!item) return null;
-    const entry = await alternateChapter(item, chapterId, source);
-    url = entry?.images[Number(page) - 1];
-  } else {
-    const entry = await nativePages(id, chapterId);
-    url = entry.pages[Number(page) - 1];
-  }
-  if (!url) return null;
-  const response = await fetch(url, {
-    headers: { Accept: 'image/*', 'User-Agent': 'Afterframe/1.0' },
-    redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+    return alternateChapter(item, chapterId, source);
   });
-  if (response.ok && imageTypes.has(response.headers.get('content-type')?.split(';')[0])) return response;
-  await response.body?.cancel();
-  return null;
+  const url = entry?.pages[Number(page) - 1];
+  if (!url) return null;
+  let valid = false;
+  try {
+    const response = await fetch(url, {
+      headers: { Accept: 'image/*', 'User-Agent': 'Afterframe/1.0' },
+      redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+    });
+    valid = response.ok && imageTypes.has(response.headers.get('content-type')?.split(';')[0]);
+    if (valid) return response;
+    await response.body?.cancel();
+    return null;
+  } finally {
+    if (!valid && !signal.aborted && pageManifests.get(key)?.entry === entry) pageManifests.delete(key);
+  }
+}
+
+function pageManifest(id, chapterId, load) {
+  const key = `${id}/${chapterId}`;
+  const cached = pageManifests.get(key);
+  if (cached?.expires > Date.now()) return cached.entry;
+  if (pendingManifests.has(key)) return pendingManifests.get(key);
+  const request = load().then(entry => {
+    pageManifests.delete(key);
+    if (entry) {
+      if (pageManifests.size >= 128) pageManifests.delete(pageManifests.keys().next().value);
+      pageManifests.set(key, { entry, expires: Date.now() + 2 * minute });
+    }
+    return entry;
+  }).finally(() => pendingManifests.delete(key));
+  pendingManifests.set(key, request);
+  return request;
 }
 
 async function nativePages(id, chapterId) {
@@ -356,8 +391,30 @@ async function nativePages(id, chapterId) {
 }
 
 async function pages(id, chapterId) {
-  const result = await nativePages(id, chapterId);
+  const result = await pageManifest(id, chapterId, () => nativePages(id, chapterId));
   return { ...result, pages: result.pages.map((_, index) => `/comic-page/${id}/${chapterId}/${index + 1}`) };
+}
+
+async function chapterTranscript(id, chapterId, pageCount) {
+  const file = process.env.AFTERFRAME_COMIC_TRANSCRIPTS_FILE;
+  if (!file) return undefined;
+  try {
+    const entries = JSON.parse(await readFile(file, 'utf8'));
+    const entry = entries?.[`${id}/${chapterId}`];
+    if (!entry || !Array.isArray(entry.pages)) return undefined;
+    const pages = entry.pages.slice(0, pageCount).map(page => typeof page === 'string' ? page.trim().slice(0, 20_000) : '');
+    if (!pages.some(Boolean)) return undefined;
+    const source = typeof entry.source === 'string' ? URL.parse(entry.source) : null;
+    return { pages, ...(source?.protocol === 'https:' && !source.username && !source.password ? { source: source.href } : {}) };
+  } catch {
+    // A transcript is optional enrichment. Reading the licensed images still works.
+    return undefined;
+  }
+}
+
+async function chapterPayload(id, chapterId, body) {
+  const transcript = await chapterTranscript(id, chapterId, body.pages.length);
+  return { status: 200, body: transcript ? { ...body, transcript } : body };
 }
 
 export async function comicsApi(pathname, search) {
@@ -368,10 +425,14 @@ export async function comicsApi(pathname, search) {
     const match = pathname.match(mangaRoute);
     if (!match) throw failure(404, 'Comics route unavailable.');
     const [, id, chapterId] = match.map(value => value?.toLowerCase());
+    const source = chapterId && chapterSource(chapterId);
+    if (chapterId && !source) {
+      const [, body] = await Promise.all([details(id), pages(id, chapterId)]);
+      return chapterPayload(id, chapterId, body);
+    }
     const item = await details(id);
     if (chapterId) {
-      const source = chapterSource(chapterId);
-      return { status: 200, body: source ? await alternatePages(item, chapterId, source) : await pages(id, chapterId) };
+      return chapterPayload(id, chapterId, await alternatePages(item, chapterId, source));
     }
     if (pathname.endsWith('/chapters')) return { status: 200, body: await chapters(item, search) };
     const { aliases, romanized, spanish, ...body } = item;

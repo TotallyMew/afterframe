@@ -5,6 +5,12 @@ export const preferenceDefaults = {
   notifyEpisodes: true, notifySeasonStarts: true, notifySeasonSchedules: true,
 };
 
+export function movieDurationMismatch(expectedMinutes, duration) {
+  const expected = expectedMinutes * 60;
+  return Number.isFinite(expected) && expected > 0 && Number.isFinite(duration) && duration > 0
+    && Math.abs(expected - duration) > Math.max(20 * 60, expected * .3);
+}
+
 export function viewingSession(progress) {
   return { sample: null, ranges: Array.isArray(progress?.ranges) ? progress.ranges : [], skipped: Array.isArray(progress?.skipped) ? progress.skipped : [] };
 }

@@ -5,6 +5,10 @@ COPY apps/web/package.json apps/web/package-lock.json apps/web/
 RUN npm ci --prefix apps/web
 COPY apps/web/ apps/web/
 COPY afterframe/public/art/ afterframe/public/art/
+COPY afterframe/public/theme.css afterframe/public/theme.css
+COPY afterframe/public/comic-display.js afterframe/public/comic-display.d.ts afterframe/public/guest-storage.js afterframe/public/guest-storage.d.ts afterframe/public/
+COPY afterframe/public/comic-ids.js afterframe/public/comic-ids.d.ts afterframe/public/
+COPY afterframe/public/playback.js afterframe/public/playback.d.ts afterframe/public/
 RUN npm run build --prefix apps/web
 
 FROM node:22-bookworm-slim AS web

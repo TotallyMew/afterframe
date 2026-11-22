@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  episodeKey, episodeLabel, episodePosition, formatDate, imagePath, isAired, legacyHref, normalizeTitle,
-  normalizeTitles, playHref, request, timeCode, today, type CatalogRating, type Details as TitleDetails,
+  episodeKey, episodeLabel, episodePosition, formatDate, imagePath, isAired, normalizeTitle,
+  normalizeTitles, playHref, previousBrowse, request, timeCode, today, type CatalogRating, type Details as TitleDetails,
   type Episode, type MediaType, type Title, type TitleResults,
 } from './catalog';
-import { ActionLink, Icon, MediaCard, SaveButton, Score, Shelf } from './components';
+import { ActionLink, Artwork, HeroBackdrop, Icon, Loading, MediaCard, MutationStatus, RatingProblem, SaveButton, Score, Shelf, useOptionalRating } from './components';
 import { getSeason, progressPercent, resumeFor, savedRating, watchStatuses, type LibraryControls, type WatchStatus } from './library';
 
 const episodeRangeSize = 15;
@@ -37,10 +37,10 @@ function EpisodeRow({ item, episode, controls }: { item: Title; episode: Episode
   const status = [episodeLabel(episode), episode.runtime ? `${episode.runtime} min` : '', !available && episode.air_date ? `Airs ${formatDate(episode.air_date)}` : ''].filter(Boolean).join(' · ');
   const showPreview = marked || controls.library.preferences.hideSynopsis === false;
   return <article className="af-episode">
-    {image && protect ? <button type="button" className="af-still" aria-label={`Thumbnail for ${episode.name}`}
+    {image && protect ? <button type="button" className="af-still" aria-label={`${revealed ? 'Hide' : 'Reveal'} thumbnail for ${episode.name}`}
       aria-pressed={revealed} onClick={() => setRevealed(value => !value)}>
-      <img src={image} className={revealed ? undefined : 'af-blurred'} alt="" loading="lazy" /><span className="af-eye"><Icon name="eye" /></span>
-    </button> : <span className="af-still">{image ? <img src={image} alt="" loading="lazy" /> : <Icon name="film" />}</span>}
+      <Artwork src={image} className={revealed ? undefined : 'af-blurred'} loading="lazy" fallback={<Icon name="film" />} /><span className="af-eye"><Icon name="eye" /><span>{revealed ? 'Hide' : 'Reveal'}</span></span>
+    </button> : <span className="af-still"><Artwork src={image} loading="lazy" fallback={<Icon name="film" />} /></span>}
     <div className="af-episode-copy">
       {available ? <a className="af-episode-title" href={playHref(item, episodePosition(episode))}>{episode.name}</a>
         : <span className="af-episode-title af-upcoming">{episode.name}</span>}
@@ -54,10 +54,11 @@ function EpisodeRow({ item, episode, controls }: { item: Title; episode: Episode
         <progress className="af-progress" value={progressPercent(progress)} max={100} aria-label={`${episode.name} watched progress`} />
       </div>}
     </div>
-    <button type="button" className="af-icon-button af-watched" aria-label={`Watched: ${episode.name}`} aria-pressed={marked}
-      disabled={!controls.ready || controls.saving} onClick={() => { if (marked) setRevealed(false); void controls.toggleWatched(item, key); }}>
-      <span>{marked && <Icon name="check" />}</span>
+    <button type="button" className="af-icon-button af-watched" aria-label={`${marked ? 'Watched' : 'Mark watched'}: ${episode.name}`} aria-pressed={marked}
+      disabled={!controls.ready || controls.isPending(key)} onClick={() => { if (marked) setRevealed(false); void controls.toggleWatched(item, key); }}>
+      <span>{marked && <Icon name="check" />}</span><small>{marked ? 'Watched' : 'Mark watched'}</small>
     </button>
+    <MutationStatus itemKey={key} controls={controls} />
   </article>;
 }
 
@@ -104,7 +105,7 @@ function Episodes({ item, seasons, initialSeason, controls, readSeason }: {
       </div>
     </header>
     {season == null ? <p className="af-state">No seasons are listed.</p> : error ? <p className="af-state" role="alert">{error} <button className="af-text-link" type="button" onClick={() => { setError(''); setAttempt(value => value + 1); }}>Retry</button></p>
-      : results?.season !== season ? <p className="af-state" role="status">Loading episodes…</p>
+      : results?.season !== season ? <Loading label="Loading episodes…" shape="rows" />
       : episodes.length === 0 ? <p className="af-state">No episodes are listed for this season.</p>
       : <div className={`af-episode-grid ${controls.library.preferences.compact ? 'af-compact' : ''}`}>
         {episodes.slice(rangeStart, rangeStart + episodeRangeSize).map(episode => <EpisodeRow key={episodeKey(item, episode)} item={item} episode={episode} controls={controls} />)}
@@ -116,9 +117,9 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
   const [details, setDetails] = useState<TitleDetails>();
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
-  const [rating, setRating] = useState<CatalogRating>();
-  const [mal, setMal] = useState<number>();
   const [related, setRelated] = useState<Title[]>([]);
+  const [relatedError, setRelatedError] = useState(false);
+  const [relatedAttempt, setRelatedAttempt] = useState(0);
   const [selection, setSelection] = useState<{ episode: Episode; replay: boolean }>();
   const seasonCache = useRef(new Map<number, Promise<Episode[]>>());
 
@@ -131,21 +132,26 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
       setDetails(value);
       const item = normalizeTitle(value, type);
       document.title = `${item.title} · Afterframe`;
-      if (item.imdb) request<{ rating?: CatalogRating }>(`/api/imdb?id=${encodeURIComponent(item.imdb)}`, { signal })
-        .then(result => { if (!signal.aborted) setRating(result.rating); }).catch(() => {});
-      if (item.originalLanguage === 'ja' && item.genreIds?.includes(16)) {
-        const season = value.seasons?.find(entry => entry.season_number > 0)?.season_number ?? 1;
-        request<{ rating?: number }>(`/api/mal/catalog/${type}/${id}?season=${season}`, { signal })
-          .then(result => { if (!signal.aborted) setMal(result.rating); }).catch(() => {});
-      }
+
     }).catch(problem => { if (!signal.aborted) setError(problem.message); });
-    request<TitleResults>(`${path}/related`, { signal })
-      .then(({ results }) => { if (!signal.aborted) setRelated(normalizeTitles(results).filter(item => item.type !== type || item.id !== id).slice(0, 6)); })
-      .catch(() => {});
     return () => controller.abort();
   }, [type, id, attempt]);
 
   const item = useMemo(() => details && { ...normalizeTitle(details, type), totalEpisodes: details.number_of_episodes }, [details, type]);
+  const imdb = useOptionalRating<CatalogRating>(item?.imdb ? `/api/imdb?id=${encodeURIComponent(item.imdb)}&status=1` : undefined);
+  const mal = useOptionalRating<number>(item?.originalLanguage === 'ja' && item.genreIds?.includes(16)
+    ? `/api/mal/catalog/${type}/${id}?season=${details?.seasons?.find(entry => entry.season_number > 0)?.season_number ?? 1}&status=1`
+    : undefined);
+  useEffect(() => {
+    const task = new AbortController();
+    request<TitleResults>(`/api/${type}/${id}/related`, { signal: task.signal })
+      .then(result => {
+        const titles = normalizeTitles(result.results);
+        if (!task.signal.aborted) { setRelated(titles); setRelatedError(false); }
+      }).catch(() => { if (!task.signal.aborted) setRelatedError(true); });
+    return () => task.abort();
+  }, [type, id, relatedAttempt]);
+
   const seasons = useMemo(() => (details?.seasons ?? []).filter(entry => entry.episode_count > 0 && entry.season_number >= 0), [details]);
   const regular = useMemo(() => {
     const list = seasons.filter(entry => entry.season_number > 0);
@@ -182,10 +188,10 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
   }, [type, item, controls.ready, regular, readSeason, resume, watched]);
 
   if (!details || !item) return <div className="af-wrap af-title-page">
-    <a className="af-text-link" href="/#home"><Icon name="left" /> Back to browse</a>
+    <a className="af-text-link" href={previousBrowse(type === 'movie' ? 'movies' : 'tv')}><Icon name="left" /> Back to browse</a>
     {error ? <div className="af-state" role="alert"><h1>Title unavailable</h1><p>{error}</p>
       <button className="af-text-link" type="button" onClick={() => { setError(''); setAttempt(value => value + 1); }}>Retry</button></div>
-      : <p className="af-state" role="status">Loading title…</p>}
+      : <Loading label="Loading title…" shape="hero" />}
   </div>;
 
   const cast = details.credits?.cast?.slice(0, 8) ?? [];
@@ -210,15 +216,19 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
   const marked = Boolean(watched[item.key]);
   return <>
     <section className={`af-hero af-details-hero ${item.backdrop ? '' : 'af-no-backdrop'}`}>
-      {item.backdrop && <img className="af-backdrop" src={item.backdrop} alt="" fetchPriority="high" />}
+      {item.backdrop && <HeroBackdrop src={item.backdrop} sizes="(max-width: 680px) 100vw, 86vw" />}
       <div className="af-wrap af-hero-inner">
-        <a className="af-text-link af-back" href="/#home"><Icon name="left" /> Back to browse</a>
+        <a className="af-text-link af-back" href={previousBrowse(type === 'movie' ? 'movies' : 'tv')}><Icon name="left" /> Back to browse</a>
         <div className="af-details-main">
-          {!item.backdrop && item.poster && <img className="af-fallback-poster" src={item.poster} alt="" />}
+          {!item.backdrop && item.poster && <Artwork className="af-fallback-poster" src={item.poster} fallback={<span className="af-fallback-poster af-art-fallback"><Icon name="film" /></span>} />}
           <div className="af-copy">
-            <p className="af-kicker">{type === 'tv' ? 'TV series' : 'Movie'}</p>
             <h1>{item.title}</h1>
-            <div className="af-meta af-details-meta">{facts.join(' · ')} <Score rating={rating ?? item.rating} mal={mal} /></div>
+            <div className="af-meta af-details-meta af-title-facts">
+              <span>{type === 'tv' ? 'TV series' : 'Movie'}</span>
+              {facts.map(fact => <span key={fact}>{fact}</span>)}
+              <Score rating={imdb.value ?? item.rating} mal={mal.value} />
+            </div>
+            <RatingProblem name="IMDb" rating={imdb} /><RatingProblem name="MyAnimeList" rating={mal} />
             {item.description && <p className="af-overview">{item.description}</p>}
             {credit && <p className="af-meta">{credit}</p>}
             <div className="af-actions">
@@ -226,11 +236,11 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
                 : <button type="button" className="af-button af-primary" onClick={() => goToSection('episodes')}><Icon name="play" />{playLabel}</button>
                 : (!item.date || item.date <= today() || resume) && <ActionLink primary href={playHref(item)}><Icon name="play" />{resume ? 'Resume' : 'Play'}</ActionLink>}
               <SaveButton item={item} controls={controls} />
-              {saved && <select className="af-select" aria-label="Watch status" value={saved.watchStatus ?? 'planned'} disabled={controls.saving}
+              {saved && <select className="af-select" aria-label="Watch plan" value={saved.watchStatus ?? 'planned'} disabled={!controls.ready || controls.isPending(item.key)}
                 onChange={event => void controls.setStatus(item, event.target.value as WatchStatus, details)}>
                 {Object.entries(watchStatuses).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
               </select>}
-              {type === 'movie' && <button type="button" className="af-button af-secondary" disabled={!controls.ready || controls.saving}
+              {type === 'movie' && <button type="button" className="af-button af-secondary" disabled={!controls.ready || controls.isPending(item.key)}
                 aria-pressed={marked} onClick={() => void controls.toggleWatched(item)}>{marked ? <><Icon name="check" />Watched</> : 'Mark watched'}</button>}
             </div>
             {type === 'tv' && item.totalEpisodes ? <p className="af-meta" aria-live="polite">{count} of {item.totalEpisodes} episodes watched{resume ? ` · Resume at ${timeCode(resume.time)}` : ''}</p> : null}
@@ -243,7 +253,7 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
             {Boolean(cast.length || crew.length) && <button className="af-text-link" type="button" onClick={() => goToSection('cast')}>Cast &amp; crew</button>}
             {related.length > 0 && <button className="af-text-link" type="button" onClick={() => goToSection('related')}>Related</button>}
           </nav>
-          <label className="af-rating">Your rating <select className="af-select" value={savedRating(controls.library.ratings[item.key])} disabled={!controls.ready || controls.saving}
+          <label className="af-rating">Your rating <select className="af-select" value={savedRating(controls.library.ratings[item.key])} disabled={!controls.ready || controls.isPending(item.key)}
             onChange={event => void controls.rate(item, Number(event.target.value))}>
             <option value={0}>Choose 1–10</option>
             {Array.from({ length: 10 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
@@ -258,16 +268,16 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
         <div className="af-cast">{cast.map(person => {
           const art = imagePath(person.profile_path, 'w185');
           return <div className="af-person" key={person.id}>
-            {art ? <img src={art} alt="" loading="lazy" /> : <span aria-hidden="true"><Icon name="film" /></span>}
+            <Artwork src={art} loading="lazy" fallback={<span aria-hidden="true"><Icon name="film" /></span>} />
             <p><strong>{person.name}</strong>{person.character && <small>{person.character}</small>}</p>
           </div>;
         })}</div>
         {crew.length > 0 && <dl className="af-crew">{crew.map((person, index) => <div key={`${person.id}-${index}`}><dt>{person.job}</dt><dd>{person.name}</dd></div>)}</dl>}
       </section>}
-      {related.length > 0 && <div id="related" tabIndex={-1}><Shelf title={type === 'tv' ? 'Related series' : 'Related films'}>
+      {relatedError && <p className="af-state" role="status">Related titles could not load. <button className="af-text-link" type="button" onClick={() => setRelatedAttempt(value => value + 1)}>Retry related titles</button></p>}
+      {related.length > 0 && <div id="related"  tabIndex={-1}><Shelf title={type === 'tv' ? 'Related series' : 'Related films'}>
         {related.map(other => <MediaCard item={other} controls={controls} key={other.key} />)}
       </Shelf></div>}
-      <a className="af-text-link af-classic" href={legacyHref(`${type}/${id}`)}>Open in classic view</a>
     </div>
   </>;
 }
