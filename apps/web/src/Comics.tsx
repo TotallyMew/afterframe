@@ -5,10 +5,16 @@ import { currentLocationHref, currentSearchParams } from './router';
 import { InputField, PageHeading, ResultsSummary, RouteTabs, SelectField } from './Catalogue';
 import { ActionLink, Artwork, Icon, Loading, RatingProblem, SaveButton, Score, Shelf, useOptionalRating } from './components';
 import { readingStatuses, savedRating, type LibraryControls, type WatchStatus } from './library';
+import { AfSelect } from './UiControls';
 
 const formats = [['', 'All comics'], ['manga', 'Manga'], ['manhwa', 'Manhwa'], ['manhua', 'Manhua'], ['comic', 'Comics']] as const;
 const statuses = [['ongoing', 'Ongoing'], ['completed', 'Completed'], ['hiatus', 'On hiatus'], ['cancelled', 'Cancelled']] as const;
 const sorts = [['popular', 'Popularity'], ['updated', 'Recently updated'], ['newest', 'Publication year'], ['title', 'Title A–Z']] as const;
+const readingStatusOptions = Object.entries(readingStatuses).map(([value, label]) => ({ value, label }));
+const comicRatingOptions = [
+  { value: '0', label: 'Choose 1–10' },
+  ...Array.from({ length: 10 }, (_, index) => ({ value: String(index + 1), label: `${index + 1} / 10` })),
+];
 
 export function comicHref(item: Pick<Comic, 'id'>) {
   return comicDetailsHref(item.id);
@@ -30,13 +36,20 @@ function comicFacts(item: Comic) {
   return [format, item.year, status].filter(Boolean).join(' · ');
 }
 
-export function ComicCard({ item, controls, href, context, eager }: { item: Comic; controls: LibraryControls; href?: string; context?: string; eager?: boolean }) {
+export function ComicCard({ item, controls, href, context, eager, onDismiss }: {
+  item: Comic; controls: LibraryControls; href?: string; context?: string; eager?: boolean; onDismiss?: () => void;
+}) {
   const cover = comicCover(item.poster);
   return <article className="af-media-card"><a href={href || comicHref(item)}>
     <span className="af-poster"><Artwork src={cover} loading={eager ? 'eager' : 'lazy'} decoding="async" fallback={<Icon name="book" />} /></span>
     <strong>{item.title}</strong><span className="af-card-meta">{context || comicFacts(item)}</span>
     {!context && <Score mal={item.mal} />}
-  </a><SaveButton item={item} controls={controls} compact /></article>;
+  </a>
+    {onDismiss ? <button type="button" className="af-icon-button af-card-save af-card-dismiss"
+      aria-label={`Remove ${item.title} from Continue reading`} title="Remove from Continue reading"
+      onClick={onDismiss}><Icon name="close" /></button>
+      : <SaveButton item={item} controls={controls} compact />}
+  </article>;
 }
 
 type ComicsResults = { results: Comic[]; nextPage?: number | null };
@@ -163,12 +176,6 @@ type ComicRecord = Comic & { synopsis?: string; author?: string[]; languages: st
 type Chapter = { id: string; label: string; number?: string | number; title?: string; language: string; groups?: (string | { name?: string })[]; source?: string };
 type Chapters = { results: Chapter[]; nextPage?: number | null; ranges?: { start: string; end: string }[]; totalChapters?: number; partial?: boolean; preview?: boolean };
 
-function scrollToSection(id: string) {
-  const section = document.getElementById(id);
-  section?.focus({ preventScroll: true });
-  section?.scrollIntoView({ block: 'start' });
-}
-
 export function ComicDetailsPage({ id, query, controls }: { id: string; query: string; controls: LibraryControls }) {
   const [item, setItem] = useState<ComicRecord>();
   const [chapterResult, setChapterResult] = useState<{ key: string; data: Chapters }>();
@@ -289,27 +296,27 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
                 : first ? <ActionLink primary href={readerHref(item, first.id, first.language, 1)}><Icon name="book" /> Start reading</ActionLink>
                   : <button type="button" className="af-button af-primary" disabled><Icon name="book" /> {chapterPending ? 'Loading chapters…' : 'No chapters yet'}</button>}
               <SaveButton item={item} controls={controls} />
-              {saved && <select className="af-select" aria-label="Reading status" value={saved.watchStatus ?? 'planned'}
+              {saved && <AfSelect
+                ariaLabel="Reading status"
+                value={saved.watchStatus ?? 'planned'}
                 disabled={!controls.ready || controls.isPending(item.key)}
-                onChange={event => void controls.setComicStatus(item, event.target.value as WatchStatus)}>
-                {Object.entries(readingStatuses).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-              </select>}
+                options={readingStatusOptions}
+                onChange={value => void controls.setComicStatus(item, value as WatchStatus)}
+              />}
             </div>
           </div>
         </div>
         <div className="af-details-footer">
-          <nav aria-label="Comic sections" className="af-title-nav">
-            <button className="af-text-link" type="button" onClick={() => scrollToSection('chapters')}>Chapters</button>
-            {related.length > 0 && <button className="af-text-link" type="button" onClick={() => scrollToSection('related')}>Related</button>}
-          </nav>
-          <label className="af-rating">Your rating
-            <select className="af-select" value={savedRating(controls.library.ratings[item.key])}
+          <div className="af-rating">
+            <span>Your rating</span>
+            <AfSelect
+              ariaLabel="Your rating"
+              value={String(savedRating(controls.library.ratings[item.key]))}
               disabled={!controls.ready || controls.isPending(item.key)}
-              onChange={event => void controls.rate(item, Number(event.target.value))}>
-              <option value={0}>Choose 1–10</option>
-              {Array.from({ length: 10 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
-            </select>
-          </label>
+              options={comicRatingOptions}
+              onChange={value => void controls.rate(item, Number(value))}
+            />
+          </div>
         </div>
       </div>
     </section>
@@ -339,9 +346,12 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
             >
               {chapterOrder === 'asc' ? 'Oldest first' : 'Newest first'}
             </button>
-            <select className="af-select" aria-label="Language" value={language} onChange={event => { setChapterQuery(''); navigate(listing(event.target.value)); }}>
-              {[...new Set(item.languages)].sort().map(code => <option key={code} value={code}>{comicLanguage(code)}</option>)}
-            </select>
+            <AfSelect
+              ariaLabel="Language"
+              value={language}
+              options={[...new Set(item.languages)].sort().map(code => ({ value: code, label: comicLanguage(code) }))}
+              onChange={value => { setChapterQuery(''); navigate(listing(value)); }}
+            />
           </div>
         </header>
         {chapterError && <p className="af-state" role="alert">{chapterError} <button type="button" className="af-text-link" onClick={retryChapters}>Retry</button></p>}

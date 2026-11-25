@@ -26,6 +26,7 @@ function makeControls(overrides: Partial<LibraryControls> = {}): LibraryControls
     setComicStatus: () => undefined,
     setPreference: async () => {},
     recordReading: () => undefined,
+    removeReading: async () => {},
     recordProgress: () => {},
     recordHistory: () => {},
     markNotification: async () => {},
@@ -110,7 +111,7 @@ describe('Afterframe web enhancements', () => {
     expect(screen.getByText('Open search & command palette')).toBeTruthy();
   });
 
-  it('round-trips JSON library export and live-filters Watchlist without Apply button', () => {
+  it('round-trips JSON library export and live-filters Watchlist without Apply button', async () => {
     const controls = makeControls({
       library: {
         saved: {
@@ -131,8 +132,14 @@ describe('Afterframe web enhancements', () => {
     expect(screen.getByRole('button', { name: 'Export JSON' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Import JSON' })).toBeTruthy();
 
-    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'tv' } });
-    expect(window.location.pathname).toBe('/watchlist');
-    expect(window.location.search).toBe('?type=tv');
+    fireEvent.click(screen.getByRole('combobox', { name: 'Type' }));
+    const tvOption = await screen.findByRole('option', { name: 'TV Shows' });
+    fireEvent.pointerDown(tvOption);
+    fireEvent.mouseUp(tvOption);
+    fireEvent.click(tvOption);
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/watchlist');
+      expect(window.location.search).toBe('?type=tv');
+    });
   });
 });

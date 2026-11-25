@@ -501,3 +501,26 @@
   22% { opacity: 1; transform: scale(1); }
   100% { opacity: 0; transform: scale(1.04); }
 }
+
+.af-player-undo-skip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--af-space-3);
+  align-self: end;
+  justify-self: end;
+  margin: 0 var(--player-gutter) var(--af-space-2) auto;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--af-ink) 22%, transparent);
+  border-radius: var(--af-radius);
+  background: color-mix(in srgb, var(--af-canvas) 90%, transparent);
+  backdrop-filter: blur(8px);
+  color: var(--af-ink);
+  font-size: var(--af-type-supplemental);
+  font-weight: 600;
+  pointer-events: auto;
+  animation: af-fade-in 180ms var(--af-ease-out);
+}
+.af-player-undo-skip .af-text-link {
+  min-height: 28px;
+  color: var(--af-selection);
+}

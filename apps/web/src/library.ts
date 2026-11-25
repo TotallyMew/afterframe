@@ -607,6 +607,18 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
     });
   }
 
+  function removeReading(key: string) {
+    return change(`reading/${key}`, async (account, send) => {
+      const update = (library: Library) => ({ ...library, reading: replaceEntry(library.reading, key, null) });
+      if (!account) {
+        await guestChange(update, ['reading']);
+        return guestLibrary;
+      }
+      await send({ accountId: account.id, key, kind: 'reading', value: null, label: 'Remove from Continue reading', at: Date.now() });
+      return update;
+    });
+  }
+
   async function toggleSaved(item: Title | Comic) {
     const exists = Boolean(sessionRef.current.library.saved[item.key]);
     const listName = item.type === 'comic' ? 'reading list' : 'watchlist';
@@ -817,7 +829,7 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
   const isPending = (key: string) => pending.includes(key);
   return {
     ...session, ready, state, isPending, completing, problems, error, refresh, toggleSaved, toggleWatched, rate, setStatus, setComicStatus, setPreference,
-    recordReading, recordProgress, recordHistory, markNotification, importLibrary,
+    recordReading, removeReading, recordProgress, recordHistory, markNotification, importLibrary,
     updateAccount, libraryBusy: pending.length > 0 || replaying,
     recoverable: session.account ? deferred.filter(entry => session.account?.id === entry.accountId) : [],
     hasDeferredForOtherAccount: Boolean(session.account && deferred.some(entry => session.account?.id !== entry.accountId)),

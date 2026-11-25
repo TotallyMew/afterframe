@@ -21,6 +21,7 @@ function makeControls(overrides: Partial<LibraryControls> = {}): LibraryControls
     setComicStatus: () => undefined,
     setPreference: vi.fn(async () => {}),
     recordReading: () => undefined,
+    removeReading: async () => {},
     recordProgress: vi.fn(),
     recordHistory: vi.fn(),
     markNotification: async () => {},

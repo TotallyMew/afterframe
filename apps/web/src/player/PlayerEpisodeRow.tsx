@@ -22,7 +22,10 @@ export function PlayerEpisodeRow({
   const image = imagePath(episode.still_path, 'w300');
   const available = isAired(episode);
   const progress = !marked ? controls.library.progress[key] : undefined;
-  const status = [episodeLabel(episode), episode.runtime ? `${episode.runtime} min` : '', !available && episode.air_date ? `Airs ${formatDate(episode.air_date)}` : ''].filter(Boolean).join(' · ');
+  const knownSec = controls.library.progress[key]?.duration
+    || Object.values(controls.library.history).find(entry => entry.mediaKey === key && entry.duration > 0)?.duration;
+  const runtimeLabel = knownSec && knownSec > 0 ? `${Math.max(1, Math.round(knownSec / 60))} min` : episode.runtime ? `~${episode.runtime} min` : '';
+  const status = [episodeLabel(episode), runtimeLabel, !available && episode.air_date ? `Airs ${formatDate(episode.air_date)}` : ''].filter(Boolean).join(' · ');
   const showPreview = marked || controls.library.preferences.hideSynopsis === false;
 
   return <article className="af-episode" aria-current={current ? 'true' : undefined}>

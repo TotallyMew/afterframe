@@ -12,6 +12,10 @@ import {
   type LibraryControls, type SavedTitle, type WatchStatus,
 } from './library';
 import { useToast } from './Toast';
+import { AfSelect, FilterPopover } from './UiControls';
+
+const watchStatusOptions = Object.entries(watchStatuses).map(([value, label]) => ({ value, label }));
+const readingStatusOptions = Object.entries(readingStatuses).map(([value, label]) => ({ value, label }));
 
 const tabs = [['watchlist', 'Watchlist'], ['watched', 'Watched'], ['history', 'History'], ['ratings', 'My ratings'], ['reading', 'Reading'], ['notifications', 'Notifications']] as const;
 const ratingFilters = Array.from({ length: 10 }, (_, index) => [String(index + 1), `${index + 1}+`] as const);
@@ -31,13 +35,20 @@ function Watchlist({ controls, query: appliedQuery }: { controls: LibraryControl
   const [saving, setSaving] = useState<string[]>([]);
   const [problem, setProblem] = useState('');
   const [completionError, setCompletionError] = useState<Record<string, string>>({});
+  const formRef = useRef<HTMLFormElement>(null);
   const searchTimer = useRef<number | undefined>(undefined);
   useEffect(() => () => clearTimeout(searchTimer.current), []);
 
-  function applyLiveFilter(form: HTMLFormElement, replace = true) {
+  function applyLiveFilter(form: HTMLFormElement, replace = true, overrides?: Record<string, string>) {
     const next = new URLSearchParams();
     for (const [key, value] of new FormData(form)) {
       if (typeof value === 'string' && value.trim() && !(key === 'sort' && value.trim() === 'recent')) next.set(key, value.trim());
+    }
+    if (overrides) {
+      for (const [key, value] of Object.entries(overrides)) {
+        if (value.trim() && !(key === 'sort' && value.trim() === 'recent')) next.set(key, value.trim());
+        else next.delete(key);
+      }
     }
     const afterVal = next.get('after'), beforeVal = next.get('before');
     if (afterVal && beforeVal && afterVal > beforeVal) {
@@ -87,9 +98,14 @@ function Watchlist({ controls, query: appliedQuery }: { controls: LibraryControl
     }
   }
 
+  const onSelectFilter = (name: string) => (value: string) => {
+    if (formRef.current) applyLiveFilter(formRef.current, true, { [name]: value });
+  };
+  const moreWatchlistCount = ['after', 'before', 'rating', 'coverage'].filter(key => Boolean(lookup(key))).length;
+
   if (!saved.length) return <EmptyState icon="bookmark" title="Your watchlist is empty" description="Save a film or series to track what you plan to watch next." actions={<ActionLink primary href={webHref('movies')}>Browse movies</ActionLink>} />;
   return <>
-    <form className="af-field-bar" onSubmit={event => {
+    <form ref={formRef} className="af-field-bar" onSubmit={event => {
       event.preventDefault();
       applyLiveFilter(event.currentTarget, false);
     }} onChange={event => {
@@ -103,15 +119,16 @@ function Watchlist({ controls, query: appliedQuery }: { controls: LibraryControl
       }
     }}>
       <InputField label="Title" type="search" name="query" defaultValue={lookup('query')} maxLength={180} />
-      <SelectField key={`t-${lookup('type')}`} label="Type" name="type" value={lookup('type')} empty="All titles" options={[['movie', 'Movies'], ['tv', 'TV Shows'], ['anime', 'Anime']]} />
-      <SelectField key={`s-${lookup('status')}`} label="Watch plan" name="status" value={lookup('status')} empty="All statuses" options={Object.entries(watchStatuses)} />
-      <SelectField key={`g-${lookup('genre')}`} label="Genre" name="genre" value={lookup('genre')} empty="All genres" options={genreNames.map(value => [value, value])} />
-      <SelectField key={`o-${lookup('sort')}`} label="Sort by" name="sort" value={lookup('sort') || 'recent'} options={sorting} />
-      <details className="af-more-filters" open={['after', 'before', 'rating', 'coverage'].some(key => filters.has(key)) || undefined}><summary className="af-button af-secondary">More filters</summary><div className="af-filter-panel">
-        <SelectField key={`r-${lookup('rating')}`} label="Personal rating" name="rating" value={lookup('rating')} empty="Any rating" options={ratingFilters} />
-        <SelectField key={`c-${lookup('coverage')}`} label="Progress" name="coverage" value={lookup('coverage')} empty="Any progress" options={progression} />
-        <InputField label="Added from" type="date" name="after" defaultValue={lookup('after')} aria-invalid={Boolean(problem)} aria-describedby={problem ? 'watchlist-error' : undefined} /><InputField label="Added through" type="date" name="before" defaultValue={lookup('before')} />
-      </div></details>
+      <SelectField label="Type" name="type" value={lookup('type')} empty="All titles" options={[['movie', 'Movies'], ['tv', 'TV Shows'], ['anime', 'Anime']]} onChange={onSelectFilter('type')} />
+      <SelectField label="Watch plan" name="status" value={lookup('status')} empty="All statuses" options={Object.entries(watchStatuses)} onChange={onSelectFilter('status')} />
+      <SelectField label="Genre" name="genre" value={lookup('genre')} empty="All genres" options={genreNames.map(value => [value, value])} onChange={onSelectFilter('genre')} />
+      <SelectField label="Sort by" name="sort" value={lookup('sort') || 'recent'} options={sorting} onChange={onSelectFilter('sort')} />
+      <FilterPopover activeCount={moreWatchlistCount}>
+        <SelectField label="Personal rating" name="rating" value={lookup('rating')} empty="Any rating" options={ratingFilters} onChange={onSelectFilter('rating')} />
+        <SelectField label="Progress" name="coverage" value={lookup('coverage')} empty="Any progress" options={progression} onChange={onSelectFilter('coverage')} />
+        <InputField label="Added from" type="date" name="after" defaultValue={lookup('after')} aria-invalid={Boolean(problem)} aria-describedby={problem ? 'watchlist-error' : undefined} />
+        <InputField label="Added through" type="date" name="before" defaultValue={lookup('before')} />
+      </FilterPopover>
     </form>
     {problem && <p className="af-state" id="watchlist-error" role="alert">{problem}</p>}
     <ResultsSummary count={items.length} route="watchlist" filters={filters} clear={webHref('watchlist')} labels={{
@@ -121,13 +138,18 @@ function Watchlist({ controls, query: appliedQuery }: { controls: LibraryControl
     }} />
     {items.length ? <div className="af-poster-grid">{items.map(item => <div className="af-library-card" key={item.key}>
       <MediaCard item={item} controls={controls} href={libraryItemHref(item)} />
-      <label>{Boolean(progress.get(item.key)) && <span className="af-meta">Viewing progress {progress.get(item.key)}%</span>}
+      <div className="af-library-card-footer">
+        <span className="af-meta af-library-progress-line">{progress.get(item.key) ? `Viewing progress ${progress.get(item.key)}%` : '\u00A0'}</span>
         {item.archiveId || !Number.isSafeInteger(item.id) ? <span className="af-meta">{watchStatuses[item.watchStatus ?? 'planned']}</span>
-          : <select className="af-select" aria-label={`Plan for ${item.title}`} value={item.watchStatus ?? 'planned'}
-            disabled={!controls.ready || saving.includes(item.key) || controls.isPending(item.key)} onChange={event => void changeStatus(item, event.target.value as WatchStatus)}>
-            {Object.entries(watchStatuses).map(([value, name]) => <option key={value} value={value}>{name}</option>)}
-          </select>}
-      </label>
+          : <AfSelect
+            className="af-library-status-select"
+            ariaLabel={`Plan for ${item.title}`}
+            value={item.watchStatus ?? 'planned'}
+            disabled={!controls.ready || saving.includes(item.key) || controls.isPending(item.key)}
+            options={watchStatusOptions}
+            onChange={value => void changeStatus(item, value as WatchStatus)}
+          />}
+      </div>
       {saving.includes(item.key) && !controls.isPending(item.key) && <p className="af-meta" role="status">Checking aired episodes…</p>}
       {completionError[item.key] && <p className="af-meta" role="alert">{completionError[item.key]} <button type="button" className="af-text-link" onClick={() => void changeStatus(item, 'completed')}>Retry completion</button></p>}
     </div>)}</div> : <p className="af-state">No titles match these filters.</p>}
@@ -206,14 +228,25 @@ function Notifications({ controls }: { controls: LibraryControls }) {
 }
 
 function ReadingList({ controls, query: appliedQuery }: { controls: LibraryControls; query: string }) {
+  const { notify } = useToast();
   const filters = new URLSearchParams(appliedQuery);
+  const formRef = useRef<HTMLFormElement>(null);
   const searchTimer = useRef<number | undefined>(undefined);
   useEffect(() => () => clearTimeout(searchTimer.current), []);
   const lookup = (name: string) => filters.get(name) || '';
-  const applyReadingFilter = (form: HTMLFormElement, replace = true) => {
+  const applyReadingFilter = (form: HTMLFormElement, replace = true, overrides?: Record<string, string>) => {
     const next = new URLSearchParams();
     for (const [key, value] of new FormData(form)) if (typeof value === 'string' && value.trim() && !(key === 'sort' && value.trim() === 'recent')) next.set(key, value.trim());
+    if (overrides) {
+      for (const [key, value] of Object.entries(overrides)) {
+        if (value.trim() && !(key === 'sort' && value.trim() === 'recent')) next.set(key, value.trim());
+        else next.delete(key);
+      }
+    }
     navigate(routeWithParams('reading', next), { replace });
+  };
+  const onSelectReading = (name: string) => (value: string) => {
+    if (formRef.current) applyReadingFilter(formRef.current, true, { [name]: value });
   };
   const recent = Object.values(controls.library.reading).sort((a, b) => b.updated - a.updated).slice(0, 12);
   const saved = Object.values(controls.library.saved).filter(isComic);
@@ -236,7 +269,11 @@ function ReadingList({ controls, query: appliedQuery }: { controls: LibraryContr
 
   return <>
     {recent.length > 0 && <Shelf title="Continue reading">{recent.map(entry => <ComicCard item={entry.item} controls={controls} key={entry.item.key}
-      href={readerHref(entry.item, entry.chapter, entry.language, entry.listPage, entry.page)} context={`${entry.label} · Page ${entry.page}`} />)}</Shelf>}
+      href={readerHref(entry.item, entry.chapter, entry.language, entry.listPage, entry.page)} context={`${entry.label} · Page ${entry.page}`}
+      onDismiss={() => {
+        void controls.removeReading(entry.item.key);
+        notify({ message: `Removed “${entry.item.title}” from Continue reading.`, tone: 'default' });
+      }} />)}</Shelf>}
     <section className="af-section"><header className="af-section-head"><h2>Reading list</h2><a className="af-text-link" href={webHref('comics')}>Browse comics</a></header>
       {!saved.length ? <EmptyState
         icon="book"
@@ -246,7 +283,7 @@ function ReadingList({ controls, query: appliedQuery }: { controls: LibraryContr
         actions={<ActionLink primary href={webHref('comics')}>Browse comics</ActionLink>}
       />
         : <>
-          <form className="af-field-bar" onSubmit={event => {
+          <form ref={formRef} className="af-field-bar" onSubmit={event => {
             event.preventDefault();
             applyReadingFilter(event.currentTarget, false);
           }} onChange={event => {
@@ -260,10 +297,10 @@ function ReadingList({ controls, query: appliedQuery }: { controls: LibraryContr
             }
           }}>
             <InputField label="Title" type="search" name="query" defaultValue={query} maxLength={180} />
-            <SelectField key={`f-${format}`} label="Format" name="format" value={format} empty="All formats" options={comicFormats} />
-            <SelectField key={`rs-${status}`} label="Reading plan" name="status" value={status} empty="All statuses" options={Object.entries(readingStatuses)} />
-            <SelectField key={`rr-${rating}`} label="Personal rating" name="rating" value={rating} empty="Any rating" options={ratingFilters} />
-            <SelectField key={`ro-${sort}`} label="Sort by" name="sort" value={sort || 'recent'} options={readingSorting} />
+            <SelectField label="Format" name="format" value={format} empty="All formats" options={comicFormats} onChange={onSelectReading('format')} />
+            <SelectField label="Reading plan" name="status" value={status} empty="All statuses" options={Object.entries(readingStatuses)} onChange={onSelectReading('status')} />
+            <SelectField label="Personal rating" name="rating" value={rating} empty="Any rating" options={ratingFilters} onChange={onSelectReading('rating')} />
+            <SelectField label="Sort by" name="sort" value={sort || 'recent'} options={readingSorting} onChange={onSelectReading('sort')} />
           </form>
           <ResultsSummary count={items.length} route="reading" filters={filters} clear={webHref('reading')} labels={{
             status: value => readingStatuses[value as WatchStatus] ?? '',
@@ -274,14 +311,17 @@ function ReadingList({ controls, query: appliedQuery }: { controls: LibraryContr
             const score = savedRating(controls.library.ratings[item.key]);
             return <div className="af-library-card" key={item.key}>
               <ComicCard item={item} controls={controls} />
-              <label>
-                {score > 0 && <span className="af-meta">Your rating {score}/10</span>}
-                <select className="af-select" aria-label={`Reading status for ${item.title}`} value={item.watchStatus ?? 'planned'}
+              <div className="af-library-card-footer">
+                <span className="af-meta af-library-progress-line">{score > 0 ? `Your rating ${score}/10` : '\u00A0'}</span>
+                <AfSelect
+                  className="af-library-status-select"
+                  ariaLabel={`Reading status for ${item.title}`}
+                  value={item.watchStatus ?? 'planned'}
                   disabled={!controls.ready || controls.isPending(item.key)}
-                  onChange={event => void controls.setComicStatus(item, event.target.value as WatchStatus)}>
-                  {Object.entries(readingStatuses).map(([value, name]) => <option key={value} value={value}>{name}</option>)}
-                </select>
-              </label>
+                  options={readingStatusOptions}
+                  onChange={value => void controls.setComicStatus(item, value as WatchStatus)}
+                />
+              </div>
             </div>;
           })}</div> : <p className="af-state">No comics match these filters.</p>}
         </>}

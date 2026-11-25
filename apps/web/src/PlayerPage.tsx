@@ -12,7 +12,13 @@ import { PlayerEpisodeRow } from './player/PlayerEpisodeRow';
 import { archiveMap, archiveToTitle, parsePlayerRoute, playerTitleKey } from './player/route';
 import { animePlayers, cineSrcOrigin, episodeRangeSize, type ActiveMedia, type AnimeProvider, type PlayerRoute } from './player/types';
 import { VideoStage } from './player/VideoStage';
+import { AfSelect } from './UiControls';
 import './player.css';
+
+const playerRatingOptions = [
+  { value: '0', label: 'Choose 1–10' },
+  ...Array.from({ length: 10 }, (_, index) => ({ value: String(index + 1), label: `${index + 1} / 10` })),
+];
 
 export { parsePlayerRoute, playerTitleKey, type PlayerRoute };
 
@@ -332,13 +338,16 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
     <div className="af-watch-body">
       {!hydratedEpisode && <div className="af-watch-overview">
         {hydratedItem.description && <p className="af-overview">{hydratedItem.description}</p>}
-        <label className="af-rating">Your rating
-          <select className="af-select" value={savedRating(controls.library.ratings[hydratedItem.key])} disabled={!controls.ready || controls.isPending(hydratedItem.key)}
-            onChange={event => void controls.rate(hydratedItem, Number(event.target.value))}>
-            <option value={0}>Choose 1–10</option>
-            {Array.from({ length: 10 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
-          </select>
-        </label>
+        <div className="af-rating">
+          <span>Your rating</span>
+          <AfSelect
+            ariaLabel="Your rating"
+            value={String(savedRating(controls.library.ratings[hydratedItem.key]))}
+            disabled={!controls.ready || controls.isPending(hydratedItem.key)}
+            options={playerRatingOptions}
+            onChange={value => void controls.rate(hydratedItem, Number(value))}
+          />
+        </div>
       </div>}
 
       {loaded.archive?.episodes && <section className="af-section" aria-label="Episodes">
@@ -378,16 +387,22 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
             {airedInSeason.length > 0 && <p className="af-meta">{watchedInSeason} of {airedInSeason.length} aired episodes watched</p>}
           </div>
           <div className="af-episode-pickers">
-            <select className="af-select" aria-label="Select season" value={seasonNumber} onChange={event => { setSeasonNumber(Number(event.target.value)); setSeasonRange(0); }}>
-              {seasons.map(season => <option key={season.season_number} value={season.season_number}>{season.name}</option>)}
-            </select>
-            {rangeCount > 1 && <select className="af-select" aria-label="Episode range" value={clampedRange} onChange={event => setSeasonRange(Number(event.target.value))}>
-              {Array.from({ length: rangeCount }, (_, index) => {
+            <AfSelect
+              ariaLabel="Select season"
+              value={String(seasonNumber)}
+              options={seasons.map(season => ({ value: String(season.season_number), label: season.name }))}
+              onChange={value => { setSeasonNumber(Number(value)); setSeasonRange(0); }}
+            />
+            {rangeCount > 1 && <AfSelect
+              ariaLabel="Episode range"
+              value={String(clampedRange)}
+              options={Array.from({ length: rangeCount }, (_, index) => {
                 const first = seasonEpisodes[index * episodeRangeSize].episode_number;
                 const last = seasonEpisodes[Math.min(seasonEpisodes.length, (index + 1) * episodeRangeSize) - 1].episode_number;
-                return <option key={index} value={index}>Episodes {first}{first === last ? '' : `–${last}`}</option>;
+                return { value: String(index), label: `Episodes ${first}${first === last ? '' : `–${last}`}` };
               })}
-            </select>}
+              onChange={value => setSeasonRange(Number(value))}
+            />}
           </div>
         </header>
         {seasonError

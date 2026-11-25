@@ -125,6 +125,8 @@ export function VideoStage({
   const [speed, setSpeed] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(() => document.fullscreenElement === stageRef.current);
   const [segments, setSegments] = useState<SkipSegment[]>(() => media.nativeMedia?.segments ?? []);
+  const [undoSkip, setUndoSkip] = useState<{ from: number; kind: SkipSegment['kind'] } | null>(null);
+  const undoSkipTimerRef = useRef<number | undefined>(undefined);
   const [countdown, setCountdown] = useState<number | null>(null);
   const [countdownCancelled, setCountdownCancelled] = useState(false);
   const [bufferedCss, setBufferedCss] = useState('');
@@ -213,6 +215,7 @@ export function VideoStage({
     clearTimeout(volumeTimerRef.current);
     clearTimeout(clickTimerRef.current);
     clearTimeout(pendingAudioTimerRef.current);
+    clearTimeout(undoSkipTimerRef.current);
     subDownloadRef.current?.abort();
   }, []);
 
@@ -335,8 +338,13 @@ export function VideoStage({
   const loadSegmentsForDuration = useCallback(async (duration: number) => {
     if (!media.item.id || !Number.isFinite(duration) || duration <= 0) return;
     const rounded = Math.round(duration);
-    if (segmentDurationRef.current === rounded) return;
+    if (segmentDurationRef.current !== null && Math.abs(segmentDurationRef.current - rounded) <= 1) return;
+    const durationChanged = segmentDurationRef.current !== null && Math.abs(segmentDurationRef.current - rounded) > 1;
     segmentDurationRef.current = rounded;
+    if (durationChanged) {
+      setSegments(media.nativeMedia?.segments ?? []);
+      autoSkippedRef.current.clear();
+    }
     const revision = sourceRevisionRef.current;
     const params = new URLSearchParams({ id: String(media.item.id), type: media.item.type, duration: String(Math.round(duration * 1000)) });
     if (media.embed) params.set('source', providerRef.current);
@@ -362,7 +370,7 @@ export function VideoStage({
         return next;
       });
     } catch { /* Bundled timings remain usable. */ }
-  }, [media.item.id, media.item.type, media.episode, media.embed]);
+  }, [media.item.id, media.item.type, media.episode, media.embed, media.nativeMedia]);
 
   const handleSample = useCallback((pos: PlaybackPosition, seeking = false) => {
     positionRef.current = pos;
@@ -1095,14 +1103,27 @@ export function VideoStage({
       onNavigateEpisodeRef.current(adjacentRef.current.next);
       return;
     }
+    const previousTime = positionRef.current.currentTime;
     autoSkippedRef.current.add(segment);
     trackingRef.current.skipped = mergeRanges(trackingRef.current.skipped, segment.start, segment.end);
     trackingRef.current.sample = null;
     sendCommand('seek', segment.end);
+    clearTimeout(undoSkipTimerRef.current);
+    setUndoSkip({ from: previousTime, kind: segment.kind });
+    undoSkipTimerRef.current = window.setTimeout(() => setUndoSkip(null), 6000);
   }, [checkForCompletion, sendCommand]);
+
+  const revertSkip = useCallback(() => {
+    if (!undoSkip) return;
+    clearTimeout(undoSkipTimerRef.current);
+    const target = Math.max(0, undoSkip.from);
+    setUndoSkip(null);
+    sendCommand('seek', target);
+  }, [undoSkip, sendCommand]);
 
   useEffect(() => {
     if (!activeSegment || position.paused || position.seeking || autoSkippedRef.current.has(activeSegment)) return;
+    if (activeSegment.autoSkip === false) return;
     const creditsWithNext = activeSegment.kind === 'credits' && (Boolean(adjacent.next) || (Boolean(media.episode) && !adjacent.ready));
     if (!creditsWithNext && pref(activeSegment.kind)) {
       skipSegment(activeSegment);
@@ -1555,6 +1576,11 @@ export function VideoStage({
             Skip {segmentNames[activeSegment.kind].toLowerCase()}
           </button>}
 
+          {!activeSegment && undoSkip && <div className="af-player-undo-skip" role="status">
+            <span>Skipped {segmentNames[undoSkip.kind].toLowerCase()}</span>
+            <button type="button" className="af-text-link" onClick={revertSkip}>Undo</button>
+          </div>}
+
           <PlayerControls
             media={media}
             controls={controls}
@@ -1635,7 +1661,7 @@ export function VideoStage({
         </div>
       </>}
 
-      {media.embed && !showOverlay && (activeSegment || countdown !== null) && <div className="af-player-lower af-anime-overlay">
+      {media.embed && !showOverlay && (activeSegment || undoSkip || countdown !== null) && <div className="af-player-lower af-anime-overlay">
         {countdown !== null && adjacent.next && <div className="af-next-countdown" role="region" aria-label="Next episode">
           <strong>{adjacent.next.title || `Episode ${adjacent.next.number}`}</strong>
           <p>Next episode in {countdown} seconds</p>
@@ -1647,6 +1673,10 @@ export function VideoStage({
         {activeSegment && <button type="button" className="af-player-skip" onClick={() => skipSegment(activeSegment)}>
           Skip {segmentNames[activeSegment.kind].toLowerCase()}
         </button>}
+        {!activeSegment && undoSkip && <div className="af-player-undo-skip" role="status">
+          <span>Skipped {segmentNames[undoSkip.kind].toLowerCase()}</span>
+          <button type="button" className="af-text-link" onClick={revertSkip}>Undo</button>
+        </div>}
       </div>}
     </div>
 

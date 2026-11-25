@@ -124,7 +124,7 @@ function nextPage({ page, offset, limit }, total) {
 }
 
 async function browse(search) {
-  const pagination = paging(search, 12);
+  const pagination = paging(search, 20);
   const query = search.get('q')?.trim().slice(0, 180);
   const format = search.get('type');
   const genre = search.get('genre');

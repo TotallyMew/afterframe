@@ -6,6 +6,24 @@ import {
 import { ActionLink, Artwork, CatalogProblem, HeroBackdrop, Icon, Loading, MediaCard, SaveButton, Score, Shelf } from './components';
 import { ComicCard, readerHref } from './Comics';
 import { progressPercent, resumeEntries, resumeFor, type LibraryControls } from './library';
+import { useToast } from './Toast';
+
+const trailingStopWords = /\b(?:the|a|an|of|to|in|on|at|for|with|and|or|but|as|by|from|into|that|which|who|his|her|their|its|is|are|was|were|be|been)$/i;
+
+export function trimOverview(text: string | undefined, maxChars = 195): string {
+  const clean = (text ?? '').replace(/\s+/g, ' ').trim();
+  if (!clean || clean.length <= maxChars) return clean;
+  const slice = clean.slice(0, maxChars);
+  const sentenceMatch = [...slice.matchAll(/[.!?](?=\s|$)/g)].at(-1);
+  if (sentenceMatch && sentenceMatch.index != null && sentenceMatch.index >= Math.floor(maxChars * 0.45)) {
+    return slice.slice(0, sentenceMatch.index + 1).trim();
+  }
+  let cut = slice.replace(/\s+\S*$/, '').replace(/[,;:\-–—]+$/, '').trim();
+  for (let i = 0; i < 3 && trailingStopWords.test(cut); i++) {
+    cut = cut.replace(trailingStopWords, '').replace(/[,;:\-–—]+$/, '').trim();
+  }
+  return cut ? `${cut}…` : `${slice.trim()}…`;
+}
 
 const collections = [
   ['newMovies', 'New movies', 'new'],
@@ -21,9 +39,12 @@ const shelves: readonly [ShelfKey, string][] = [
 ];
 
 export function Home({ controls }: { controls: LibraryControls }) {
+  const { notify } = useToast();
   const [data, setData] = useState<Partial<Record<ShelfKey, ShelfResult>>>({});
   const [filter, setFilter] = useState<MediaType | 'all'>('all');
+  const [trendingByType, setTrendingByType] = useState<Partial<Record<MediaType, Title[]>>>({});
   const [featuredKey, setFeaturedKey] = useState('');
+  const [featureDir, setFeatureDir] = useState<1 | -1>(1);
   const [ratings, setRatings] = useState<Record<string, CatalogRating>>({});
   const [featuredDetails, setFeaturedDetails] = useState<Title>();
   const [recentComics, setRecentComics] = useState<Comic[]>([]);
@@ -79,10 +100,26 @@ export function Home({ controls }: { controls: LibraryControls }) {
     return () => task.abort();
   }, [comicsAttempt]);
 
-  const visibleKeys = shelves.flatMap(([key]) => {
-    const shelf = data[key];
-    return shelf && 'titles' in shelf ? shelf.titles.slice(0, key === 'trending' ? 20 : 8).map(item => `${item.type}:${item.id}`) : [];
-  });
+  useEffect(() => {
+    if (filter === 'all' || trendingByType[filter]) return;
+    const task = new AbortController();
+    request<TitleResults>(`/api/trending?type=${filter}`, { signal: task.signal })
+      .then(result => {
+        if (task.signal.aborted) return;
+        const titles = normalizeTitles(result.results);
+        setTrendingByType(current => ({ ...current, [filter]: titles }));
+      })
+      .catch(() => {});
+    return () => task.abort();
+  }, [filter, trendingByType]);
+
+  const visibleKeys = [
+    ...shelves.flatMap(([key]) => {
+      const shelf = data[key];
+      return shelf && 'titles' in shelf ? shelf.titles.slice(0, key === 'trending' ? 20 : 8).map(item => `${item.type}:${item.id}`) : [];
+    }),
+    ...(filter !== 'all' ? (trendingByType[filter] ?? []).slice(0, 12).map(item => `${item.type}:${item.id}`) : []),
+  ];
   const ratingKeys = [...new Set(visibleKeys)].join(',');
   useEffect(() => {
     if (!ratingKeys) return;
@@ -130,7 +167,9 @@ export function Home({ controls }: { controls: LibraryControls }) {
   const featureIndex = featuredChoices.findIndex(item => item.key === featured?.key);
   const featureDuration = featuredDetails?.key === featured?.key ? featuredDetails?.duration : featured?.duration;
   const featuredResume = featured && resumeFor(controls.library, featured);
-  const likelyTrending = shelfTitles('trending').filter(item => filter === 'all' || item.type === filter);
+  const likelyTrending = filter === 'all'
+    ? shelfTitles('trending')
+    : (trendingByType[filter] ?? shelfTitles('trending').filter(item => item.type === filter));
   const freshTrending = likelyTrending.filter(item => item.key !== featured?.key);
   const trending = freshTrending.length ? freshTrending : likelyTrending;
   const resume = resumeEntries(controls.library).slice(0, 12);
@@ -143,23 +182,32 @@ export function Home({ controls }: { controls: LibraryControls }) {
     return null;
   };
 
-  function switchFeature(direction: number) {
+  function switchFeature(direction: 1 | -1) {
     const next = (featureIndex + direction + featuredChoices.length) % featuredChoices.length;
+    setFeatureDir(direction);
     setFeaturedKey(featuredChoices[next].key);
   }
 
+  function selectFeature(item: Title, index: number) {
+    if (item.key === featured?.key) return;
+    setFeatureDir(index >= featureIndex ? 1 : -1);
+    setFeaturedKey(item.key);
+  }
+
+  const heroDescription = trimOverview(featured?.description);
+
   return <>
     {featured ? <section className="af-wrap af-hero af-home-hero" aria-label="Featured film">
-      <div className="af-feature-artwork af-hero-transition" key={`art-${featured.key}`}>
+      <div className="af-feature-artwork af-hero-art-transition" data-dir={featureDir > 0 ? 'next' : 'prev'} key={`art-${featured.key}`}>
         <HeroBackdrop src={featured.backdrop} sizes="(max-width: 760px) 100vw, min(58vw, 850px)" />
       </div>
-      <div className="af-copy af-hero-transition" key={`copy-${featured.key}`}>
+      <div className="af-copy af-hero-copy-transition" data-dir={featureDir > 0 ? 'next' : 'prev'} key={`copy-${featured.key}`}>
         <h1>{featured.title}</h1>
         <div className="af-meta af-title-facts">
           {[featured.year, featured.genre, featureDuration ? `${featureDuration} min` : ''].filter(Boolean).map(fact => <span key={fact}>{fact}</span>)}
           <Score rating={featured.rating} />
         </div>
-        {featured.description && <p className="af-overview af-home-overview">{featured.description}</p>}
+        {heroDescription && <p className="af-overview af-home-overview">{heroDescription}</p>}
         <div className="af-actions">
           <ActionLink href={playHref(featured)} primary><Icon name="play" />{featuredResume ? 'Resume' : 'Play'}</ActionLink>
           <SaveButton item={featured} controls={controls} />
@@ -169,8 +217,8 @@ export function Home({ controls }: { controls: LibraryControls }) {
       {featuredChoices.length > 1 && <div className="af-feature-choices" role="group" aria-label="Featured titles">
         <button type="button" className="af-icon-button" aria-label="Previous featured film" onClick={() => switchFeature(-1)}><Icon name="left" /></button>
         <div className="af-feature-indicators">
-          {featuredChoices.map(item => <button type="button" key={item.key} aria-pressed={item.key === featured.key}
-            aria-label={`Feature ${item.title}`} title={item.title} onClick={() => setFeaturedKey(item.key)}>
+          {featuredChoices.map((item, idx) => <button type="button" key={item.key} aria-pressed={item.key === featured.key}
+            aria-label={`Feature ${item.title}`} title={item.title} onClick={() => selectFeature(item, idx)}>
             <Artwork src={item.backdrop?.replace('/w1280/', '/w300/')} loading="lazy" fallback={<Icon name="film" />} />
           </button>)}
         </div>
@@ -191,20 +239,35 @@ export function Home({ controls }: { controls: LibraryControls }) {
         </div>}
     </div>}
     <div className="af-wrap af-content">
-      {resume.length > 0 && <Shelf title="Continue Watching" href={webHref('history')} landscape>
+      {resume.length > 0 && <Shelf title="Continue Watching" href={webHref('history')} hrefLabel="Watch history" landscape>
         {resume.map(([key, entry]) => {
           const episode = entry.episode;
           const remaining = Math.ceil((entry.duration - entry.time) / 60);
           const left = remaining >= 60 ? `${Math.floor(remaining / 60)} hr ${remaining % 60 ? `${remaining % 60} min ` : ''}left` : `${remaining} min left`;
           return <MediaCard key={key} item={entry.item} controls={controls} href={resumeHref(entry.item, key, episode)} landscape
             context={episode ? `S${episode.season} E${episode.number} · ${left}` : left}
-            percent={progressPercent(entry)} />;
+            percent={progressPercent(entry)}
+            onDismiss={() => {
+              controls.recordProgress(key, null);
+              notify({
+                message: `Removed “${entry.item.title}” from Continue Watching.`,
+                tone: 'default',
+                action: {
+                  label: 'Undo',
+                  onAction: () => controls.recordProgress(key, { ...entry, updated: Date.now() }),
+                },
+              });
+            }} />;
         })}
       </Shelf>}
-      {reading.length > 0 && <Shelf title="Continue reading" href={webHref('reading')}>
+      {reading.length > 0 && <Shelf title="Continue reading" href={webHref('reading')} hrefLabel="Reading list">
         {reading.map(entry => <ComicCard item={entry.item} controls={controls} key={entry.item.key}
           href={readerHref(entry.item, entry.chapter, entry.language, entry.listPage, entry.page)}
-          context={`${entry.label} · Page ${entry.page}`} />)}
+          context={`${entry.label} · Page ${entry.page}`}
+          onDismiss={() => {
+            void controls.removeReading(entry.item.key);
+            notify({ message: `Removed “${entry.item.title}” from Continue reading.`, tone: 'default' });
+          }} />)}
       </Shelf>}
       {!error && !pending && shelfStatus('trending', 'Trending this week')}
       {shelfTitles('trending').length > 0 && <Shelf title="Trending this week" landscape actions={

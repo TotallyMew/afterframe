@@ -1,10 +1,11 @@
 import { Dialog } from '@base-ui/react/dialog';
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { preferenceDefaults } from '@afterframe/shared/playback';
 import { post, request } from './catalog';
 import { Icon, MutationStatus } from './components';
 import type { BooleanPreference, LibraryControls } from './library';
 import { SettingsContext, type OpenSettings, type SettingsTab } from './settings-context';
+import { AfSelect, type SelectOption } from './UiControls';
 
 const sections = ['Playback', 'Spoilers', 'Interface', 'Availability', 'Notifications'] as const;
 type Section = typeof sections[number];
@@ -26,23 +27,24 @@ function Toggle({ name, label, description, controls }: { name: BooleanPreferenc
   </div>;
 }
 
-function SettingSelect({ label, description, value, disabled, children, onChange }: {
-  label: string; description?: string; value: string; disabled?: boolean; children: ReactNode; onChange: (value: string) => void;
+function SettingSelect({ label, description, value, disabled, options, onChange }: {
+  label: string; description?: string; value: string; disabled?: boolean; options: readonly SelectOption[]; onChange: (value: string) => void;
 }) {
-  return <label className="af-settings-field">
-    <span>{label}{description && <small>{description}</small>}</span>
-    <select className="af-input" value={value} disabled={disabled} onChange={event => onChange(event.target.value)}>{children}</select>
-  </label>;
+  const labelId = useId();
+  return <div className="af-settings-field">
+    <span id={labelId}>{label}{description && <small>{description}</small>}</span>
+    <AfSelect className="af-settings-select" ariaLabelledBy={labelId} value={value} disabled={disabled} options={options} onChange={onChange} />
+  </div>;
 }
 
 function PlaybackSettings({ controls }: { controls: LibraryControls }) {
   const preferences = controls.library.preferences;
   const subtitle = preferences.subtitleLanguage ?? (preferences.captions ? 'English' : '');
   const audio = preferences.audioLanguage ?? '';
-  const choices = (language: string) => (language && !languages.includes(language) ? [...languages, language] : languages)
-    .map(value => <option key={value}>{value}</option>);
+  const langChoices = (language: string): SelectOption[] => (language && !languages.includes(language) ? [...languages, language] : languages)
+    .map(value => ({ value, label: value }));
   return <>
-    <p className="af-meta af-settings-help">CineSrc combines intro and recap skipping. Turn on both options to skip them automatically.</p>
+    <p className="af-meta af-settings-help">Auto-skip only triggers on high-confidence verified segments; lower-confidence timings still show a manual Skip button. You can always click Undo after a skip.</p>
     <Toggle controls={controls} name="intro" label="Automatically skip intros" />
     <Toggle controls={controls} name="recap" label="Automatically skip recaps" />
     <Toggle controls={controls} name="credits" label="Automatically skip credits" description="When matched timings are available and there is no next episode." />
@@ -52,28 +54,25 @@ function PlaybackSettings({ controls }: { controls: LibraryControls }) {
     <Toggle controls={controls} name="subtitles" label="Remember subtitles" description="For captions controlled by Afterframe." />
     <div className="af-settings-row">
       <SettingSelect label="Preferred subtitles" value={subtitle} disabled={!controls.ready || controls.isPending('preference/subtitleLanguage')}
+        options={[{ value: '', label: 'Off' }, ...langChoices(subtitle)]}
         onChange={value => {
           if (value && preferences.subtitles === false) void controls.setPreference('subtitles', true, 'Remember subtitles');
           void controls.setPreference('subtitleLanguage', value, 'Preferred subtitles');
-        }}>
-        <option value="">Off</option>{choices(subtitle)}
-      </SettingSelect>
+        }} />
       <MutationStatus controls={controls} itemKey="preference/subtitleLanguage" />
     </div>
     <div className="af-settings-row">
       <SettingSelect label="Preferred audio" description="Used when supported by the video source." value={audio}
         disabled={!controls.ready || controls.isPending('preference/audioLanguage')}
-        onChange={value => void controls.setPreference('audioLanguage', value, 'Preferred audio')}>
-        <option value="">Source default</option>{choices(audio)}
-      </SettingSelect>
+        options={[{ value: '', label: 'Source default' }, ...langChoices(audio)]}
+        onChange={value => void controls.setPreference('audioLanguage', value, 'Preferred audio')} />
       <MutationStatus controls={controls} itemKey="preference/audioLanguage" />
     </div>
     <div className="af-settings-row">
       <SettingSelect label="Preferred quality" description="Requested when a CineSrc video opens." value={preferences.quality || ''}
         disabled={!controls.ready || controls.isPending('preference/quality')}
-        onChange={value => void controls.setPreference('quality', value, 'Preferred quality')}>
-        <option value="">Auto</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option>
-      </SettingSelect>
+        options={[{ value: '', label: 'Auto' }, { value: '1080', label: '1080p' }, { value: '720', label: '720p' }, { value: '480', label: '480p' }]}
+        onChange={value => void controls.setPreference('quality', value, 'Preferred quality')} />
       <MutationStatus controls={controls} itemKey="preference/quality" />
     </div>
   </>;
@@ -89,15 +88,15 @@ function AvailabilitySettings() {
   });
   const [error, setError] = useState(false);
   return <div className="af-settings-row">
-    <SettingSelect label="Region" description="Used for JustWatch listings." value={region} onChange={value => {
-      try {
-        localStorage.setItem('afterframe.region', JSON.stringify(value));
-        setRegion(value);
-        setError(false);
-      } catch { setError(true); }
-    }}>
-      {regions.map(({ code, name }) => <option value={code} key={code}>{name}</option>)}
-    </SettingSelect>
+    <SettingSelect label="Region" description="Used for JustWatch listings." value={region}
+      options={regions.map(({ code, name }) => ({ value: code, label: name }))}
+      onChange={value => {
+        try {
+          localStorage.setItem('afterframe.region', JSON.stringify(value));
+          setRegion(value);
+          setError(false);
+        } catch { setError(true); }
+      }} />
     {error && <p role="alert">Could not save the region. Try again.</p>}
   </div>;
 }
@@ -111,7 +110,7 @@ function Credits() {
     <p>Catalog playback uses CineSrc, <a href="https://animeembed.com/" target="_blank" rel="noopener noreferrer">AnimeEmbed</a>, and <a href="https://ani.pm/developers" target="_blank" rel="noopener noreferrer">Ani.pm</a>. Anime episode mappings come from <a href="https://github.com/anibridge/anibridge-mappings" target="_blank" rel="noopener noreferrer">AniBridge</a>.</p>
     <p>Comics are provided by <a href="https://mangadex.org/" target="_blank" rel="noopener noreferrer">MangaDex</a>. Chapter pages credit their scanlation groups where listed.</p>
     <p>Public-domain and Creative Commons editions stream from the <a href="https://archive.org/" target="_blank" rel="noopener noreferrer">Internet Archive</a> and <a href="https://commons.wikimedia.org/" target="_blank" rel="noopener noreferrer">Wikimedia Commons</a>. The player shows the source and rights label for each edition.</p>
-    <p>Community skip timestamps are supplied by <a href="https://theintrodb.org/" target="_blank" rel="noopener noreferrer">TheIntroDB</a>.</p>
+    <p>Skip timestamps are supplied by <a href="https://aniskip.com/" target="_blank" rel="noopener noreferrer">AniSkip</a> and <a href="https://theintrodb.org/" target="_blank" rel="noopener noreferrer">TheIntroDB</a>.</p>
   </details>;
 }
 

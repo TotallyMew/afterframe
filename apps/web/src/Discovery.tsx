@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { navigate, normalizeTitles, request, routeWithParams, searchHref, webHref, type CatalogRating, type MediaType, type RawTitle, type Title } from './catalog';
 import { currentLocationHref } from './router';
 import { InputField, PageHeading, ResultsSummary, RouteTabs, SelectField } from './Catalogue';
-import { Artwork, CatalogProblem, Icon, Loading, MediaCard, SaveButton, Score, Shelf } from './components';
+import { Artwork, CatalogProblem, Icon, Loading, MediaCard, SaveButton, Shelf } from './components';
 import { guestRecommendations, type LibraryControls } from './library';
+import { FilterPopover } from './UiControls';
 
 const seasons = [['WINTER', 'Winter'], ['SPRING', 'Spring'], ['SUMMER', 'Summer'], ['FALL', 'Fall']] as const;
 const formats = [['TV', 'TV'], ['TV_SHORT', 'TV short'], ['MOVIE', 'Movie'], ['OVA', 'OVA'], ['ONA', 'ONA'], ['SPECIAL', 'Special']] as const;
@@ -12,7 +13,8 @@ const sorts = [['POPULARITY_DESC', 'Popularity'], ['START_DATE_DESC', 'Newest fi
 
 const genreSuggestions = ['Action', 'Adventure', 'Comedy', 'Drama', 'Fantasy', 'Horror', 'Mecha', 'Mystery', 'Romance', 'Sci-Fi', 'Slice of Life', 'Sports', 'Supernatural', 'Thriller'];
 const themeSuggestions = ['Coming of Age', 'Found Family', 'Isekai', 'Magic', 'School', 'Space', 'Super Power', 'Time Manipulation', 'Urban Fantasy'];
-const airDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+const compactAirDate = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' });
+const fullAirDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 
 type AnimeEntry = {
   id: number;
@@ -96,8 +98,13 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
     return () => task.abort();
   }, [baseQuery, page, retry, isSeasonal]);
 
+  const moreAnimeCount = ['genre', 'theme', 'min', 'max', 'sort'].filter(name => {
+    const val = params.get(name);
+    return Boolean(val) && !(name === 'sort' && val === 'POPULARITY_DESC');
+  }).length;
+
   return <div className="af-wrap af-directory">
-    <PageHeading title="Anime">Browse releases and airing schedules.</PageHeading>
+    <PageHeading title="Anime" />
     <div className="af-catalog-tools">
       <RouteTabs label="Anime collection" active={isSeasonal ? 'anime' : 'anime?view=all'}
         tabs={[['anime', 'Seasonal'], ['anime?view=all', 'All anime']]} />
@@ -118,15 +125,13 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
         <InputField label="Year" type="number" name="year" min="1900" max="2100" defaultValue={params.get('year') || ''} />
         <SelectField label="Format" name="format" empty="Any format" value={params.get('format') || ''} options={formats} />
         <SelectField label="Status" name="status" empty="Any status" value={params.get('status') || ''} options={statuses} />
-        <details className="af-more-filters" open={['genre', 'theme', 'min', 'max', 'sort'].some(name => params.has(name)) || undefined}><summary className="af-button af-secondary">More filters</summary>
-          <div className="af-filter-panel">
-            <InputField label="Genre" name="genre" list="anime-genres" maxLength={60} defaultValue={params.get('genre') || ''} />
-            <InputField label="Theme" name="theme" list="anime-themes" maxLength={60} defaultValue={params.get('theme') || ''} />
-            <InputField label="Minimum episodes" name="min" aria-invalid={Boolean(rangeError)} aria-describedby={rangeError ? 'episode-range-error' : undefined} type="number" min="1" max="5000" defaultValue={params.get('min') || ''} />
-            <InputField label="Maximum episodes" name="max" type="number" min="1" max="5000" defaultValue={params.get('max') || ''} />
-            <SelectField label="Sort by" name="sort" value={params.get('sort') || 'POPULARITY_DESC'} options={sorts} />
-          </div>
-        </details>
+        <FilterPopover activeCount={moreAnimeCount}>
+          <InputField label="Genre" name="genre" list="anime-genres" maxLength={60} defaultValue={params.get('genre') || ''} />
+          <InputField label="Theme" name="theme" list="anime-themes" maxLength={60} defaultValue={params.get('theme') || ''} />
+          <InputField label="Minimum episodes" name="min" aria-invalid={Boolean(rangeError)} aria-describedby={rangeError ? 'episode-range-error' : undefined} type="number" min="1" max="5000" defaultValue={params.get('min') || ''} />
+          <InputField label="Maximum episodes" name="max" type="number" min="1" max="5000" defaultValue={params.get('max') || ''} />
+          <SelectField label="Sort by" name="sort" value={params.get('sort') || 'POPULARITY_DESC'} options={sorts} />
+        </FilterPopover>
         <datalist id="anime-genres">{genreSuggestions.map(name => <option key={name} value={name} />)}</datalist>
         <datalist id="anime-themes">{themeSuggestions.map(name => <option key={name} value={name} />)}</datalist>
         <button className="af-button af-primary" type="submit">Apply filters</button>
@@ -156,21 +161,33 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
         : searchHref(entry.title?.romaji || title, { type: 'anime' });
       const cover = /^https:\/\/s4\.anilist\.co\//.test(entry.coverImage?.large || '') ? entry.coverImage?.large : undefined;
       const saveTarget = animeToSavedTitle(entry, cover);
-      const meta = [formats.find(([key]) => key === entry.format)?.[1],
-        isSeasonal && entry.catalogSeason && entry.catalogSeason > 1 ? `Season ${entry.catalogSeason}` : '',
-        entry.startDate?.year,
-        statuses.find(([key]) => key === entry.status)?.[1], entry.episodes ? `${entry.episodes} ep` : ''].filter(Boolean).join(' · ');
+      const formatLabel = formats.find(([key]) => key === entry.format)?.[1];
+      const meta = [
+        formatLabel,
+        isSeasonal && entry.catalogSeason && entry.catalogSeason > 1 ? `S${entry.catalogSeason}` : '',
+        entry.episodes ? `${entry.episodes} ep` : entry.startDate?.year,
+      ].filter(Boolean).join(' · ');
       const next = entry.nextAiringEpisode;
       const nextDate = next && new Date(next.airingAt * 1000);
+      const hasUpcoming = Boolean(next && nextDate && nextDate.getTime() > Date.now());
       return <article className="af-media-card af-anime-card" key={entry.id}><a href={href}>
-        <span className="af-poster"><Artwork src={cover} loading="lazy" fallback={<Icon name="film" />} /></span>
-        <strong>{title}</strong>
-        {meta && <span className="af-card-meta">{meta}</span>}
-        <Score mal={entry.mal} />
-        {next && nextDate && nextDate.getTime() > Date.now() && <time className="af-anime-timing" dateTime={nextDate.toISOString()}>
-          <Icon name="clock" /><span>Episode {next.episode} airs {airDate.format(nextDate)}</span>
-        </time>}
-        {!matched && <span className="af-card-meta">Search catalog</span>}
+        <span className="af-poster">
+          <Artwork src={cover} loading="lazy" fallback={<Icon name="film" />} />
+          {entry.mal != null && entry.mal > 0 && (
+            <span className="af-poster-badge" aria-label={`MyAnimeList score ${entry.mal.toFixed(2)}`}>
+              <span aria-hidden="true">★</span> {entry.mal.toFixed(1)}
+            </span>
+          )}
+          {hasUpcoming && next && nextDate && (
+            <time className="af-poster-airing" dateTime={nextDate.toISOString()} title={`Episode ${next.episode} airs ${fullAirDate.format(nextDate)}`}>
+              Ep {next.episode} · {compactAirDate.format(nextDate)}
+            </time>
+          )}
+        </span>
+        <strong title={title}>{title}</strong>
+        <span className="af-card-meta">
+          {meta}{!matched ? (meta ? ' · Search' : 'Search catalog') : ''}
+        </span>
       </a>{saveTarget && <SaveButton item={saveTarget} controls={controls} compact />}</article>;
     })}</div>}
     {loading && page === 1 && <Loading label="Loading anime…" />}

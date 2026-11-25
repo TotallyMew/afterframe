@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   catalogGenres, formatDate, navigate, normalizeTitles, request, routeWithParams, titleHref, webHref,
   type CatalogRating, type Comic, type MediaType, type RatingCoverage, type Title, type TitleResults,
@@ -6,20 +6,46 @@ import {
 import { Artwork, CatalogProblem, Icon, Loading, MediaCard, SaveButton, Score, Shelf } from './components';
 import { ComicCard } from './Comics';
 import type { LibraryControls } from './library';
+import { AfSelect, FilterPopover } from './UiControls';
 
 const sortOptions = [['popular', 'Popular'], ['newest', 'Newest'], ['oldest', 'Oldest']] as const;
 const runtimeOptions = [['short', 'Under 90 min'], ['standard', '90–119 min'], ['long', '120–149 min'], ['epic', '150 min and up']] as const;
 const decadeOptions = Array.from({ length: 14 }, (_, index) => 2020 - index * 10).map(year => [String(year), `${year}s`] as const);
+const imdbPresetOptions = [
+  ['9', '9.0+'],
+  ['8.5', '8.5+'],
+  ['8', '8.0+'],
+  ['7.5', '7.5+'],
+  ['7', '7.0+'],
+  ['6.5', '6.5+'],
+  ['6', '6.0+'],
+  ['5', '5.0+'],
+] as const;
 
-export function SelectField({ label, name, value = '', options, empty }: {
-  label: string; name: string; value?: string; options: readonly (readonly [string, string])[]; empty?: string;
+export function SelectField({ label, name, value = '', options, empty, onChange }: {
+  label: string;
+  name: string;
+  value?: string;
+  options: readonly (readonly [string, string])[];
+  empty?: string;
+  onChange?: (value: string) => void;
 }) {
-  return <label>{label}
-    <select className="af-select" name={name} defaultValue={value}>
-      {empty && <option value="">{empty}</option>}
-      {options.map(([key, text]) => <option key={key} value={key}>{text}</option>)}
-    </select>
-  </label>;
+  const labelId = useId();
+  const selectOptions = [
+    ...(empty ? [{ value: '', label: empty }] : []),
+    ...options.map(([key, text]) => ({ value: key, label: text })),
+  ];
+  return <div className="af-field-group">
+    <span className="af-field-label" id={labelId}>{label}</span>
+    <AfSelect
+      name={name}
+      defaultValue={onChange ? undefined : value}
+      value={onChange ? value : undefined}
+      onChange={onChange}
+      ariaLabelledBy={labelId}
+      options={selectOptions}
+    />
+  </div>;
 }
 
 export function InputField({ label, ...props }: { label: string } & React.InputHTMLAttributes<HTMLInputElement>) {
@@ -302,8 +328,14 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
     navigate(filterRoute(path, values, params));
   }
 
+  const imdbValue = params.get('imdb') || '';
+  const imdbOptions = imdbValue && !imdbPresetOptions.some(([key]) => key === imdbValue)
+    ? [[imdbValue, `${imdbValue}+`] as const, ...imdbPresetOptions]
+    : imdbPresetOptions;
+  const moreFilterCount = ['from', 'to', 'runtime'].filter(key => Boolean(params.get(key))).length;
+
   return <div className="af-wrap af-directory">
-    <PageHeading title={heading}>{releases && 'Recent movies and series grouped by release week.'}</PageHeading>
+    <PageHeading title={heading} />
     {(search || releases) && <div className="af-directory-tabs">
       <RouteTabs active={setType(selected)} label={search ? 'Search type' : 'Release type'} tabs={[
         ...(search ? [[setType(''), 'All']] as const : []),
@@ -315,16 +347,13 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
     {!comicSearch && <form className="af-field-bar" ref={form} onSubmit={submit}>
       <SelectField label="Genre" name="category" empty="All genres" value={params.get('category') || params.get('genre') || ''} options={catalogGenres.map(genre => [genre, genre])} />
       {!releases && <SelectField label="Decade" name="decade" empty="Any decade" value={params.get('decade') || ''} options={decadeOptions} />}
-      {!search && <InputField label="Minimum IMDb rating" name="imdb" type="number" min="1" max="10" step="0.1" placeholder="Any" defaultValue={params.get('imdb') || ''} />}
+      {!search && <SelectField label="Minimum IMDb rating" name="imdb" empty="Any rating" value={imdbValue} options={imdbOptions} />}
       {!search && !releases && <SelectField label="Sort by" name="sort" value={params.get('sort') || 'popular'} options={sortOptions} />}
-      <details className="af-more-filters" open={['from', 'to', 'runtime'].some(key => params.has(key)) || undefined}>
-        <summary className="af-button af-secondary">More filters</summary>
-        <div className="af-filter-panel">
-          {!releases && <><InputField label="From year" aria-describedby={formError ? "year-error" : undefined} aria-invalid={Boolean(formError)} name="from" type="number" min="1870" max="2099" defaultValue={params.get('from') || ''} />
-            <InputField label="Through year" name="to" type="number" min="1870" max="2099" defaultValue={params.get('to') || ''} /></>}
-          {!search && <SelectField label={type === 'tv' ? 'Episode runtime' : 'Runtime'} name="runtime" empty="Any length" value={params.get('runtime') || ''} options={runtimeOptions} />}
-        </div>
-      </details>
+      <FilterPopover activeCount={moreFilterCount}>
+        {!releases && <><InputField label="From year" aria-describedby={formError ? "year-error" : undefined} aria-invalid={Boolean(formError)} name="from" type="number" min="1870" max="2099" defaultValue={params.get('from') || ''} />
+          <InputField label="Through year" name="to" type="number" min="1870" max="2099" defaultValue={params.get('to') || ''} /></>}
+        {!search && <SelectField label={type === 'tv' ? 'Episode runtime' : 'Runtime'} name="runtime" empty="Any length" value={params.get('runtime') || ''} options={runtimeOptions} />}
+      </FilterPopover>
       <button type="submit" className="af-button af-primary">Apply filters</button>
     </form>}
     {formError && <p className="af-state" id="year-error" role="alert">{formError}</p>}

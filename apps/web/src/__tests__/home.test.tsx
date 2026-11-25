@@ -1,6 +1,6 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Home } from '../Home';
+import { Home, trimOverview } from '../Home';
 import type { LibraryControls } from '../library';
 
 function makeControls(): LibraryControls {
@@ -21,6 +21,7 @@ function makeControls(): LibraryControls {
     setComicStatus: () => undefined,
     setPreference: async () => {},
     recordReading: () => undefined,
+    removeReading: async () => {},
     recordProgress: () => {},
     recordHistory: () => {},
     markNotification: async () => {},
@@ -83,5 +84,33 @@ describe('Home cached IMDb rating hydration', () => {
     render(<Home controls={makeControls()} />);
     await waitFor(() => expect(screen.getByText(/9\.5/)).toBeTruthy());
     await waitFor(() => expect(screen.getByText('Chainsaw Man')).toBeTruthy());
+  });
+
+  it('fetches /api/trending?type=tv when filtering Trending this week to TV Shows', async () => {
+    const movie = { id: 550, media_type: 'movie', title: 'Fight Club', release_date: '1999-10-15', backdrop_path: '/m.jpg' };
+    const tvShow = { id: 1396, media_type: 'tv', name: 'Severance', first_air_date: '2022-02-18', backdrop_path: '/tv.jpg' };
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/api/trending') return new Response(JSON.stringify({ results: [movie] }), { status: 200 });
+      if (url === '/api/trending?type=tv') return new Response(JSON.stringify({ results: [tvShow] }), { status: 200 });
+      if (url.startsWith('/api/home?section=')) return new Response(JSON.stringify({ results: [] }), { status: 200 });
+      if (url.startsWith('/api/comics')) return new Response(JSON.stringify({ results: [] }), { status: 200 });
+      if (url.startsWith('/api/imdb/cached')) return new Response(JSON.stringify({ ratings: {} }), { status: 200 });
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+
+    render(<Home controls={makeControls()} />);
+    const tvBtn = await screen.findByRole('button', { name: 'TV Shows' });
+    fireEvent.click(tvBtn);
+    await waitFor(() => expect(screen.getByText('Severance')).toBeTruthy());
+    expect(fetchSpy).toHaveBeenCalledWith('/api/trending?type=tv', expect.anything());
+  });
+
+  it('trims long hero overviews cleanly without mid-phrase dangling articles', () => {
+    const raw = 'Return to the world of Panem 24 years before Katniss Everdeen volunteers in her sister’s place, commencing on the morning of the reaping of the 50th Hunger Games, also known as the Second Quarter Quell.';
+    const trimmed = trimOverview(raw, 180);
+    expect(trimmed.endsWith('the…')).toBe(false);
+    expect(trimmed.endsWith('the.')).toBe(false);
+    expect(trimmed.length).toBeLessThanOrEqual(181);
   });
 });

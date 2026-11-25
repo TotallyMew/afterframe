@@ -1,7 +1,8 @@
 import { Dialog } from '@base-ui/react/dialog';
+import { Popover } from '@base-ui/react/popover';
 import { isAnime } from '@afterframe/shared/discover';
-import { Children, memo, useEffect, useRef, useState, type ComponentProps, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
-import { comicCover, comicDetailsHref, imagePath, libraryItemHref, navigate, normalizeTitles, request, resumeHref, searchHref, titleHref, webHref, type CatalogRating, type Comic, type Title, type TitleResults } from './catalog';
+import { Children, memo, useEffect, useLayoutEffect, useRef, useState, type ComponentProps, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { comicCover, comicDetailsHref, formatDate, imagePath, libraryItemHref, navigate, normalizeTitles, request, resumeHref, searchHref, titleHref, webHref, type CatalogRating, type Comic, type Title, type TitleResults } from './catalog';
 import { AccountButton } from './Account';
 import { resumeEntries, type LibraryControls } from './library';
 import { useSettings } from './settings-context';
@@ -22,6 +23,7 @@ const glyphs = {
   book: <><path d="M12 6v15M3 5a9 9 0 0 1 9 1 9 9 0 0 1 9-1v14a9 9 0 0 0-9 2 9 9 0 0 0-9-2z" /></>,
   film: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 4v16M17 4v16M3 9h4m-4 6h4m10-6h4m-4 6h4" /></>,
   home: <path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5.5v-6.5h-5V21H4a1 1 0 0 1-1-1z" />,
+  bell: <><path d="M6 9a6 6 0 1 1 12 0c0 5 2 6.5 2 6.5H4S6 14 6 9" /><path d="M10 19a2 2 0 0 0 4 0" /></>,
 } satisfies Record<string, ReactNode>;
 
 export function Icon({ name }: { name: keyof typeof glyphs }) {
@@ -154,8 +156,8 @@ export function Score({ rating, mal }: { rating?: CatalogRating; mal?: number })
   </>;
 }
 
-export const MediaCard = memo(function MediaCard({ item, controls, href, context, percent, landscape = false, eager }: {
-  item: Title; controls: LibraryControls; href?: string; context?: string; percent?: number; landscape?: boolean; eager?: boolean;
+export const MediaCard = memo(function MediaCard({ item, controls, href, context, percent, landscape = false, eager, onDismiss }: {
+  item: Title; controls: LibraryControls; href?: string; context?: string; percent?: number; landscape?: boolean; eager?: boolean; onDismiss?: () => void;
 }) {
   const label = [item.year, landscape ? item.type === 'tv' ? 'TV series' : 'Movie' : item.genre].filter(Boolean).join(' · ');
   const art = landscape ? item.backdrop || item.poster : item.poster;
@@ -175,12 +177,15 @@ export const MediaCard = memo(function MediaCard({ item, controls, href, context
       <span className="af-card-meta">{context || label}</span>
       {!context && <Score rating={item.rating} mal={item.mal} />}
     </a>
-    {!context && <SaveButton item={item} controls={controls} compact />}
+    {onDismiss ? <button type="button" className="af-icon-button af-card-save af-card-dismiss"
+      aria-label={`Remove ${item.title} from Continue Watching`} title="Remove from Continue Watching"
+      onClick={onDismiss}><Icon name="close" /></button>
+      : !context && <SaveButton item={item} controls={controls} compact />}
   </article>;
 });
 
-export function Shelf({ title, children, href, actions, landscape = false }: {
-  title: string; children: ReactNode; href?: string; actions?: ReactNode; landscape?: boolean;
+export function Shelf({ title, children, href, hrefLabel = 'View all', actions, landscape = false }: {
+  title: string; children: ReactNode; href?: string; hrefLabel?: string; actions?: ReactNode; landscape?: boolean;
 }) {
   const rail = useRef<HTMLDivElement>(null);
   const [edges, setEdges] = useState({ previous: false, next: false });
@@ -207,14 +212,17 @@ export function Shelf({ title, children, href, actions, landscape = false }: {
   }
   return <section className="af-section" aria-label={title}>
     <header className="af-section-head">
-      <h2>{title}</h2>
-      <div className="af-shelf-controls">
-        {actions}{href && <a className="af-text-link" href={href}>View all</a>}
+      <div className="af-section-head-main">
+        <h2>{title}</h2>
+        {href && <a className="af-text-link af-section-link" href={href}>{hrefLabel} <Icon name="right" /></a>}
+      </div>
+      {(actions || edges.previous || edges.next) && <div className="af-shelf-controls">
+        {actions}
         {(edges.previous || edges.next) && <div className="af-shelf-arrows">
           <button type="button" className="af-icon-button" aria-label={`Scroll ${title} left`} disabled={!edges.previous} onClick={() => scroll(-1)}><Icon name="left" /></button>
           <button type="button" className="af-icon-button" aria-label={`Scroll ${title} right`} disabled={!edges.next} onClick={() => scroll(1)}><Icon name="right" /></button>
         </div>}
-      </div>
+      </div>}
     </header>
     <div className={`af-rail ${landscape ? 'af-wide-rail' : ''}`} ref={rail}>{children}</div>
   </section>;
@@ -483,10 +491,71 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
   </Dialog.Portal>;
 }
 
+function NotificationsBell({ controls }: { controls: LibraryControls }) {
+  const [open, setOpen] = useState(false);
+  const entries = Object.entries(controls.library.notifications).sort(([, a], [, b]) => b.created - a.created);
+  const unread = entries.filter(([, entry]) => !entry.read).length;
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger
+        className="af-icon-button af-notif-trigger"
+        aria-label={unread ? `Notifications (${unread} unread)` : 'Notifications'}
+        title="Release notifications"
+      >
+        <Icon name="bell" />
+        {unread > 0 && <span className="af-notif-badge" aria-hidden="true">{unread > 9 ? '9+' : unread}</span>}
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Positioner className="af-popover-positioner" side="bottom" align="end" sideOffset={8}>
+          <Popover.Popup className="af-popover-popup af-notif-popover">
+            <div className="af-popover-head">
+              <Popover.Title className="af-popover-title">Notifications</Popover.Title>
+              <a className="af-text-link af-popover-done" href={webHref('notifications')} onClick={() => setOpen(false)}>View all</a>
+            </div>
+            {!controls.account ? (
+              <div className="af-notif-empty">
+                <p className="af-meta">Sign in to follow new episodes and season premieres.</p>
+                <AccountButton className="af-button af-primary">Sign in</AccountButton>
+              </div>
+            ) : !entries.length ? (
+              <p className="af-meta af-notif-empty">All caught up. Release updates for followed series will appear here.</p>
+            ) : (
+              <ul className="af-notif-list">
+                {entries.slice(0, 6).map(([key, entry]) => (
+                  <li key={key} className={`af-notif-item ${entry.read ? '' : 'is-unread'}`}>
+                    <a href={webHref(`tv/${entry.seriesId}`)} onClick={() => setOpen(false)}>
+                      <strong>{entry.title}</strong>
+                      <span className="af-meta">{entry.message.replace(/ \(TMDb\)/gi, '')}</span>
+                      <time className="af-meta">{formatDate(new Date(entry.created).toISOString())}</time>
+                    </a>
+                    {!entry.read && (
+                      <button
+                        type="button"
+                        className="af-text-link af-notif-mark"
+                        disabled={!controls.ready || controls.isPending(key)}
+                        onClick={() => void controls.markNotification(key)}
+                      >
+                        Mark read
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Popover.Popup>
+        </Popover.Positioner>
+      </Popover.Portal>
+    </Popover.Root>
+  );
+}
+
 export function Header({ controls, route }: { controls: LibraryControls; route: string }) {
   const [search, setSearch] = useState(false);
   const [browse, setBrowse] = useState(false);
   const [titleSection, setTitleSection] = useState<string>('');
+  const navRef = useRef<HTMLElement>(null);
+  const [pill, setPill] = useState<{ x: number; width: number; ready: boolean; animate: boolean }>({ x: 0, width: 0, ready: false, animate: false });
+  const hadPillRef = useRef(false);
   const searchTrigger = useRef<HTMLButtonElement>(null);
   const searchReturn = useRef<HTMLElement | null>(null);
   const searchNavigated = useRef(false);
@@ -510,6 +579,30 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
       || (link === 'tv' && path.startsWith('tv/'))
       || (link === 'comics' && path.startsWith('comic/'));
   };
+  const activeNavKey = route === 'home' ? 'home' : (pages.find(([, link]) => isNavCurrent(link))?.[1] ?? '');
+
+  useLayoutEffect(() => {
+    const nav = navRef.current;
+    if (!nav) return;
+    const measure = () => {
+      const active = nav.querySelector<HTMLAnchorElement>('a[aria-current="page"]');
+      if (!active || active.offsetWidth === 0) {
+        hadPillRef.current = false;
+        setPill(prev => prev.ready ? { ...prev, ready: false } : prev);
+        return;
+      }
+      const x = active.offsetLeft;
+      const width = active.offsetWidth;
+      const animate = hadPillRef.current;
+      hadPillRef.current = true;
+      setPill(prev => prev.x === x && prev.width === width && prev.ready && prev.animate === animate
+        ? prev : { x, width, ready: true, animate });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(nav);
+    return () => ro.disconnect();
+  }, [activeNavKey]);
   useEffect(() => {
     const shortcut = (event: globalThis.KeyboardEvent) => {
       if (event.defaultPrevented || event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable=true]')) return;
@@ -544,7 +637,12 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
   }, [search]);
   return <header className="af-header">
     <a className="af-brand" href={webHref('home')}><img src="/art/favicon.svg" alt="" />afterframe</a>
-    <nav className="af-nav" aria-label="Main navigation">
+    <nav ref={navRef} className={`af-nav ${pill.ready ? 'has-indicator' : ''}`} aria-label="Main navigation">
+      {pill.ready && <span
+        className={`af-nav-indicator ${pill.animate ? 'is-animated' : ''}`}
+        style={{ transform: `translateX(${pill.x}px)`, width: `${pill.width}px` }}
+        aria-hidden="true"
+      />}
       <a href={webHref('home')} aria-current={route === 'home' ? 'page' : undefined}>Home</a>
       {pages.map(([label, link]) => <a href={webHref(link)} key={link} aria-current={isNavCurrent(link) ? 'page' : undefined}>{label}</a>)}
     </nav>
@@ -557,6 +655,7 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
         <Search open={search} controls={controls} close={() => { searchNavigated.current = true; setSearch(false); }}
           finalFocus={() => searchNavigated.current ? false : searchReturn.current?.isConnected ? searchReturn.current : searchTrigger.current} />
       </Dialog.Root>
+      <NotificationsBell controls={controls} />
       <a className="af-icon-button" href={webHref('watchlist')} aria-label="My Library"><Icon name="bookmark" /><span>Library</span></a>
       <button type="button" className="af-icon-button af-settings" aria-label="Settings" aria-haspopup="dialog"
         onClick={event => openSettings('general', event.currentTarget)}><Icon name="settings" /></button>

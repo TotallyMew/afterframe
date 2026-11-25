@@ -3,7 +3,14 @@ import { useMemo } from 'react';
 import { playerHref, timeCode } from '../catalog';
 import { ActionLink, Artwork, HeroBackdrop, Icon, SaveButton } from '../components';
 import { progressPercent, resumeFor, savedRating, watchStatuses, type LibraryControls, type WatchStatus } from '../library';
+import { AfSelect } from '../UiControls';
 import { archiveToTitle } from './route';
+
+const archiveStatusOptions = Object.entries(watchStatuses).map(([value, label]) => ({ value, label }));
+const archiveRatingOptions = [
+  { value: '0', label: 'Choose 1–10' },
+  ...Array.from({ length: 10 }, (_, index) => ({ value: String(index + 1), label: `${index + 1} / 10` })),
+];
 
 export function ArchiveEditionView({ entry, backHref, controls }: { entry: ArchiveTitle; backHref: string; controls: LibraryControls }) {
   const item = useMemo(() => archiveToTitle(entry), [entry]);
@@ -35,10 +42,13 @@ export function ArchiveEditionView({ entry, backHref, controls }: { entry: Archi
                 <Icon name="play" />{resumed ? 'Resume' : 'Play'}
               </ActionLink>
               <SaveButton item={item} controls={controls} />
-              {saved && <select className="af-select" aria-label="Watch plan" value={saved.watchStatus ?? 'planned'} disabled={!controls.ready || controls.isPending(item.key)}
-                onChange={event => void controls.setStatus(item, event.target.value as WatchStatus, { id: item.id }, entry.episodes?.map(ep => ep.key))}>
-                {Object.entries(watchStatuses).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-              </select>}
+              {saved && <AfSelect
+                ariaLabel="Watch plan"
+                value={saved.watchStatus ?? 'planned'}
+                disabled={!controls.ready || controls.isPending(item.key)}
+                options={archiveStatusOptions}
+                onChange={value => void controls.setStatus(item, value as WatchStatus, { id: item.id }, entry.episodes?.map(ep => ep.key))}
+              />}
               {item.type === 'movie' && <button type="button" className="af-button af-secondary" disabled={!controls.ready || controls.isPending(item.key)}
                 aria-pressed={marked} onClick={() => void controls.toggleWatched(item)}>{marked ? <><Icon name="check" />Watched</> : 'Mark watched'}</button>}
             </div>
@@ -49,13 +59,16 @@ export function ArchiveEditionView({ entry, backHref, controls }: { entry: Archi
             {sourcePage && <a href={sourcePage} target="_blank" rel="noopener noreferrer">{source?.source || 'Internet Archive'}</a>}
             {entry.license && <a href={entry.license[1]} target="_blank" rel="noopener noreferrer">{entry.license[0]}</a>}
           </div>
-          <label className="af-rating">Your rating
-            <select className="af-select" value={savedRating(controls.library.ratings[item.key])} disabled={!controls.ready || controls.isPending(item.key)}
-              onChange={event => void controls.rate(item, Number(event.target.value))}>
-              <option value={0}>Choose 1–10</option>
-              {Array.from({ length: 10 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
-            </select>
-          </label>
+          <div className="af-rating">
+            <span>Your rating</span>
+            <AfSelect
+              ariaLabel="Your rating"
+              value={String(savedRating(controls.library.ratings[item.key]))}
+              disabled={!controls.ready || controls.isPending(item.key)}
+              options={archiveRatingOptions}
+              onChange={value => void controls.rate(item, Number(value))}
+            />
+          </div>
         </div>
       </div>
     </section>

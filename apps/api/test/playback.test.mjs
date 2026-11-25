@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { activeSkipSegment, bufferedIntervals, completionReached, movieDurationMismatch, samplePlayback, viewingSession } from '@afterframe/shared/playback';
 import { playbackLanguage, samePlaybackLanguage } from '@afterframe/shared/subtitles';
+import { isReasonableSegment } from '../catalog/segments.mjs';
+import { stripAnimeSeasonTitle } from '../catalog/discovery.mjs';
 
 test('a large runtime discrepancy is flagged while ordinary release differences remain playable', () => {
   assert.equal(movieDurationMismatch(173, 86 * 60 + 3), true);
@@ -76,4 +78,19 @@ test('a new signed-in session receives the account’s playback language setting
   const otherDevice = await post('signin', credentials);
   assert.equal(otherDevice.code, 200);
   assert.deepEqual({ ...otherDevice.body.library.preferences }, { subtitleLanguage: 'English', audioLanguage: 'Japanese' });
+});
+
+test('skip segment sanity guards reject oversized or misplaced intros and credits', () => {
+  const episodeSec = 57 * 60 + 48; // 3468s (e.g. Black Bird S1E1)
+  assert.equal(isReasonableSegment('intro', 120, 210, episodeSec), true);
+  assert.equal(isReasonableSegment('intro', 120, 500, episodeSec), false); // > 180s
+  assert.equal(isReasonableSegment('intro', 2000, 2060, episodeSec), false); // starts past 35%
+  assert.equal(isReasonableSegment('credits', 3300, 3468, episodeSec), true);
+  assert.equal(isReasonableSegment('credits', 1000, 1100, episodeSec), false); // starts before 65%
+});
+
+test('anime season suffix stripping extracts parent series title and season number', () => {
+  assert.deepEqual(stripAnimeSeasonTitle('Blue Box Season 2'), { baseTitle: 'Blue Box', season: 2 });
+  assert.deepEqual(stripAnimeSeasonTitle('Frieren: 2nd Season'), { baseTitle: 'Frieren', season: 2 });
+  assert.deepEqual(stripAnimeSeasonTitle('Firefly Wedding'), { baseTitle: 'Firefly Wedding', season: null });
 });

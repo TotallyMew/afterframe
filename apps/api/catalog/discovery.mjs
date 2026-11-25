@@ -82,13 +82,87 @@ const animeFormats = ['TV', 'TV_SHORT', 'MOVIE', 'OVA', 'ONA', 'SPECIAL'];
 const animeStatus = ['RELEASING', 'NOT_YET_RELEASED', 'FINISHED', 'CANCELLED', 'HIATUS'];
 const animeSort = ['POPULARITY_DESC', 'SCORE_DESC', 'START_DATE_DESC', 'START_DATE'];
 const seasonalQuery = `query(${Object.entries(animeVariables).map(([name, type]) => `$${name}:${type}`).join(',')}) {
-  Page(page:$page, perPage:18) { pageInfo { currentPage hasNextPage } media(type:ANIME, isAdult:false, seasonYear:$year, startDate_like:$yearPattern, season:$season, format:$format,
+  Page(page:$page, perPage:20) { pageInfo { currentPage hasNextPage } media(type:ANIME, isAdult:false, seasonYear:$year, startDate_like:$yearPattern, season:$season, format:$format,
     status:$status, genre:$genre, tag:$theme, episodes_greater:$min, episodes_lesser:$max, sort:$sort) {
     id idMal title { romaji english } coverImage { large } startDate { year month day } season seasonYear format status episodes popularity
     nextAiringEpisode { episode airingAt }
   } } }`;
 
-export async function seasonalAnime(params) {
+const seasonSuffixPattern = /\s*(?:[:-]\s*)?(?:(?:season|part|cour)\s*(\d+)|(\d+)(?:st|nd|rd|th)\s+(?:season|stage|cour)|final\s+season(?:\s+part\s*(\d+))?)\s*$/i;
+
+function normalizeAnimeName(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/['’`´]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+export function stripAnimeSeasonTitle(rawTitle) {
+  let clean = String(rawTitle || '').trim();
+  let season = null;
+  for (let pass = 0; pass < 2; pass++) {
+    const match = clean.match(seasonSuffixPattern);
+    if (!match) break;
+    const extracted = Number(match[1] || match[2] || match[3]);
+    if (Number.isInteger(extracted) && extracted >= 1 && extracted <= 50 && season === null) {
+      season = extracted;
+    }
+    clean = clean.slice(0, match.index).replace(/[:\-–—\s]+$/, '').trim();
+  }
+  return { baseTitle: clean, season };
+}
+
+export async function fallbackAnimeCatalog(item, tmdb) {
+  if (!tmdb || !item?.id) return null;
+  const mediaType = item.format === 'MOVIE' ? 'movie' : 'tv';
+  const rawNames = [item.title?.english, item.title?.romaji].filter(Boolean);
+  if (!rawNames.length) return null;
+  return cacheMetadata(`anime-tmdb-fallback:v1:${item.id}`, 7 * 86400000, async () => {
+    let detectedSeason = null;
+    const queries = [];
+    const seenQueries = new Set();
+    for (const raw of rawNames) {
+      const { baseTitle, season } = stripAnimeSeasonTitle(raw);
+      if (season && detectedSeason === null) detectedSeason = season;
+      for (const candidate of [baseTitle, raw]) {
+        const trimmed = candidate.trim();
+        const norm = normalizeAnimeName(trimmed);
+        if (trimmed && norm && !seenQueries.has(norm)) {
+          seenQueries.add(norm);
+          queries.push({ query: trimmed, norm });
+        }
+      }
+    }
+    const targetNorms = new Set(queries.map(q => q.norm));
+    for (const { query } of queries.slice(0, 2)) {
+      const data = await tmdb(`/search/${mediaType}`, { query, language: 'en-US', include_adult: 'false', page: 1 }).catch(() => null);
+      const list = Array.isArray(data?.results) ? data.results : [];
+      const scored = list
+        .filter(res => !res.adult && Number.isSafeInteger(res.id))
+        .map(res => {
+          const names = [res.name, res.original_name, res.title, res.original_title].map(normalizeAnimeName).filter(Boolean);
+          const exact = names.some(n => targetNorms.has(n));
+          const starts = names.some(n => [...targetNorms].some(t => n.startsWith(t) || t.startsWith(n)));
+          const isAnim = Array.isArray(res.genre_ids) && res.genre_ids.includes(16);
+          const isJp = res.original_language === 'ja';
+          const score = (exact ? 10 : starts ? 4 : 0) + (isAnim ? 5 : 0) + (isJp ? 3 : 0);
+          return { res, score, exact, isAnim };
+        })
+        .filter(entry => entry.score >= 12 || (entry.exact && entry.isAnim))
+        .sort((a, b) => b.score - a.score || (b.res.popularity || 0) - (a.res.popularity || 0));
+      if (scored.length) {
+        return {
+          catalog: `${mediaType}/${scored[0].res.id}`,
+          season: mediaType === 'tv' ? detectedSeason : null,
+        };
+      }
+    }
+    return null;
+  }).catch(() => null);
+}
+
+export async function seasonalAnime(params, tmdb = null, tmdbEnabled = false) {
   const variables = { page: Number(params.get('page') || 1), sort: [params.get('sort') || 'POPULARITY_DESC'] };
   const invalid = message => Object.assign(new Error(message), { statusCode: 400 });
   if (!Number.isSafeInteger(variables.page) || variables.page < 1 || variables.page > 100 || !animeSort.includes(variables.sort[0])) throw invalid('Invalid anime page or sort order.');
@@ -133,6 +207,18 @@ export async function seasonalAnime(params) {
     const match = mapped.get(item.id);
     return { ...item, catalog: match?.catalog ?? undefined, catalogSeason: match?.season ?? undefined, mal: null };
   });
+  if (tmdbEnabled && typeof tmdb === 'function') {
+    const unmapped = results.filter(item => !item.catalog).slice(0, 8);
+    for (let start = 0; start < unmapped.length; start += 4) {
+      await Promise.all(unmapped.slice(start, start + 4).map(async item => {
+        const found = await fallbackAnimeCatalog(item, tmdb);
+        if (found?.catalog) {
+          item.catalog = found.catalog;
+          if (found.season) item.catalogSeason = found.season;
+        }
+      }));
+    }
+  }
   for (let start = 0; start < results.length; start += 6) {
     await Promise.all(results.slice(start, start + 6).map(async item => { item.mal = await malRating('anime', item.idMal); }));
   }

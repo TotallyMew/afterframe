@@ -6,10 +6,23 @@ import {
   type Episode, type MediaType, type Title, type TitleResults,
 } from './catalog';
 import { ActionLink, Artwork, HeroBackdrop, Icon, Loading, MediaCard, MutationStatus, RatingProblem, SaveButton, Score, Shelf, useOptionalRating } from './components';
-import { getSeason, progressPercent, resumeFor, savedRating, watchStatuses, type LibraryControls, type WatchStatus } from './library';
+import { getSeason, progressPercent, resumeFor, savedRating, watchStatuses, type Library, type LibraryControls, type WatchStatus } from './library';
 import { currentSearchParams } from './router';
+import { AfSelect } from './UiControls';
 
 const episodeRangeSize = 15;
+const ratingOptions = [
+  { value: '0', label: 'Choose 1–10' },
+  ...Array.from({ length: 10 }, (_, index) => ({ value: String(index + 1), label: `${index + 1} / 10` })),
+];
+const watchStatusOptions = Object.entries(watchStatuses).map(([value, label]) => ({ value, label }));
+
+export function episodeDurationText(key: string, catalogMinutes: number | undefined, library: Library): string {
+  const knownSec = library.progress[key]?.duration
+    || Object.values(library.history).find(entry => entry.mediaKey === key && entry.duration > 0)?.duration;
+  if (knownSec && knownSec > 0) return `${Math.max(1, Math.round(knownSec / 60))} min`;
+  return catalogMinutes ? `~${catalogMinutes} min` : '';
+}
 
 function goToSection(id: string) {
   const section = document.getElementById(id);
@@ -36,7 +49,8 @@ function EpisodeRow({ item, episode, controls }: { item: Title; episode: Episode
   const image = imagePath(episode.still_path, 'w300');
   const available = isAired(episode);
   const progress = !marked ? controls.library.progress[key] : undefined;
-  const status = [episodeLabel(episode), episode.runtime ? `${episode.runtime} min` : '', !available && episode.air_date ? `Airs ${formatDate(episode.air_date)}` : ''].filter(Boolean).join(' · ');
+  const runtimeLabel = episodeDurationText(key, episode.runtime, controls.library);
+  const status = [episodeLabel(episode), runtimeLabel, !available && episode.air_date ? `Airs ${formatDate(episode.air_date)}` : ''].filter(Boolean).join(' · ');
   const showPreview = marked || controls.library.preferences.hideSynopsis === false;
   return <article className="af-episode">
     {image && protect ? <button type="button" className="af-still" aria-label={`${revealed ? 'Hide' : 'Reveal'} thumbnail for ${episode.name}`}
@@ -94,16 +108,22 @@ function Episodes({ item, seasons, initialSeason, controls, readSeason }: {
     <header className="af-section-head">
       <div><h2 id="episodes-heading">Episodes</h2>{aired.length > 0 && <p className="af-meta">{watched} of {aired.length} aired episodes watched</p>}</div>
       <div className="af-episode-pickers">
-        {season != null && <select className="af-select" aria-label="Select season" value={season} onChange={event => { setSelected(Number(event.target.value)); setRange(0); setError(''); }}>
-          {seasons.map(option => <option key={option.season_number} value={option.season_number}>{option.name}</option>)}
-        </select>}
-        {count > 1 && <select className="af-select" value={currentRange} aria-label="Episode range" onChange={event => setRange(Number(event.target.value))}>
-          {Array.from({ length: count }, (_, index) => {
+        {season != null && <AfSelect
+          ariaLabel="Select season"
+          value={String(season)}
+          options={seasons.map(option => ({ value: String(option.season_number), label: option.name }))}
+          onChange={value => { setSelected(Number(value)); setRange(0); setError(''); }}
+        />}
+        {count > 1 && <AfSelect
+          ariaLabel="Episode range"
+          value={String(currentRange)}
+          options={Array.from({ length: count }, (_, index) => {
             const first = episodes[index * episodeRangeSize].episode_number;
             const last = episodes[Math.min(episodes.length, (index + 1) * episodeRangeSize) - 1].episode_number;
-            return <option key={index} value={index}>Episodes {first}{first === last ? '' : `–${last}`}</option>;
+            return { value: String(index), label: `Episodes ${first}${first === last ? '' : `–${last}`}` };
           })}
-        </select>}
+          onChange={value => setRange(Number(value))}
+        />}
       </div>
     </header>
     {season == null ? <p className="af-state">No seasons are listed.</p> : error ? <p className="af-state" role="alert">{error} <button className="af-text-link" type="button" onClick={() => { setError(''); setAttempt(value => value + 1); }}>Retry</button></p>
@@ -252,10 +272,13 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
                 : <button type="button" className="af-button af-primary" onClick={() => goToSection('episodes')}><Icon name="play" />{playLabel}</button>
                 : (!item.date || item.date <= today() || resume) && <ActionLink primary href={playHref(item)}><Icon name="play" />{resume ? 'Resume' : 'Play'}</ActionLink>}
               <SaveButton item={item} controls={controls} />
-              {saved && <select className="af-select" aria-label="Watch plan" value={saved.watchStatus ?? 'planned'} disabled={!controls.ready || controls.isPending(item.key)}
-                onChange={event => void controls.setStatus(item, event.target.value as WatchStatus, details)}>
-                {Object.entries(watchStatuses).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-              </select>}
+              {saved && <AfSelect
+                ariaLabel="Watch plan"
+                value={saved.watchStatus ?? 'planned'}
+                disabled={!controls.ready || controls.isPending(item.key)}
+                options={watchStatusOptions}
+                onChange={value => void controls.setStatus(item, value as WatchStatus, details)}
+              />}
               {type === 'movie' && <button type="button" className="af-button af-secondary" disabled={!controls.ready || controls.isPending(item.key)}
                 aria-pressed={marked} onClick={() => void controls.toggleWatched(item)}>{marked ? <><Icon name="check" />Watched</> : 'Mark watched'}</button>}
             </div>
@@ -264,16 +287,16 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
           </div>
         </div>
         <div className="af-details-footer">
-          <nav aria-label="Title sections" className="af-title-nav">
-            {type === 'tv' && <button className="af-text-link" type="button" onClick={() => goToSection('episodes')}>Episodes</button>}
-            {Boolean(cast.length || crew.length) && <button className="af-text-link" type="button" onClick={() => goToSection('cast')}>Cast &amp; crew</button>}
-            {related.length > 0 && <button className="af-text-link" type="button" onClick={() => goToSection('related')}>Related</button>}
-          </nav>
-          <label className="af-rating">Your rating <select className="af-select" value={savedRating(controls.library.ratings[item.key])} disabled={!controls.ready || controls.isPending(item.key)}
-            onChange={event => void controls.rate(item, Number(event.target.value))}>
-            <option value={0}>Choose 1–10</option>
-            {Array.from({ length: 10 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
-          </select></label>
+          <div className="af-rating">
+            <span>Your rating</span>
+            <AfSelect
+              ariaLabel="Your rating"
+              value={String(savedRating(controls.library.ratings[item.key]))}
+              disabled={!controls.ready || controls.isPending(item.key)}
+              options={ratingOptions}
+              onChange={value => void controls.rate(item, Number(value))}
+            />
+          </div>
         </div>
       </div>
     </section>

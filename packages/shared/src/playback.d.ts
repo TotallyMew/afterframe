@@ -2,6 +2,8 @@ export interface SkipSegment {
   kind: 'intro' | 'recap' | 'credits';
   start: number;
   end: number;
+  autoSkip?: boolean;
+  source?: 'verified' | 'aniskip' | 'theintrodb';
 }
 
 export interface ViewingSession {

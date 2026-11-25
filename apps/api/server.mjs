@@ -106,7 +106,7 @@ export async function handleApi(request, response, url) {
     return json(response, 200, connectionStatus());
   }
 
-  if (pathname === '/api/anime-discovery' && request.method === 'GET') return json(response, 200, await seasonalAnime(searchParams));
+  if (pathname === '/api/anime-discovery' && request.method === 'GET') return json(response, 200, await seasonalAnime(searchParams, tmdb, hasTmdbCredential()));
   const mal = pathname.match(/^\/api\/mal\/(anime|manga)\/([1-9]\d{0,9})$/);
   if (mal && request.method === 'GET') return json(response, 200, { rating: await malRating(mal[1], mal[2], searchParams.get('status') === '1') });
   if (pathname === '/api/mal/manga/batch' && request.method === 'GET') {
