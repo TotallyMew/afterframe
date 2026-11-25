@@ -42,8 +42,32 @@
 .af-account-form .af-text-link { min-height: var(--af-touch-control); }
 
 .af-account-password {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.af-account-password .af-input {
+  padding-inline-end: 4.25rem;
+}
+.af-password-toggle {
+  position: absolute;
+  inset-inline-end: 6px;
+  min-block-size: 2rem;
+  padding-inline: 10px;
+  border-radius: var(--af-radius-sm);
+  color: var(--af-secondary-ink);
+  font-size: var(--af-type-caption);
+  font-weight: 650;
+  transition: color var(--af-duration-fast) var(--af-ease-out), background-color var(--af-duration-fast) var(--af-ease-out);
+}
+.af-password-toggle:hover {
+  color: var(--af-ink);
+  background: var(--af-raised);
+}
+.af-account-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: var(--af-space-2);
 }
 

@@ -1,3 +1,4 @@
+import { isAnime } from '@afterframe/shared/discover';
 import { withGuestLibraryLock, writeGuestRecords } from '@afterframe/shared/guest-storage';
 import type { preferenceDefaults } from '@afterframe/shared/playback';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -5,20 +6,31 @@ import { canMarkCompleted, episodeKey, isAired, post, request, RequestError, typ
 import type { ConfirmFn } from './ConfirmDialog';
 
 export const watchStatuses = {
-  planned: 'Plan to Watch',
   watching: 'Watching',
   completed: 'Completed',
-  hold: 'On Hold',
+  hold: 'On-Hold',
   dropped: 'Dropped',
+  planned: 'Plan to Watch',
 } as const;
 
 export const readingStatuses = {
-  planned: 'Plan to Read',
   watching: 'Reading',
   completed: 'Completed',
-  hold: 'On Hold',
+  hold: 'On-Hold',
   dropped: 'Dropped',
+  planned: 'Plan to Read',
 } as const;
+
+export const folderColors = ['ember', 'gold', 'sage', 'steel', 'slate'] as const;
+export type FolderColor = typeof folderColors[number];
+export type Folder = {
+  id: string;
+  name: string;
+  color: FolderColor;
+  items: string[];
+  created: number;
+  updated: number;
+};
 
 export type WatchStatus = keyof typeof watchStatuses;
 export type SavedTitle = (Title | Comic) & { added: number; watchStatus?: WatchStatus; completedAt?: number };
@@ -63,6 +75,7 @@ export type Library = {
   reading: Record<string, Reading>;
   history: Record<string, History>;
   notifications: Record<string, Notification>;
+  folders?: Record<string, Folder>;
 };
 type Account = { id: number; username: string };
 type Session = { account: Account | null; library: Library };
@@ -83,7 +96,8 @@ export function guestLibrary(): Library {
     saved: readGuest('saved', {}), watched: readGuest('watched', {}),
     ratings: readGuest('ratings', {}), progress: readGuest('progress', {}),
     preferences: readGuest('preferences', {}),
-    reading: readGuest('reading', {}), history: readGuest('history', {}), notifications: {},
+    reading: readGuest('reading', {}), history: readGuest('history', {}),
+    notifications: {}, folders: readGuest('folders', {}),
   };
 }
 
@@ -94,6 +108,7 @@ export interface LibraryCounts {
   progress: number;
   reading: number;
   history: number;
+  folders: number;
   total: number;
 }
 
@@ -105,7 +120,8 @@ export function countLibraryEntries(lib: Partial<Library> | null | undefined): L
   const progress = countObj(lib?.progress);
   const reading = countObj(lib?.reading);
   const history = countObj(lib?.history);
-  return { saved, watched, ratings, progress, reading, history, total: saved + watched + ratings + progress + reading + history };
+  const folders = countObj(lib?.folders);
+  return { saved, watched, ratings, progress, reading, history, folders, total: saved + watched + ratings + progress + reading + history + folders };
 }
 
 export function guestSummary(): LibraryCounts {
@@ -121,6 +137,7 @@ export function clearGuestLibrary() {
       ['progress', {}],
       ['reading', {}],
       ['history', {}],
+      ['folders', {}],
     ]);
   });
 }
@@ -204,6 +221,138 @@ export function progressPercent(entry: Progress) {
   return entry.duration > 0 ? Math.min(100, Math.floor(seconds / entry.duration * 100)) : 0;
 }
 
+export function watchedEpisodeCount(item: Title, library: Library): { watched: number; total?: number } {
+  if (item.type !== 'tv') return { watched: 0 };
+  const prefix = `${item.key}/`;
+  const watched = Object.keys(library.watched).filter(key => key.startsWith(prefix) && !key.startsWith(`${prefix}cinesrc-s0e`)).length;
+  return { watched, total: item.totalEpisodes };
+}
+
+export function effectiveWatchStatus(item: SavedTitle, library: Library): WatchStatus {
+  if (item.type !== 'comic') {
+    if (item.watchStatus === 'completed' || (item.type === 'movie' && library.watched[item.key])) return 'completed';
+    if (item.watchStatus) return item.watchStatus;
+    if (item.type === 'tv' && watchedEpisodeCount(item, library).watched > 0) return 'watching';
+  }
+  return item.watchStatus ?? 'planned';
+}
+
+export interface LibraryStatsData {
+  mode: 'video' | 'reading';
+  mediaType: '' | 'movie' | 'tv' | 'anime';
+  days: number;
+  meanScore: number | null;
+  ratedCount: number;
+  counts: Record<WatchStatus, number>;
+  totalEntries: number;
+  rewatched: number;
+  episodes: number;
+  activeReads: number;
+}
+
+function matchesVideoType(item: Title | undefined, mediaType: '' | 'movie' | 'tv' | 'anime'): boolean {
+  if (!item || item.type === ('comic' as string)) return false;
+  if (!mediaType) return true;
+  if (mediaType === 'anime') return isAnime(item.originalLanguage, item.genreIds);
+  return item.type === mediaType;
+}
+
+export function computeLibraryStats(
+  library: Library,
+  mode: 'video' | 'reading',
+  mediaType: '' | 'movie' | 'tv' | 'anime' = '',
+): LibraryStatsData {
+  const counts: Record<WatchStatus, number> = { watching: 0, completed: 0, hold: 0, dropped: 0, planned: 0 };
+  const allSaved = Object.values(library.saved);
+  const entries = allSaved.filter(item => (
+    mode === 'reading'
+      ? item.type === 'comic'
+      : item.type !== 'comic' && matchesVideoType(item, mediaType)
+  ));
+  for (const item of entries) {
+    const st = effectiveWatchStatus(item, library);
+    counts[st]++;
+  }
+  const totalEntries = entries.length;
+
+  const ratedScores = Object.values(library.ratings)
+    .filter(entry => (
+      mode === 'reading'
+        ? entry.item.type === 'comic'
+        : entry.item.type !== 'comic' && matchesVideoType(entry.item, mediaType)
+    ))
+    .map(entry => savedRating(entry))
+    .filter(score => score > 0);
+  const meanScore = ratedScores.length
+    ? ratedScores.reduce((sum, score) => sum + score, 0) / ratedScores.length
+    : null;
+
+  if (mode === 'reading') {
+    return {
+      mode,
+      mediaType: '',
+      days: 0,
+      meanScore,
+      ratedCount: ratedScores.length,
+      counts,
+      totalEntries,
+      rewatched: 0,
+      episodes: 0,
+      activeReads: Object.keys(library.reading).length,
+    };
+  }
+
+  const historyList = Object.entries(library.history)
+    .filter(([, entry]) => matchesVideoType(entry.item, mediaType))
+    .sort(([, a], [, b]) => b.updated - a.updated);
+  let rewatched = 0;
+  const coveredMediaKeys = new Set<string>();
+  let totalSeconds = 0;
+  for (let i = 0; i < historyList.length; i++) {
+    const [, entry] = historyList[i];
+    if (historyList.slice(i + 1).some(([, prior]) => prior.mediaKey === entry.mediaKey && prior.completed)) {
+      rewatched++;
+    }
+    const watchedPart = Math.min(entry.duration || 0, Math.max(0, entry.coverage || entry.time || 0));
+    totalSeconds += watchedPart;
+    coveredMediaKeys.add(entry.mediaKey);
+  }
+
+  let episodes = 0;
+  for (const [key, entry] of Object.entries(library.watched)) {
+    if (!matchesVideoType(entry.item, mediaType)) continue;
+    if (key.includes('/')) {
+      episodes++;
+      if (!coveredMediaKeys.has(key)) {
+        const isJaAnim = isAnime(entry.item?.originalLanguage, entry.item?.genreIds);
+        totalSeconds += (isJaAnim ? 24 : 42) * 60;
+      }
+    } else if (!coveredMediaKeys.has(key)) {
+      totalSeconds += (entry.item?.duration || 110) * 60;
+    }
+  }
+
+  // Also include manually completed saved movies that have no watched/history entries yet
+  for (const item of entries) {
+    if (item.type === 'movie' && item.watchStatus === 'completed' && !library.watched[item.key] && !coveredMediaKeys.has(item.key)) {
+      totalSeconds += (item.duration || 110) * 60;
+    }
+  }
+
+  return {
+    mode,
+    mediaType,
+    days: totalSeconds / 86400,
+    meanScore,
+    ratedCount: ratedScores.length,
+    counts,
+    totalEntries,
+    rewatched,
+    episodes,
+    activeReads: 0,
+  };
+}
+
 export function titleCoverage(item: Title, library: Library) {
   if (library.watched[item.key] || library.saved[item.key]?.watchStatus === 'completed') return 100;
   const prefix = `${item.key}/`;
@@ -243,7 +392,7 @@ function replaceEntry<T>(records: Record<string, T>, key: string, value: T | nul
   return next;
 }
 
-type MutationKind = 'saved' | 'watched' | 'ratings' | 'preferences' | 'reading' | 'progress' | 'history' | 'complete-series' | 'notification';
+type MutationKind = 'saved' | 'watched' | 'ratings' | 'preferences' | 'reading' | 'progress' | 'history' | 'folders' | 'complete-series' | 'notification';
 type DeferredEdit = {
   accountId: number;
   key: string;
@@ -271,7 +420,7 @@ function readDeferred(): DeferredEdit[] {
     if (!Array.isArray(entries)) return [];
     return entries.filter(entry => Number.isSafeInteger(entry?.accountId) && typeof entry.key === 'string' &&
       typeof entry.label === 'string' && Number.isSafeInteger(entry.at) && entry.at > Date.now() - 15 * 60_000 &&
-      ['saved', 'watched', 'ratings', 'preferences', 'reading', 'complete-series', 'notification'].includes(entry.kind));
+      ['saved', 'watched', 'ratings', 'preferences', 'reading', 'folders', 'complete-series', 'notification'].includes(entry.kind));
   } catch { return []; }
 }
 
@@ -366,7 +515,7 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
     identity.current = account?.id ?? null;
     expiredIdentity.current = null;
     const fullLibrary: Library = account
-      ? { saved: {}, watched: {}, ratings: {}, progress: {}, preferences: {}, reading: {}, history: {}, notifications: {}, ...library }
+      ? { saved: {}, watched: {}, ratings: {}, progress: {}, preferences: {}, reading: {}, history: {}, notifications: {}, folders: {}, ...library }
       : guestLibrary();
     setSession({ account, library: fullLibrary });
     setState(account ? 'account' : 'guest');
@@ -498,7 +647,7 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
         if ('prior' in result) prior = result.prior;
         nextRevision = result.revision;
       }
-      setMutationMessage(reverse ? 'Change undone.' : `${label} · saved`);
+      setMutationMessage(reverse ? 'Change undone.' : label);
       if (!reverse) setUndoable({ accountId: account?.id ?? null, kind, key, previous: prior, value, revision: nextRevision, label });
       return account ? update : guestLibrary;
     });
@@ -619,18 +768,109 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
     });
   }
 
+  function removeHistory(id: string): History | undefined {
+    const existing = sessionRef.current.library.history[id];
+    recordPlaybackEntry('history', id, null, Date.now());
+    return existing;
+  }
+
+  function clearHistory() {
+    return change('clear-history', async account => {
+      const update = (library: Library) => ({ ...library, history: {} });
+      if (!account) {
+        await guestChange(update, ['history']);
+        return guestLibrary;
+      }
+      await post('/api/account/clear-history', { accountId: account.id });
+      return update;
+    });
+  }
+
+  function markAllNotificationsRead() {
+    return change('notifications-read-all', async account => {
+      if (!account) throw new Error('Sign in to update your notifications.');
+      await post('/api/account/notifications-read-all', { accountId: account.id });
+      return library => ({
+        ...library,
+        notifications: Object.fromEntries(
+          Object.entries(library.notifications).map(([key, entry]) => [key, { ...entry, read: true }]),
+        ),
+      });
+    });
+  }
+
+  function saveFolder(folder: Folder | null, id: string, label: string) {
+    return change(`folder/${id}`, async (account, send) => {
+      const update = (library: Library) => ({
+        ...library,
+        folders: replaceEntry(library.folders ?? {}, id, folder),
+      });
+      if (!account) {
+        await guestChange(update, ['folders']);
+        return guestLibrary;
+      }
+      await send({ accountId: account.id, kind: 'folders', key: id, value: folder, label, at: Date.now() });
+      return update;
+    });
+  }
+
+  function createFolder(rawName: string, color: FolderColor = 'ember', initialItemKey?: string) {
+    const name = rawName.trim().slice(0, 50);
+    if (!name) return undefined;
+    const id = `f_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+    const now = Date.now();
+    const folder: Folder = {
+      id,
+      name,
+      color,
+      items: initialItemKey ? [initialItemKey] : [],
+      created: now,
+      updated: now,
+    };
+    void saveFolder(folder, id, `Created folder “${name}”`);
+    return folder;
+  }
+
+  function renameFolder(id: string, rawName: string, color?: FolderColor) {
+    const existing = sessionRef.current.library.folders?.[id];
+    const name = rawName.trim().slice(0, 50);
+    if (!existing || !name) return;
+    const next: Folder = { ...existing, name, color: color ?? existing.color, updated: Date.now() };
+    return saveFolder(next, id, `Updated folder “${name}”`);
+  }
+
+  function deleteFolder(id: string) {
+    const existing = sessionRef.current.library.folders?.[id];
+    if (!existing) return;
+    return saveFolder(null, id, `Deleted folder “${existing.name}”`);
+  }
+
+  function toggleFolderItem(folderId: string, itemKey: string) {
+    const existing = sessionRef.current.library.folders?.[folderId];
+    if (!existing) return;
+    const has = existing.items.includes(itemKey);
+    const items = has ? existing.items.filter(k => k !== itemKey) : [...existing.items, itemKey].slice(0, 500);
+    const next: Folder = { ...existing, items, updated: Date.now() };
+    return saveFolder(next, folderId, has ? `Removed from “${existing.name}”` : `Added to “${existing.name}”`);
+  }
+
   async function toggleSaved(item: Title | Comic) {
     const exists = Boolean(sessionRef.current.library.saved[item.key]);
-    const listName = item.type === 'comic' ? 'reading list' : 'watchlist';
+    const listName = item.type === 'comic' ? 'Reading' : 'Library';
     if (exists && sessionRef.current.library.preferences.confirmRemoval !== false) {
       const ok = await confirmAction({
         title: `Remove from ${listName}?`,
-        message: `Remove “${item.title}” from your ${listName}?`,
+        message: `Remove “${item.title}” from ${listName}?`,
         confirmLabel: 'Remove',
       });
       if (!ok) return;
     }
-    return edit('saved', item.key, exists ? null : { ...item, added: Date.now(), watchStatus: 'planned' as const }, `${exists ? 'Remove' : 'Save'} ${item.title}`);
+    return edit(
+      'saved',
+      item.key,
+      exists ? null : { ...item, added: Date.now(), watchStatus: 'planned' as const },
+      exists ? `Removed “${item.title}” from ${listName}` : `Added “${item.title}” to ${listName}`,
+    );
   }
 
   async function toggleWatched(item: Title, key = item.key, options?: { force?: boolean; skipConfirm?: boolean }) {
@@ -639,13 +879,37 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
     if (nextMarked === currentlyWatched) return;
     if (!nextMarked && !options?.skipConfirm && sessionRef.current.library.preferences.confirmRemoval !== false) {
       const ok = await confirmAction({
-        title: 'Mark as unwatched?',
-        message: `Mark “${item.title}” as unwatched?`,
-        confirmLabel: 'Mark unwatched',
+        title: item.type === 'movie' && key === item.key ? 'Mark as not completed?' : 'Mark as unwatched?',
+        message: item.type === 'movie' && key === item.key
+          ? `Remove completed status from “${item.title}”?`
+          : `Mark “${item.title}” as unwatched?`,
+        confirmLabel: item.type === 'movie' && key === item.key ? 'Remove completed' : 'Mark unwatched',
       });
       if (!ok) return;
     }
-    return edit('watched', key, nextMarked ? { item, updated: Date.now() } : null, `Update watched status for ${item.title}`);
+    const label = key === item.key
+      ? (nextMarked ? `Completed “${item.title}”` : `Unmarked “${item.title}”`)
+      : (nextMarked ? `Marked episode watched · ${item.title}` : `Marked episode unwatched · ${item.title}`);
+    await edit('watched', key, nextMarked ? { item, updated: Date.now() } : null, label);
+
+    // Keep Movie status and TV Watching status seamlessly in sync with watched records
+    const currentSaved = sessionRef.current.library.saved[item.key];
+    if (item.type === 'movie' && key === item.key) {
+      if (nextMarked) {
+        const updatedSaved: SavedTitle = currentSaved
+          ? { ...currentSaved, watchStatus: 'completed', completedAt: Date.now() }
+          : { ...item, added: Date.now(), watchStatus: 'completed', completedAt: Date.now() };
+        if (currentSaved?.watchStatus !== 'completed') {
+          await edit('saved', item.key, updatedSaved, `Completed “${item.title}”`);
+        }
+      } else if (currentSaved && currentSaved.type !== 'comic' && currentSaved.watchStatus === 'completed') {
+        await edit('saved', item.key, { ...currentSaved, watchStatus: 'planned' }, `Moved “${item.title}” to Plan to Watch`);
+      }
+    } else if (item.type === 'tv' && key !== item.key && nextMarked && currentSaved && currentSaved.type !== 'comic') {
+      if (!currentSaved.watchStatus || currentSaved.watchStatus === 'planned') {
+        await edit('saved', item.key, { ...currentSaved, watchStatus: 'watching' }, `${item.title} · Watching`);
+      }
+    }
   }
 
   async function rate(item: Title | Comic, score: number) {
@@ -657,20 +921,41 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
       });
       if (!ok) return;
     }
-    return edit('ratings', item.key, score ? { item, score, scale: 10, updated: Date.now() } : null, `Update rating for ${item.title}`);
+    return edit(
+      'ratings',
+      item.key,
+      score ? { item, score, scale: 10, updated: Date.now() } : null,
+      score ? `Rated “${item.title}” ${score}/10` : `Cleared rating for “${item.title}”`,
+    );
   }
 
   function setComicStatus(item: Comic, value: WatchStatus) {
     const saved = sessionRef.current.library.saved[item.key];
     if (!saved || saved.type !== 'comic') return;
-    return edit('saved', item.key, { ...saved, watchStatus: value }, `Update reading status for ${item.title}`);
+    return edit('saved', item.key, { ...saved, watchStatus: value }, `${item.title} · ${readingStatuses[value]}`);
   }
 
-  function setStatus(item: Title, value: WatchStatus, details: Details, archiveEpisodeKeys?: string[]) {
+  async function setStatus(item: Title, value: WatchStatus, details: Details, archiveEpisodeKeys?: string[]) {
     const saved = sessionRef.current.library.saved[item.key];
     if (!saved || saved.type === 'comic') return;
     if (item.type !== 'tv' || value !== 'completed') {
-      return edit('saved', item.key, { ...saved, totalEpisodes: item.totalEpisodes ?? saved.totalEpisodes, watchStatus: value }, `Update watch plan for ${item.title}`);
+      const nextSaved: SavedTitle = {
+        ...saved,
+        totalEpisodes: item.totalEpisodes ?? saved.totalEpisodes,
+        watchStatus: value,
+        ...(value === 'completed' ? { completedAt: Date.now() } : {}),
+      };
+      await edit('saved', item.key, nextSaved, `${item.title} · ${watchStatuses[value]}`);
+      // Keep movie `watched` record synchronized with Completed status
+      if (item.type === 'movie') {
+        const isWatched = Boolean(sessionRef.current.library.watched[item.key]);
+        if (value === 'completed' && !isWatched) {
+          await edit('watched', item.key, { item, updated: Date.now() }, `${item.title} · Completed`);
+        } else if (value !== 'completed' && isWatched) {
+          await edit('watched', item.key, null, `${item.title} · ${watchStatuses[value]}`);
+        }
+      }
+      return;
     }
     setUndoable(undefined);
     setMutationMessage('');
@@ -782,7 +1067,7 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
       return { totalImported: result.totalImported, skipped: result.skipped };
     }
 
-    const kinds = ['saved', 'watched', 'ratings', 'progress', 'reading', 'history'] as const;
+    const kinds = ['saved', 'watched', 'ratings', 'progress', 'reading', 'history', 'folders'] as const;
     let totalImported = 0;
     let skipped = 0;
     await guestChange(current => {
@@ -794,6 +1079,7 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
         progress: { ...current.progress },
         reading: { ...current.reading },
         history: { ...current.history },
+        folders: { ...(current.folders ?? {}) },
         preferences: { ...current.preferences },
       };
       for (const kind of kinds) {
@@ -819,7 +1105,7 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
         }
       }
       return next;
-    }, ['saved', 'watched', 'ratings', 'progress', 'reading', 'history', 'preferences']);
+    }, ['saved', 'watched', 'ratings', 'progress', 'reading', 'history', 'folders', 'preferences']);
     if (identity.current === null) {
       setSession(current => ({ ...current, library: guestLibrary() }));
     }
@@ -829,7 +1115,10 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
   const isPending = (key: string) => pending.includes(key);
   return {
     ...session, ready, state, isPending, completing, problems, error, refresh, toggleSaved, toggleWatched, rate, setStatus, setComicStatus, setPreference,
-    recordReading, removeReading, recordProgress, recordHistory, markNotification, importLibrary,
+    recordReading, removeReading, recordProgress, recordHistory, removeHistory, clearHistory,
+    markNotification, markAllNotificationsRead,
+    createFolder, renameFolder, deleteFolder, toggleFolderItem,
+    importLibrary,
     updateAccount, libraryBusy: pending.length > 0 || replaying,
     recoverable: session.account ? deferred.filter(entry => session.account?.id === entry.accountId) : [],
     hasDeferredForOtherAccount: Boolean(session.account && deferred.some(entry => session.account?.id !== entry.accountId)),

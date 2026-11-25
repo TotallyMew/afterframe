@@ -22,14 +22,21 @@ function makeControls(overrides: Partial<LibraryControls> = {}): LibraryControls
     toggleSaved: async () => {},
     toggleWatched: async () => {},
     rate: async () => {},
-    setStatus: () => undefined,
+    setStatus: async () => {},
     setComicStatus: () => undefined,
     setPreference: async () => {},
     recordReading: () => undefined,
     removeReading: async () => {},
     recordProgress: () => {},
     recordHistory: () => {},
+    removeHistory: () => undefined,
+    clearHistory: async () => {},
     markNotification: async () => {},
+    markAllNotificationsRead: async () => {},
+    createFolder: () => undefined,
+    renameFolder: () => undefined,
+    deleteFolder: () => undefined,
+    toggleFolderItem: () => undefined,
     importLibrary: async () => ({ totalImported: 0, skipped: 0 }),
     updateAccount: () => {},
     libraryBusy: false,
@@ -111,14 +118,18 @@ describe('Afterframe web enhancements', () => {
     expect(screen.getByText('Open search & command palette')).toBeTruthy();
   });
 
-  it('round-trips JSON library export and live-filters Watchlist without Apply button', async () => {
+  it('renders reworked Library heading, filterable stats bar, and live-filters without Apply button or JSON export/import', async () => {
     const controls = makeControls({
       library: {
         saved: {
-          'movie-1': { key: 'movie-1', id: 1, type: 'movie', title: 'Interstellar', added: 2000, watchStatus: 'planned' },
+          'movie-1': { key: 'movie-1', id: 1, type: 'movie', title: 'Interstellar', duration: 169, added: 2000, watchStatus: 'completed' },
           'tv-2': { key: 'tv-2', id: 2, type: 'tv', title: 'Severance', added: 1000, watchStatus: 'watching' },
         },
-        watched: {}, ratings: {}, progress: {}, preferences: {}, reading: {}, history: {}, notifications: {},
+        watched: {},
+        ratings: {
+          'movie-1': { item: { key: 'movie-1', id: 1, type: 'movie', title: 'Interstellar' }, score: 9, scale: 10, updated: 3000 },
+        },
+        progress: {}, preferences: {}, reading: {}, history: {}, notifications: {}, folders: {},
       },
     });
     const exported = buildLibraryExport(controls.library);
@@ -128,9 +139,14 @@ describe('Afterframe web enhancements', () => {
     expect(Object.keys(parsed?.saved ?? {})).toEqual(['movie-1', 'tv-2']);
 
     render(<ToastProvider><LibraryPage path="watchlist" query="" controls={controls} /></ToastProvider>);
+    expect(screen.getByRole('heading', { level: 1, name: 'Library' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Apply filters' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Export JSON' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Import JSON' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Export JSON' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Import JSON' })).toBeNull();
+    expect(screen.queryByRole('link', { name: /Notifications/ })).toBeNull();
+    expect(screen.queryByRole('link', { name: /^Watched/ })).toBeNull();
+    expect(screen.getByText('Mean Score:')).toBeTruthy();
+    expect(screen.getByText('9.00')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('combobox', { name: 'Type' }));
     const tvOption = await screen.findByRole('option', { name: 'TV Shows' });

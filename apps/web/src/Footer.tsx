@@ -12,7 +12,8 @@ export function Footer({ onOpenShortcuts }: { onOpenShortcuts: () => void }) {
         <p className="af-meta">
           Catalog powered by <a href="https://www.themoviedb.org/" target="_blank" rel="noopener noreferrer">TMDB</a>,{' '}
           <a href="https://mangadex.org/" target="_blank" rel="noopener noreferrer">MangaDex</a>,{' '}
-          <a href="https://archive.org/" target="_blank" rel="noopener noreferrer">Internet Archive</a>, and{' '}
+          <a href="https://archive.org/" target="_blank" rel="noopener noreferrer">Internet Archive</a>,{' '}
+          <a href="https://aniskip.com/" target="_blank" rel="noopener noreferrer">AniSkip</a>, and{' '}
           <a href="https://theintrodb.org/" target="_blank" rel="noopener noreferrer">TheIntroDB</a>.
         </p>
       </div>
@@ -20,7 +21,7 @@ export function Footer({ onOpenShortcuts }: { onOpenShortcuts: () => void }) {
         <a className="af-text-link" href={webHref('movies')}>Movies</a>
         <a className="af-text-link" href={webHref('tv')}>TV Shows</a>
         <a className="af-text-link" href={webHref('comics')}>Comics</a>
-        <a className="af-text-link" href={webHref('watchlist')}>My Library</a>
+        <a className="af-text-link" href={webHref('watchlist')}>Library</a>
         <button type="button" className="af-text-link" onClick={event => openSettings('general', event.currentTarget)}>Settings</button>
         <button type="button" className="af-text-link" onClick={onOpenShortcuts}>
           Shortcuts <kbd className="af-kbd">?</kbd>

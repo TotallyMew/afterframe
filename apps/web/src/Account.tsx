@@ -206,6 +206,7 @@ export function AccountProvider({ controls, children }: { controls: LibraryContr
     migration.progress ? `${migration.progress} playback positions` : '',
     migration.reading ? `${migration.reading} reading positions` : '',
     migration.history ? `${migration.history} history entries` : '',
+    migration.folders ? `${migration.folders} folders` : '',
   ].filter(Boolean) : [];
   const availableGuest = account && !migration ? guestSummary() : null;
 
@@ -296,15 +297,16 @@ export function AccountProvider({ controls, children }: { controls: LibraryContr
                   autoComplete={mode === 'signin' ? 'current-password' : 'new-password'} minLength={8} maxLength={128}
                   aria-describedby={mode === 'signin' ? undefined : 'af-account-password-hint'}
                   required readOnly={Boolean(pending)} />
-                <button className="af-button af-secondary" type="button" aria-pressed={showPassword}
-                  onClick={() => setShowPassword(value => !value)}>Show password</button>
+                <button className="af-password-toggle" type="button" aria-pressed={showPassword}
+                  onClick={() => setShowPassword(value => !value)}>{showPassword ? 'Hide' : 'Show'}</button>
               </div>
               {mode !== 'signin' && <p id="af-account-password-hint" className="af-meta">Use at least 8 characters.</p>}
               {controls.libraryBusy && <p role="status" className="af-meta">Saving your library changes…</p>}
               <button className="af-button af-primary" type="submit" disabled={Boolean(pending) || controls.libraryBusy}>{modes[mode].submit}</button>
-              <div className="af-actions">
+              <div className="af-account-links">
                 {mode === 'signin' ? <>
                   <button type="button" className="af-text-link" disabled={Boolean(pending)} onClick={() => switchMode('create')}>Create an account</button>
+                  <span className="af-meta" aria-hidden="true">·</span>
                   <button type="button" className="af-text-link" disabled={Boolean(pending)} onClick={() => switchMode('reset')}>Use a recovery code</button>
                 </> : <button type="button" className="af-text-link" disabled={Boolean(pending)}
                   onClick={() => switchMode('signin')}>Back to sign in</button>}

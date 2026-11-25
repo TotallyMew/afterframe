@@ -65,6 +65,9 @@ const listLibrary = db.prepare('SELECT kind, key, value FROM library WHERE accou
 const setEntry = db.prepare('INSERT INTO library (account_id, kind, key, value) VALUES (?, ?, ?, ?) ON CONFLICT (account_id, kind, key) DO UPDATE SET value = excluded.value');
 const removeEntry = db.prepare('DELETE FROM library WHERE account_id = ? AND kind = ? AND key = ?');
 const getEntry = db.prepare('SELECT value FROM library WHERE account_id = ? AND kind = ? AND key = ?');
+const listKindEntries = db.prepare('SELECT key, value FROM library WHERE account_id = ? AND kind = ?');
+const clearKindEntries = db.prepare('DELETE FROM library WHERE account_id = ? AND kind = ?');
+const clearKindVersions = db.prepare('DELETE FROM playback_versions WHERE account_id = ? AND kind = ?');
 const getVersion = db.prepare('SELECT updated FROM playback_versions WHERE account_id = ? AND kind = ? AND key = ?');
 const versionSql = 'INSERT INTO playback_versions VALUES (?, ?, ?, ?) ON CONFLICT(account_id,kind,key) DO UPDATE SET updated = ';
 const setVersion = db.prepare(versionSql + 'max(playback_versions.updated, excluded.updated)',
@@ -117,8 +120,10 @@ export async function currentAccount(request) {
 }
 
 export async function readLibrary(id) {
-  const result = Object.fromEntries(['saved', 'progress', 'reading', 'ratings', 'skips', 'watched', 'preferences', 'history', 'notifications'].map(kind => [kind, Object.create(null)]));
-  for (const row of await listLibrary.all(id)) result[row.kind][row.key] = JSON.parse(row.value);
+  const result = Object.fromEntries(['saved', 'progress', 'reading', 'ratings', 'skips', 'watched', 'preferences', 'history', 'notifications', 'folders'].map(kind => [kind, Object.create(null)]));
+  for (const row of await listLibrary.all(id)) {
+    if (Object.hasOwn(result, row.kind)) result[row.kind][row.key] = JSON.parse(row.value);
+  }
   return result;
 }
 
@@ -200,6 +205,21 @@ function libraryValue(kind, value, key) {
     return Number.isFinite(value?.time) && value.time >= 0 && Number.isFinite(value.duration) && value.duration > value.time && value.duration <= 86400
       && Number.isFinite(value.updated) && validRanges(value.ranges) && validRanges(value.skipped) ? value : undefined;
   }
+  if (kind === 'folders') {
+    const name = typeof value?.name === 'string' ? value.name.trim() : '';
+    const allowedColors = ['ember', 'gold', 'sage', 'steel', 'slate'];
+    const color = value?.color === undefined ? 'ember' : value.color;
+    if (value?.id !== key || !name || name.length > 50 || /[\x00-\x1f\x7f]/.test(name)
+      || !allowedColors.includes(color) || !Array.isArray(value?.items) || value.items.length > 500
+      || !Number.isFinite(value?.created) || !Number.isFinite(value?.updated)) return undefined;
+    const seen = new Set();
+    const items = [];
+    for (const itemKey of value.items) {
+      if (typeof itemKey !== 'string' || !/^[a-z0-9][\w.-]{0,120}$/i.test(itemKey)) return undefined;
+      if (!seen.has(itemKey)) { seen.add(itemKey); items.push(itemKey); }
+    }
+    return { id: key, name, color, items, created: value.created, updated: value.updated };
+  }
   if (kind === 'skips') {
     if (!Array.isArray(value) || value.length > 3) return undefined;
     const kinds = new Set();
@@ -226,7 +246,7 @@ export async function accountApi(request, response, path, body) {
     return { code: 200, body: { account: null } };
   }
 
-  if (['/api/account/recovery-code', '/api/account/revoke-other', '/api/account/notifications-read'].includes(path)) {
+  if (['/api/account/recovery-code', '/api/account/revoke-other', '/api/account/notifications-read', '/api/account/notifications-read-all', '/api/account/clear-history'].includes(path)) {
     if (!account) return status(401, 'Sign in first.');
     if (path.endsWith('/recovery-code')) {
       const code = randomBytes(24).toString('hex');
@@ -235,6 +255,22 @@ export async function accountApi(request, response, path, body) {
     }
     if (path.endsWith('/revoke-other')) {
       await removeOtherSessions.run(account.id, hashToken(sessionToken(request)));
+    } else if (path.endsWith('/notifications-read-all')) {
+      if (body?.accountId != null && account.id !== body.accountId) return status(409, 'The signed-in account changed.');
+      await db.transaction(async () => {
+        await db.lockAccount(account.id);
+        for (const row of await listKindEntries.all(account.id, 'notifications')) {
+          const parsed = JSON.parse(row.value);
+          if (!parsed.read) await setEntry.run(account.id, 'notifications', row.key, JSON.stringify({ ...parsed, read: true }));
+        }
+      });
+    } else if (path.endsWith('/clear-history')) {
+      if (body?.accountId != null && account.id !== body.accountId) return status(409, 'The signed-in account changed.');
+      await db.transaction(async () => {
+        await db.lockAccount(account.id);
+        await clearKindEntries.run(account.id, 'history');
+        await clearKindVersions.run(account.id, 'history');
+      });
     } else {
       if (body?.accountId != null && account.id !== body.accountId) return status(409, 'The signed-in account changed.');
       if (typeof body?.key !== 'string' || !/^[\w-]{1,100}$/.test(body.key)) return status(400, 'Invalid notification.');
@@ -248,7 +284,7 @@ export async function accountApi(request, response, path, body) {
     if (!account) return status(401, 'Sign in to update this library.');
     const { accountId, kind, key, value, at, expectedAt } = body || {};
     if (account.id !== accountId) return status(409, 'The signed-in account changed. Reload to update the library.');
-    if (!['saved', 'ratings', 'progress', 'reading', 'skips', 'watched', 'preferences', 'history'].includes(kind) || typeof key !== 'string' || !/^[a-z0-9][\w.-]*(?:\/[\w-]+)?$/i.test(key) || key.length > 145) return status(400, 'Invalid library entry.');
+    if (!['saved', 'ratings', 'progress', 'reading', 'skips', 'watched', 'preferences', 'history', 'folders'].includes(kind) || typeof key !== 'string' || !/^[a-z0-9][\w.-]*(?:\/[\w-]+)?$/i.test(key) || key.length > 145) return status(400, 'Invalid library entry.');
     const entry = libraryValue(kind, value, key);
     if (entry === undefined) return status(400, 'Invalid library entry.');
     if (expectedAt != null && !Number.isSafeInteger(expectedAt)) return status(400, 'Invalid library revision.');
@@ -276,7 +312,7 @@ export async function accountApi(request, response, path, body) {
     const { accountId, library: incoming } = body || {};
     if (account.id !== accountId) return status(409, 'The signed-in account changed. Reload to import.');
     if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return status(400, 'Invalid library import payload.');
-    const allowedKinds = ['saved', 'watched', 'ratings', 'progress', 'reading', 'history', 'preferences'];
+    const allowedKinds = ['saved', 'watched', 'ratings', 'progress', 'reading', 'history', 'preferences', 'folders'];
     const keyPattern = /^[a-z0-9][\w.-]*(?:\/[\w-]+)?$/i;
     const validOps = [];
     let skipped = 0;

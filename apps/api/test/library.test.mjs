@@ -164,6 +164,25 @@ test('playback conflicts, release deduplication and one-time recovery', async ()
   await write('preferences', 'notifySeasonStarts', false);
   for (let i = 0; i < 2; i++) await storeReleaseEvents(item.id, followers, previous => releaseEvents(item.id, fresh, previous, date, season));
   assert.deepEqual(Object.keys((await readLibrary(accountId)).notifications), ['tmdb-8001-s2e1', 'tmdb-8001-s2e2']);
+  assert.equal((await call('notifications-read-all', { accountId }, firstSession)).code, 200);
+  const allRead = Object.values((await readLibrary(accountId)).notifications);
+  assert.equal(allRead.every(entry => entry.read === true), true);
+
+  // Custom folders CRUD + clear-history
+  const folder = { id: 'f_top', name: 'Favorites', color: 'gold', items: [item.key, 'movie-550'], created: now, updated: now };
+  assert.equal((await write('folders', 'f_top', folder, now, firstSession)).code, 200);
+  assert.deepEqual((await readLibrary(accountId)).folders.f_top.items, [item.key, 'movie-550']);
+  assert.equal((await write('folders', 'f_top', null, now + 10, firstSession)).code, 200);
+  assert.equal((await readLibrary(accountId)).folders.f_top, undefined);
+
+  const histId = '11111111-2222-4333-8444-555555555555';
+  assert.equal((await write('history', histId, {
+    item, mediaKey: `${item.key}/s1e1`, duration: 1800, time: 900, coverage: 900, completed: false, started: now - 1000, updated: now,
+  }, now, firstSession)).code, 200);
+  assert.equal(Boolean((await readLibrary(accountId)).history[histId]), true);
+  assert.equal((await call('clear-history', { accountId }, firstSession)).code, 200);
+  assert.equal(Object.keys((await readLibrary(accountId)).history).length, 0);
+
   assert.equal(releaseEvents(item.id, { ...fresh, air_date: '2025-12-01' }, null, date).events.length, 0);
 
   const recovery = await call('recovery-code', {}, firstSession);

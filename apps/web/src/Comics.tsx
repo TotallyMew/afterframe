@@ -5,6 +5,7 @@ import { currentLocationHref, currentSearchParams } from './router';
 import { InputField, PageHeading, ResultsSummary, RouteTabs, SelectField } from './Catalogue';
 import { ActionLink, Artwork, Icon, Loading, RatingProblem, SaveButton, Score, Shelf, useOptionalRating } from './components';
 import { readingStatuses, savedRating, type LibraryControls, type WatchStatus } from './library';
+import { FolderPickerPopover } from './library/FolderPickerPopover';
 import { AfSelect } from './UiControls';
 
 const formats = [['', 'All comics'], ['manga', 'Manga'], ['manhwa', 'Manhwa'], ['manhua', 'Manhua'], ['comic', 'Comics']] as const;
@@ -135,7 +136,7 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
         for (const [key, value] of new FormData(event.currentTarget)) if (typeof value === 'string' && value.trim()) update.set(key, value.trim());
         navigate(routeWithParams('comics', update));
       }}>
-        <div className="af-catalog-search"><InputField name="q" label="Find comics" type="search" maxLength={180} defaultValue={text} /></div>
+        <div className="af-catalog-search"><InputField name="q" label="Find comics" type="search" placeholder="Search comics…" maxLength={180} defaultValue={text} /></div>
         <div className="af-facet-with-status">
           <SelectField label="Genre" name="genre" empty="All genres" value={selectedGenre} options={genreOptions} />
           {auxError.genres && <p className="af-meta" role="status">Genres are unavailable. <button type="button" className="af-text-link" onClick={() => setGenreAttempt(value => value + 1)}>Retry genres</button></p>}
@@ -303,6 +304,7 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
                 options={readingStatusOptions}
                 onChange={value => void controls.setComicStatus(item, value as WatchStatus)}
               />}
+              <FolderPickerPopover itemKey={item.key} itemTitle={item.title} controls={controls} />
             </div>
           </div>
         </div>

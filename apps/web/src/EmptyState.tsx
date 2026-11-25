@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { Icon } from './components';
 
-export type EmptyEmblem = 'film' | 'book' | 'search' | 'bookmark' | 'clock' | 'settings';
+export type EmptyEmblem = 'film' | 'book' | 'search' | 'bookmark' | 'clock' | 'settings' | 'bell' | 'folder';
 
 export function EmptyState({
   icon,

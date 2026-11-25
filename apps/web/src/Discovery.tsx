@@ -126,14 +126,24 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
         <SelectField label="Format" name="format" empty="Any format" value={params.get('format') || ''} options={formats} />
         <SelectField label="Status" name="status" empty="Any status" value={params.get('status') || ''} options={statuses} />
         <FilterPopover activeCount={moreAnimeCount}>
-          <InputField label="Genre" name="genre" list="anime-genres" maxLength={60} defaultValue={params.get('genre') || ''} />
-          <InputField label="Theme" name="theme" list="anime-themes" maxLength={60} defaultValue={params.get('theme') || ''} />
-          <InputField label="Minimum episodes" name="min" aria-invalid={Boolean(rangeError)} aria-describedby={rangeError ? 'episode-range-error' : undefined} type="number" min="1" max="5000" defaultValue={params.get('min') || ''} />
-          <InputField label="Maximum episodes" name="max" type="number" min="1" max="5000" defaultValue={params.get('max') || ''} />
+          <SelectField
+            label="Genre"
+            name="genre"
+            empty="Any genre"
+            value={params.get('genre') || ''}
+            options={genreSuggestions.map(name => [name, name] as const)}
+          />
+          <SelectField
+            label="Theme"
+            name="theme"
+            empty="Any theme"
+            value={params.get('theme') || ''}
+            options={themeSuggestions.map(name => [name, name] as const)}
+          />
+          <InputField label="Minimum episodes" name="min" placeholder="Any" aria-invalid={Boolean(rangeError)} aria-describedby={rangeError ? 'episode-range-error' : undefined} type="number" min="1" max="5000" defaultValue={params.get('min') || ''} />
+          <InputField label="Maximum episodes" name="max" placeholder="Any" type="number" min="1" max="5000" defaultValue={params.get('max') || ''} />
           <SelectField label="Sort by" name="sort" value={params.get('sort') || 'POPULARITY_DESC'} options={sorts} />
         </FilterPopover>
-        <datalist id="anime-genres">{genreSuggestions.map(name => <option key={name} value={name} />)}</datalist>
-        <datalist id="anime-themes">{themeSuggestions.map(name => <option key={name} value={name} />)}</datalist>
         <button className="af-button af-primary" type="submit">Apply filters</button>
       </form>
     </div>

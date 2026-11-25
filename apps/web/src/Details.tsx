@@ -6,9 +6,16 @@ import {
   type Episode, type MediaType, type Title, type TitleResults,
 } from './catalog';
 import { ActionLink, Artwork, HeroBackdrop, Icon, Loading, MediaCard, MutationStatus, RatingProblem, SaveButton, Score, Shelf, useOptionalRating } from './components';
-import { getSeason, progressPercent, resumeFor, savedRating, watchStatuses, type Library, type LibraryControls, type WatchStatus } from './library';
+import { effectiveWatchStatus, getSeason, progressPercent, resumeFor, savedRating, watchStatuses, type Library, type LibraryControls, type WatchStatus } from './library';
+import { FolderPickerPopover } from './library/FolderPickerPopover';
 import { currentSearchParams } from './router';
 import { AfSelect } from './UiControls';
+
+function personInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return (parts.length === 1 ? parts[0].slice(0, 2) : `${parts[0][0]}${parts[parts.length - 1][0]}`).toUpperCase();
+}
 
 const episodeRangeSize = 15;
 const ratingOptions = [
@@ -236,7 +243,8 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
   const resumeEpisode = resume?.episode;
   const startingEpisode = resumeEpisode ?? (selection ? episodePosition(selection.episode) : undefined);
   const playLabel = resumeEpisode ? `Resume S${resumeEpisode.season} E${resumeEpisode.number}`
-    : selection ? selection.replay ? 'Watch again' : `Play ${episodeLabel(selection.episode)}` : 'Choose an episode';
+    : selection ? selection.replay ? 'Watch again' : `Play ${episodeLabel(selection.episode)}`
+    : regular.length > 0 ? 'Play S1 E1' : 'Choose an episode';
   const requestedSeason = Number(currentSearchParams().get('season'));
   const initialSeason = Number.isInteger(requestedSeason) && seasons.some(entry => entry.season_number === requestedSeason)
     ? requestedSeason
@@ -273,14 +281,15 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
                 : (!item.date || item.date <= today() || resume) && <ActionLink primary href={playHref(item)}><Icon name="play" />{resume ? 'Resume' : 'Play'}</ActionLink>}
               <SaveButton item={item} controls={controls} />
               {saved && <AfSelect
-                ariaLabel="Watch plan"
-                value={saved.watchStatus ?? 'planned'}
+                ariaLabel="Watch status"
+                value={effectiveWatchStatus(saved, controls.library)}
                 disabled={!controls.ready || controls.isPending(item.key)}
                 options={watchStatusOptions}
                 onChange={value => void controls.setStatus(item, value as WatchStatus, details)}
               />}
-              {type === 'movie' && <button type="button" className="af-button af-secondary" disabled={!controls.ready || controls.isPending(item.key)}
-                aria-pressed={marked} onClick={() => void controls.toggleWatched(item)}>{marked ? <><Icon name="check" />Watched</> : 'Mark watched'}</button>}
+              {type === 'movie' && !saved && <button type="button" className="af-button af-secondary" disabled={!controls.ready || controls.isPending(item.key)}
+                aria-pressed={marked} onClick={() => void controls.toggleWatched(item)}>{marked ? <><Icon name="check" />Completed</> : 'Mark completed'}</button>}
+              <FolderPickerPopover itemKey={item.key} itemTitle={item.title} controls={controls} />
             </div>
             {type === 'tv' && item.totalEpisodes ? <p className="af-meta" aria-live="polite">{count} of {item.totalEpisodes} episodes watched{resume ? ` · Resume at ${timeCode(resume.time)}` : ''}</p> : null}
             {scheduling && <p className="af-schedule">{scheduling}</p>}
@@ -328,7 +337,7 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
         <div className="af-cast">{cast.map(person => {
           const art = imagePath(person.profile_path, 'w185');
           return <div className="af-person" key={person.id}>
-            <Artwork src={art} loading="lazy" fallback={<span aria-hidden="true"><Icon name="film" /></span>} />
+            <Artwork src={art} loading="lazy" fallback={<span className="af-person-initials" aria-hidden="true">{personInitials(person.name)}</span>} />
             <p><strong>{person.name}</strong>{person.character && <small>{person.character}</small>}</p>
           </div>;
         })}</div>

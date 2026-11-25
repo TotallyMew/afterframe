@@ -2,7 +2,8 @@ import type { ArchiveTitle } from '@afterframe/shared/catalog';
 import { useMemo } from 'react';
 import { playerHref, timeCode } from '../catalog';
 import { ActionLink, Artwork, HeroBackdrop, Icon, SaveButton } from '../components';
-import { progressPercent, resumeFor, savedRating, watchStatuses, type LibraryControls, type WatchStatus } from '../library';
+import { effectiveWatchStatus, progressPercent, resumeFor, savedRating, watchStatuses, type LibraryControls, type WatchStatus } from '../library';
+import { FolderPickerPopover } from '../library/FolderPickerPopover';
 import { AfSelect } from '../UiControls';
 import { archiveToTitle } from './route';
 
@@ -43,14 +44,15 @@ export function ArchiveEditionView({ entry, backHref, controls }: { entry: Archi
               </ActionLink>
               <SaveButton item={item} controls={controls} />
               {saved && <AfSelect
-                ariaLabel="Watch plan"
-                value={saved.watchStatus ?? 'planned'}
+                ariaLabel="Watch status"
+                value={effectiveWatchStatus(saved, controls.library)}
                 disabled={!controls.ready || controls.isPending(item.key)}
                 options={archiveStatusOptions}
                 onChange={value => void controls.setStatus(item, value as WatchStatus, { id: item.id }, entry.episodes?.map(ep => ep.key))}
               />}
-              {item.type === 'movie' && <button type="button" className="af-button af-secondary" disabled={!controls.ready || controls.isPending(item.key)}
-                aria-pressed={marked} onClick={() => void controls.toggleWatched(item)}>{marked ? <><Icon name="check" />Watched</> : 'Mark watched'}</button>}
+              {item.type === 'movie' && !saved && <button type="button" className="af-button af-secondary" disabled={!controls.ready || controls.isPending(item.key)}
+                aria-pressed={marked} onClick={() => void controls.toggleWatched(item)}>{marked ? <><Icon name="check" />Completed</> : 'Mark completed'}</button>}
+              <FolderPickerPopover itemKey={item.key} itemTitle={item.title} controls={controls} />
             </div>
           </div>
         </div>

@@ -1,11 +1,68 @@
 import { Dialog } from '@base-ui/react/dialog';
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { preferenceDefaults } from '@afterframe/shared/playback';
+import { AccountButton } from './Account';
 import { post, request } from './catalog';
 import { Icon, MutationStatus } from './components';
 import type { BooleanPreference, LibraryControls } from './library';
 import { SettingsContext, type OpenSettings, type SettingsTab } from './settings-context';
 import { AfSelect, type SelectOption } from './UiControls';
+
+function SegmentedTabs<T extends string>({
+  options,
+  value,
+  onChange,
+  label,
+  className = '',
+}: {
+  options: readonly (readonly [T, string])[];
+  value: T;
+  onChange: (next: T) => void;
+  label: string;
+  className?: string;
+}) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const [pill, setPill] = useState<{ x: number; width: number; ready: boolean; animate: boolean }>({
+    x: 0, width: 0, ready: false, animate: false,
+  });
+  const hadRef = useRef(false);
+
+  useLayoutEffect(() => {
+    const track = trackRef.current;
+    if (!track) return;
+    const measure = () => {
+      const active = track.querySelector<HTMLButtonElement>('button[aria-pressed="true"]');
+      if (!active || active.offsetWidth === 0) return;
+      const x = active.offsetLeft;
+      const width = active.offsetWidth;
+      const animate = hadRef.current;
+      hadRef.current = true;
+      setPill(prev => prev.x === x && prev.width === width && prev.ready && prev.animate === animate
+        ? prev : { x, width, ready: true, animate });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(track);
+    return () => ro.disconnect();
+  }, [value, options.length]);
+
+  return (
+    <div ref={trackRef} role="group" aria-label={label} className={`af-segmented ${pill.ready ? 'has-indicator' : ''} ${className}`.trim()}>
+      {pill.ready && (
+        <span
+          className={`af-segmented-indicator ${pill.animate ? 'is-animated' : ''}`}
+          style={{ transform: `translateX(${pill.x}px)`, width: `${pill.width}px` }}
+          aria-hidden="true"
+        />
+      )}
+      {options.map(([key, text]) => (
+        <button key={key} type="button" aria-pressed={key === value} onClick={() => onChange(key)}>
+          {text}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 const sections = ['Playback', 'Spoilers', 'Interface', 'Availability', 'Notifications'] as const;
 type Section = typeof sections[number];
@@ -102,29 +159,48 @@ function AvailabilitySettings() {
 }
 
 function Credits() {
-  return <details className="af-settings-credits">
-    <summary>Sources &amp; credits</summary>
-    <a href="https://www.themoviedb.org/" target="_blank" rel="noopener noreferrer"><img src="/art/tmdb.svg" width="83" height="26" alt="TMDB" /></a>
-    <p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
-    <p>Regional streaming, rental, and purchase availability is provided by <a href="https://www.justwatch.com/" target="_blank" rel="noopener noreferrer">JustWatch</a>.</p>
-    <p>Catalog playback uses CineSrc, <a href="https://animeembed.com/" target="_blank" rel="noopener noreferrer">AnimeEmbed</a>, and <a href="https://ani.pm/developers" target="_blank" rel="noopener noreferrer">Ani.pm</a>. Anime episode mappings come from <a href="https://github.com/anibridge/anibridge-mappings" target="_blank" rel="noopener noreferrer">AniBridge</a>.</p>
-    <p>Comics are provided by <a href="https://mangadex.org/" target="_blank" rel="noopener noreferrer">MangaDex</a>. Chapter pages credit their scanlation groups where listed.</p>
-    <p>Public-domain and Creative Commons editions stream from the <a href="https://archive.org/" target="_blank" rel="noopener noreferrer">Internet Archive</a> and <a href="https://commons.wikimedia.org/" target="_blank" rel="noopener noreferrer">Wikimedia Commons</a>. The player shows the source and rights label for each edition.</p>
-    <p>Skip timestamps are supplied by <a href="https://aniskip.com/" target="_blank" rel="noopener noreferrer">AniSkip</a> and <a href="https://theintrodb.org/" target="_blank" rel="noopener noreferrer">TheIntroDB</a>.</p>
-  </details>;
+  const [expanded, setExpanded] = useState(false);
+  return <div className={`af-settings-credits ${expanded ? 'is-open' : ''}`}>
+    <button
+      type="button"
+      className="af-settings-credits-toggle"
+      aria-expanded={expanded}
+      onClick={() => setExpanded(v => !v)}
+    >
+      <span>Sources &amp; credits</span>
+      <svg className="af-credits-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="m6 9 6 6 6-6" />
+      </svg>
+    </button>
+    <div className="af-settings-credits-collapse" aria-hidden={!expanded}>
+      <div className="af-settings-credits-body">
+        <a href="https://www.themoviedb.org/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}><img src="/art/tmdb.svg" width="83" height="26" alt="TMDB" /></a>
+        <p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+        <p>Regional streaming, rental, and purchase availability is provided by <a href="https://www.justwatch.com/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>JustWatch</a>.</p>
+        <p>Catalog playback uses CineSrc, <a href="https://animeembed.com/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>AnimeEmbed</a>, and <a href="https://ani.pm/developers" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>Ani.pm</a>. Anime episode mappings come from <a href="https://github.com/anibridge/anibridge-mappings" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>AniBridge</a>.</p>
+        <p>Comics are provided by <a href="https://mangadex.org/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>MangaDex</a>. Chapter pages credit their scanlation groups where listed.</p>
+        <p>Public-domain and Creative Commons editions stream from the <a href="https://archive.org/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>Internet Archive</a> and <a href="https://commons.wikimedia.org/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>Wikimedia Commons</a>. The player shows the source and rights label for each edition.</p>
+        <p>Skip timestamps are supplied by <a href="https://aniskip.com/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>AniSkip</a> and <a href="https://theintrodb.org/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>TheIntroDB</a>.</p>
+      </div>
+    </div>
+  </div>;
 }
 
 function GeneralSettings({ controls }: { controls: LibraryControls }) {
   const [section, setSection] = useState<Section>('Playback');
   const heading = useRef<HTMLHeadingElement>(null);
   return <>
-    <div role="group" aria-label="General settings" className="af-settings-subnav af-filters">
-      {sections.map(name => <button key={name} type="button" aria-pressed={section === name} aria-controls="af-settings-options" onClick={() => {
+    <SegmentedTabs
+      label="General settings"
+      className="af-settings-subnav"
+      value={section}
+      options={sections.map(name => [name, name] as const)}
+      onChange={name => {
         setSection(name);
         requestAnimationFrame(() => heading.current?.focus({ preventScroll: true }));
-      }}>{name}</button>)}
-    </div>
-    <section id="af-settings-options" aria-labelledby="af-settings-section">
+      }}
+    />
+    <section id="af-settings-options" key={section} className="af-settings-panel-enter" aria-labelledby="af-settings-section">
       <h3 ref={heading} tabIndex={-1} id="af-settings-section">{section === 'Spoilers' ? 'Spoiler protection' : section}</h3>
       {!controls.ready && section !== 'Availability' && <p className="af-meta" role="status">{controls.state === 'loading' ? 'Loading preferences…' : 'Reconnect your library to change preferences.'}</p>}
       {section === 'Playback' && <PlaybackSettings controls={controls} />}
@@ -136,10 +212,16 @@ function GeneralSettings({ controls }: { controls: LibraryControls }) {
       {section === 'Interface' && <>
         <Toggle controls={controls} name="reducedMotion" label="Always reduce motion" description="When off, Afterframe follows your system preference." />
         <Toggle controls={controls} name="compact" label="Compact episode list" />
-        <Toggle controls={controls} name="confirmRemoval" label="Confirm removals and resets in My Library" />
+        <Toggle controls={controls} name="confirmRemoval" label="Confirm removals and resets in Library" />
       </>}
       {section === 'Availability' && <AvailabilitySettings />}
       {section === 'Notifications' && <>
+        {!controls.account && (
+          <div className="af-settings-signin-note">
+            <p className="af-meta">Sign in to receive release notifications for newly aired episodes and season premieres.</p>
+            <AccountButton className="af-button af-secondary">Sign in</AccountButton>
+          </div>
+        )}
         <Toggle controls={controls} name="notifyEpisodes" label="New episodes" />
         <Toggle controls={controls} name="notifySeasonStarts" label="Season premieres" />
         <Toggle controls={controls} name="notifySeasonSchedules" label="Verified season announcements" />
@@ -256,12 +338,14 @@ export function SettingsProvider({ controls, children }: { controls: LibraryCont
           <header className="af-settings-header"><Dialog.Title>Settings</Dialog.Title>
             <Dialog.Close ref={closeButton} className="af-icon-button" aria-label="Close settings"><Icon name="close" /></Dialog.Close>
           </header>
-          <div className="af-settings-tabs af-filters" role="group" aria-label="Settings sections">
-            {settingsTabs.map(([key, label]) => <button type="button" key={key} aria-pressed={key === tab} onClick={() => setTab(key)}>{label}</button>)}
+          <div className="af-settings-tabs">
+            <SegmentedTabs label="Settings sections" value={tab} options={settingsTabs} onChange={setTab} />
           </div>
           <div className="af-settings-content" key={opening}>
-            {tab === 'general' ? <GeneralSettings controls={controls} />
-              : <Integrations expandCatalog={entry.current === 'integrations'} afterCatalogSaved={afterCatalogSaved.current} />}
+            <div key={tab} className="af-settings-panel-enter">
+              {tab === 'general' ? <GeneralSettings controls={controls} />
+                : <Integrations expandCatalog={entry.current === 'integrations'} afterCatalogSaved={afterCatalogSaved.current} />}
+            </div>
           </div>
         </Dialog.Popup>
       </Dialog.Portal>

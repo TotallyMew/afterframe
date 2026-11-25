@@ -24,6 +24,10 @@ const glyphs = {
   film: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 4v16M17 4v16M3 9h4m-4 6h4m10-6h4m-4 6h4" /></>,
   home: <path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5.5v-6.5h-5V21H4a1 1 0 0 1-1-1z" />,
   bell: <><path d="M6 9a6 6 0 1 1 12 0c0 5 2 6.5 2 6.5H4S6 14 6 9" /><path d="M10 19a2 2 0 0 0 4 0" /></>,
+  folder: <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
+  grid: <><rect x="3.5" y="3.5" width="7" height="7" rx="1.2" /><rect x="13.5" y="3.5" width="7" height="7" rx="1.2" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.2" /><rect x="13.5" y="13.5" width="7" height="7" rx="1.2" /></>,
+  list: <><path d="M8 6h12M8 12h12M8 18h12" /><circle cx="4" cy="6" r="1" fill="currentColor" stroke="none" /><circle cx="4" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="4" cy="18" r="1" fill="currentColor" stroke="none" /></>,
+  more: <><circle cx="6" cy="12" r="1.5" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" /><circle cx="18" cy="12" r="1.5" fill="currentColor" stroke="none" /></>,
 } satisfies Record<string, ReactNode>;
 
 export function Icon({ name }: { name: keyof typeof glyphs }) {
@@ -112,7 +116,7 @@ export function ActionLink({ href, primary = false, children, label }: { href: s
 
 export function SaveButton({ item, controls, compact = false }: { item: Title | Comic; controls: LibraryControls; compact?: boolean }) {
   const saved = Boolean(controls.library.saved[item.key]);
-  const list = item.type === 'comic' ? 'Reading list' : 'Watchlist';
+  const list = item.type === 'comic' ? 'Reading' : 'Library';
   return <><button type="button" className={compact ? 'af-icon-button af-card-save' : 'af-button af-secondary'}
     aria-pressed={saved} aria-label={compact ? `${saved ? 'Remove from' : 'Add to'} ${list}: ${item.title}` : undefined}
     aria-busy={controls.isPending(item.key)} disabled={!controls.ready || controls.isPending(item.key)} onClick={() => void controls.toggleSaved(item)}>
@@ -510,7 +514,19 @@ function NotificationsBell({ controls }: { controls: LibraryControls }) {
           <Popover.Popup className="af-popover-popup af-notif-popover">
             <div className="af-popover-head">
               <Popover.Title className="af-popover-title">Notifications</Popover.Title>
-              <a className="af-text-link af-popover-done" href={webHref('notifications')} onClick={() => setOpen(false)}>View all</a>
+              <div className="af-notif-head-actions">
+                {unread > 1 && (
+                  <button
+                    type="button"
+                    className="af-text-link af-popover-done"
+                    disabled={!controls.ready || controls.isPending('notifications-read-all')}
+                    onClick={() => void controls.markAllNotificationsRead()}
+                  >
+                    Mark all read
+                  </button>
+                )}
+                <a className="af-text-link af-popover-done" href={webHref('notifications')} onClick={() => setOpen(false)}>View all</a>
+              </div>
             </div>
             {!controls.account ? (
               <div className="af-notif-empty">
@@ -656,10 +672,10 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
           finalFocus={() => searchNavigated.current ? false : searchReturn.current?.isConnected ? searchReturn.current : searchTrigger.current} />
       </Dialog.Root>
       <NotificationsBell controls={controls} />
-      <a className="af-icon-button" href={webHref('watchlist')} aria-label="My Library"><Icon name="bookmark" /><span>Library</span></a>
+      <a className="af-icon-button af-header-library-link" href={webHref('watchlist')} aria-label="Library"><Icon name="bookmark" /><span>Library</span></a>
       <button type="button" className="af-icon-button af-settings" aria-label="Settings" aria-haspopup="dialog"
         onClick={event => openSettings('general', event.currentTarget)}><Icon name="settings" /></button>
-      <AccountButton className="af-account">{controls.account?.username ?? (controls.state === 'loading' ? 'Account' : 'Sign in')}</AccountButton>
+      <AccountButton className="af-account">{controls.account?.username ?? 'Sign in'}</AccountButton>
       <Dialog.Root open={browse} onOpenChange={open => { if (open) browseOpeningSettings.current = false; setBrowse(open); }}>
         <Dialog.Trigger ref={browseTrigger} className="af-icon-button af-menu-trigger" aria-label="Browse"><Icon name="menu" /></Dialog.Trigger>
         <Dialog.Portal>
