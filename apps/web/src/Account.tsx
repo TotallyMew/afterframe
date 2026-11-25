@@ -2,12 +2,13 @@ import { Dialog } from '@base-ui/react/dialog';
 import { createContext, useContext, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { post } from './catalog';
 import { Icon } from './components';
-import type { Library, LibraryControls } from './library';
+import { guestLibrary, guestSummary, type Library, type LibraryControls, type LibraryCounts } from './library';
+import { useToast } from './Toast';
 import './Account.css';
 
 type Mode = 'signin' | 'create' | 'reset';
 type SecurityAction = 'recovery-code' | 'revoke-other';
-type Action = Mode | SecurityAction | 'signout';
+type Action = Mode | SecurityAction | 'signout' | 'migrate';
 type SessionResponse = { account: NonNullable<LibraryControls['account']>; library: Partial<Library> };
 
 const modes = {
@@ -52,7 +53,9 @@ export function AccountProvider({ controls, children }: { controls: LibraryContr
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const [recoveryCode, setRecoveryCode] = useState('');
-  const [notice, setNotice] = useState('');
+  const [migration, setMigration] = useState<LibraryCounts | null>(null);
+  const [clearGuestAfterMerge, setClearGuestAfterMerge] = useState(true);
+  const { notify } = useToast();
   const invoker = useRef<HTMLElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const usernameInput = useRef<HTMLInputElement>(null);
@@ -62,12 +65,6 @@ export function AccountProvider({ controls, children }: { controls: LibraryContr
   const restoreSecurityFocus = useRef(false);
   const inFlight = useRef(false);
   const account = controls.account;
-
-  useEffect(() => {
-    if (!notice) return;
-    const timeout = setTimeout(() => setNotice(''), 5000);
-    return () => clearTimeout(timeout);
-  }, [notice]);
 
   useEffect(() => {
     if (error) feedback.current?.focus();
@@ -110,6 +107,7 @@ export function AccountProvider({ controls, children }: { controls: LibraryContr
   function close() {
     setOpen(false);
     setRecoveryCode('');
+    setMigration(null);
   }
 
   function switchMode(next: Mode) {
@@ -148,7 +146,26 @@ export function AccountProvider({ controls, children }: { controls: LibraryContr
       }
       const session = await post<SessionResponse>(`/api/account/${mode}`, fields);
       controls.updateAccount(session.account, session.library);
-      setNotice(`Signed in as ${session.account.username}.`);
+      notify({ message: `Signed in as ${session.account.username}.`, tone: 'success' });
+      const summary = guestSummary();
+      if (summary.total > 0) {
+        setMigration(summary);
+        setClearGuestAfterMerge(true);
+      } else {
+        close();
+      }
+    });
+  }
+
+  function mergeGuestLibrary() {
+    void runAction('migrate', async () => {
+      const result = await controls.importLibrary(guestLibrary(), { clearGuest: clearGuestAfterMerge });
+      notify({
+        message: result.totalImported > 0
+          ? `Merged ${result.totalImported} browser ${result.totalImported === 1 ? 'item' : 'items'} into your account.`
+          : 'Your account already has the latest version of those items.',
+        tone: 'success',
+      });
       close();
     });
   }
@@ -158,7 +175,7 @@ export function AccountProvider({ controls, children }: { controls: LibraryContr
     void runAction('signout', async () => {
       await post('/api/account/signout', {});
       controls.updateAccount(null, null);
-      setNotice('Signed out.');
+      notify('Signed out.');
       close();
     });
   }
@@ -179,12 +196,21 @@ export function AccountProvider({ controls, children }: { controls: LibraryContr
 
   const verifying = controls.state === 'loading';
   const pendingMessage = pending === 'signout' ? 'Signing out…'
+    : pending === 'migrate' ? 'Merging browser library…'
     : pending === 'recovery-code' || pending === 'revoke-other' ? securityActions[pending].pending
     : pending ? modes[pending].pending : '';
+  const summaryParts = migration ? [
+    migration.saved ? `${migration.saved} saved` : '',
+    migration.watched ? `${migration.watched} watched` : '',
+    migration.ratings ? `${migration.ratings} rated` : '',
+    migration.progress ? `${migration.progress} playback positions` : '',
+    migration.reading ? `${migration.reading} reading positions` : '',
+    migration.history ? `${migration.history} history entries` : '',
+  ].filter(Boolean) : [];
+  const availableGuest = account && !migration ? guestSummary() : null;
 
   return <openAccountContext.Provider value={openAccount}>
     {children}
-    {notice && <p className="af-account-notice" role="status">{notice}</p>}
     <Dialog.Root open={open} onOpenChange={next => { if (!next && !inFlight.current) close(); }}>
       <Dialog.Portal>
         <Dialog.Backdrop className="af-scrim" />
@@ -197,7 +223,20 @@ export function AccountProvider({ controls, children }: { controls: LibraryContr
               aria-disabled={Boolean(pending)}><Icon name="close" /></Dialog.Close>
           </header>
           <div className="af-account-content">
-            {verifying ? <p role="status" className="af-meta">Checking your session…</p> : account ? <>
+            {verifying ? <p role="status" className="af-meta">Checking your session…</p> : account && migration ? <div className="af-account-migrate">
+              <h3>Merge browser guest library?</h3>
+              <p className="af-meta">
+                Found {summaryParts.join(', ')} saved on this browser. Existing items in your account are kept unless the browser copy is newer.
+              </p>
+              <label className="af-account-check">
+                <input type="checkbox" checked={clearGuestAfterMerge} disabled={Boolean(pending)} onChange={event => setClearGuestAfterMerge(event.target.checked)} />
+                <span>Clear this browser&apos;s guest copy after merging</span>
+              </label>
+              <div className="af-actions">
+                <button type="button" className="af-button af-primary" disabled={Boolean(pending)} onClick={mergeGuestLibrary}>Merge into account</button>
+                <button type="button" className="af-button af-secondary" disabled={Boolean(pending)} onClick={close}>Skip for now</button>
+              </div>
+            </div> : account ? <>
               <div className="af-account-profile">
                 <span className="af-account-avatar" aria-hidden="true">{account.username.slice(0, 1).toUpperCase()}</span>
                 <div><h3>{account.username}</h3><Dialog.Description className="af-meta">Manage your account and active sessions.</Dialog.Description></div>
@@ -205,6 +244,10 @@ export function AccountProvider({ controls, children }: { controls: LibraryContr
               <div className="af-actions">
                 <button type="button" className="af-button af-secondary" disabled={Boolean(pending) || controls.libraryBusy}
                   onClick={signOut}>Sign out</button>
+                {availableGuest && availableGuest.total > 0 && <button type="button" className="af-button af-secondary" disabled={Boolean(pending)}
+                  onClick={() => { setMigration(availableGuest); setClearGuestAfterMerge(true); }}>
+                  Merge {availableGuest.total} guest {availableGuest.total === 1 ? 'item' : 'items'}
+                </button>}
                 {controls.libraryBusy && <p role="status" className="af-meta">Saving your library changes…</p>}
               </div>
               <section className="af-account-security" aria-labelledby="af-account-security">

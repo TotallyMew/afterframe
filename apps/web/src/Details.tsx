@@ -1,3 +1,4 @@
+import { isAnime } from '@afterframe/shared/discover';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   episodeKey, episodeLabel, episodePosition, formatDate, imagePath, isAired, normalizeTitle,
@@ -6,6 +7,7 @@ import {
 } from './catalog';
 import { ActionLink, Artwork, HeroBackdrop, Icon, Loading, MediaCard, MutationStatus, RatingProblem, SaveButton, Score, Shelf, useOptionalRating } from './components';
 import { getSeason, progressPercent, resumeFor, savedRating, watchStatuses, type LibraryControls, type WatchStatus } from './library';
+import { currentSearchParams } from './router';
 
 const episodeRangeSize = 15;
 
@@ -91,7 +93,7 @@ function Episodes({ item, seasons, initialSeason, controls, readSeason }: {
   return <section id="episodes" className="af-section" tabIndex={-1} aria-labelledby="episodes-heading">
     <header className="af-section-head">
       <div><h2 id="episodes-heading">Episodes</h2>{aired.length > 0 && <p className="af-meta">{watched} of {aired.length} aired episodes watched</p>}</div>
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="af-episode-pickers">
         {season != null && <select className="af-select" aria-label="Select season" value={season} onChange={event => { setSelected(Number(event.target.value)); setRange(0); setError(''); }}>
           {seasons.map(option => <option key={option.season_number} value={option.season_number}>{option.name}</option>)}
         </select>}
@@ -138,6 +140,11 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
   }, [type, id, attempt]);
 
   const item = useMemo(() => details && { ...normalizeTitle(details, type), totalEpisodes: details.number_of_episodes }, [details, type]);
+  useEffect(() => {
+    if (item && isAnime(item.originalLanguage, item.genreIds)) {
+      window.dispatchEvent(new CustomEvent('afterframe-section', { detail: 'anime' }));
+    }
+  }, [item]);
   const imdb = useOptionalRating<CatalogRating>(item?.imdb ? `/api/imdb?id=${encodeURIComponent(item.imdb)}&status=1` : undefined);
   const mal = useOptionalRating<number>(item?.originalLanguage === 'ja' && item.genreIds?.includes(16)
     ? `/api/mal/catalog/${type}/${id}?season=${details?.seasons?.find(entry => entry.season_number > 0)?.season_number ?? 1}&status=1`
@@ -210,10 +217,19 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
   const startingEpisode = resumeEpisode ?? (selection ? episodePosition(selection.episode) : undefined);
   const playLabel = resumeEpisode ? `Resume S${resumeEpisode.season} E${resumeEpisode.number}`
     : selection ? selection.replay ? 'Watch again' : `Play ${episodeLabel(selection.episode)}` : 'Choose an episode';
-  const initialSeason = resumeEpisode && seasons.some(entry => entry.season_number === resumeEpisode.season)
-    ? resumeEpisode.season : regular[0]?.season_number;
+  const requestedSeason = Number(currentSearchParams().get('season'));
+  const initialSeason = Number.isInteger(requestedSeason) && seasons.some(entry => entry.season_number === requestedSeason)
+    ? requestedSeason
+    : resumeEpisode && seasons.some(entry => entry.season_number === resumeEpisode.season)
+      ? resumeEpisode.season : regular[0]?.season_number;
   const saved = controls.library.saved[item.key];
   const marked = Boolean(watched[item.key]);
+  const nextEpisodeData = !resumeEpisode ? selection?.episode : undefined;
+  const nextStill = nextEpisodeData?.still_path ? imagePath(nextEpisodeData.still_path, 'w300') : undefined;
+  const nextBlurred = Boolean(nextStill && controls.library.preferences.blur !== false && !(nextEpisodeData && watched[episodeKey(item, nextEpisodeData)]));
+  const resumeRemaining = resume && resume.duration > resume.time
+    ? Math.max(1, Math.ceil((resume.duration - resume.time) / 60))
+    : 0;
   return <>
     <section className={`af-hero af-details-hero ${item.backdrop ? '' : 'af-no-backdrop'}`}>
       {item.backdrop && <HeroBackdrop src={item.backdrop} sizes="(max-width: 680px) 100vw, 86vw" />}
@@ -248,7 +264,7 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
           </div>
         </div>
         <div className="af-details-footer">
-          <nav aria-label="Title sections" className="flex flex-wrap items-center gap-x-5">
+          <nav aria-label="Title sections" className="af-title-nav">
             {type === 'tv' && <button className="af-text-link" type="button" onClick={() => goToSection('episodes')}>Episodes</button>}
             {Boolean(cast.length || crew.length) && <button className="af-text-link" type="button" onClick={() => goToSection('cast')}>Cast &amp; crew</button>}
             {related.length > 0 && <button className="af-text-link" type="button" onClick={() => goToSection('related')}>Related</button>}
@@ -262,6 +278,27 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
       </div>
     </section>
     <div className="af-wrap af-content">
+      {type === 'tv' && startingEpisode && <section className="af-next-up" aria-label={resumeEpisode ? 'Continue watching' : 'Up next'}>
+        {(nextStill || item.backdrop) && <a className="af-next-up-art" href={playHref(item, startingEpisode)} tabIndex={-1} aria-hidden="true">
+          <Artwork src={nextStill || item.backdrop} className={nextBlurred ? 'af-blurred' : undefined} loading="lazy" fallback={<Icon name="film" />} />
+          <span className="af-resume-icon"><Icon name="play" /></span>
+          {resume && <progress className="af-progress af-card-progress" value={progressPercent(resume)} max={100} aria-hidden="true" />}
+        </a>}
+        <div className="af-next-up-copy">
+          <h2>{resumeEpisode ? `Continue · S${resumeEpisode.season} E${resumeEpisode.number}` : selection?.replay ? 'Watch again from S1 E1' : `Next up · S${startingEpisode.season} E${startingEpisode.number}`}</h2>
+          <p className="af-next-up-title">{startingEpisode.title || `Episode ${startingEpisode.number}`}</p>
+          <p className="af-meta">
+            {resume && resumeRemaining > 0
+              ? `Resume at ${timeCode(resume.time)} · ${resumeRemaining} min left`
+              : nextEpisodeData?.runtime
+                ? `${nextEpisodeData.runtime} min`
+                : item.totalEpisodes ? `${count} of ${item.totalEpisodes} episodes watched` : 'Ready to play'}
+          </p>
+        </div>
+        <div className="af-actions">
+          <ActionLink primary href={playHref(item, startingEpisode)}><Icon name="play" />{playLabel}</ActionLink>
+        </div>
+      </section>}
       {type === 'tv' && <Episodes item={item} seasons={seasons} initialSeason={initialSeason} controls={controls} readSeason={readSeason} />}
       {Boolean(cast.length || crew.length) && <section className="af-section" id="cast" tabIndex={-1}>
         <header className="af-section-head"><h2>Cast &amp; crew</h2></header>

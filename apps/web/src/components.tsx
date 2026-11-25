@@ -1,8 +1,9 @@
 import { Dialog } from '@base-ui/react/dialog';
+import { isAnime } from '@afterframe/shared/discover';
 import { Children, memo, useEffect, useRef, useState, type ComponentProps, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
-import { imagePath, normalizeTitles, request, titleHref, webHref, type CatalogRating, type Comic, type Title, type TitleResults } from './catalog';
+import { comicCover, comicDetailsHref, imagePath, libraryItemHref, navigate, normalizeTitles, request, resumeHref, searchHref, titleHref, webHref, type CatalogRating, type Comic, type Title, type TitleResults } from './catalog';
 import { AccountButton } from './Account';
-import type { LibraryControls } from './library';
+import { resumeEntries, type LibraryControls } from './library';
 import { useSettings } from './settings-context';
 
 const glyphs = {
@@ -20,6 +21,7 @@ const glyphs = {
   eye: <><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" /></>,
   book: <><path d="M12 6v15M3 5a9 9 0 0 1 9 1 9 9 0 0 1 9-1v14a9 9 0 0 0-9 2 9 9 0 0 0-9-2z" /></>,
   film: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 4v16M17 4v16M3 9h4m-4 6h4m10-6h4m-4 6h4" /></>,
+  home: <path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5.5v-6.5h-5V21H4a1 1 0 0 1-1-1z" />,
 } satisfies Record<string, ReactNode>;
 
 export function Icon({ name }: { name: keyof typeof glyphs }) {
@@ -41,9 +43,9 @@ export function HeroBackdrop({ src, sizes }: { src?: string; sizes: string }) {
     sizes={sizes} fetchPriority="high" />;
 }
 
-export function Loading({ label, shape = 'posters' }: { label: string; shape?: 'posters' | 'releases' | 'hero' | 'rows' }) {
-  const count = { posters: 6, releases: 3, hero: 1, rows: 3 }[shape];
-  return <div data-route-loading={shape === 'hero' ? true : undefined}>
+export function Loading({ label, shape = 'posters' }: { label: string; shape?: 'posters' | 'releases' | 'hero' | 'rows' | 'details' }) {
+  const count = { posters: 6, releases: 3, hero: 1, rows: 3, details: 4 }[shape];
+  return <div data-route-loading={shape === 'hero' || shape === 'details' ? true : undefined}>
     {label && <p className="af-state" role="status">{label}</p>}
     <div className={`af-placeholder af-placeholder-${shape}`} aria-hidden="true">
       {Array.from({ length: count }, (_, index) => <span key={index} />)}
@@ -62,13 +64,37 @@ export function CatalogProblem({ error, retry }: { error: string; retry: () => v
       .then(result => setManaged(result.managedIntegrations)).catch(() => {});
     return () => task.abort();
   }, [setup]);
-  return <div className="af-state">
-    <p role="alert">{setup && managed ? 'The film and TV catalog is unavailable. Ask the server administrator to check its credentials.' : error}</p>
-    <div className="af-actions">
-      {setup ? managed !== true && <button className="af-button af-primary" type="button" onClick={event => openSettings('integrations', event.currentTarget, retry)}>Configure catalog</button>
-        : <button type="button" className="af-button af-secondary" onClick={retry}>Retry</button>}
-      {setup && <ActionLink href={webHref('comics')}>Browse comics</ActionLink>}
-      {setup && <ActionLink href={webHref('watchlist')}>Open library</ActionLink>}
+  if (setup) {
+    return <section className="af-setup-guide" aria-label="Catalog setup">
+      <div className="af-setup-header">
+        <span className="af-empty-emblem" aria-hidden="true"><Icon name="film" /></span>
+        <div>
+          <h2>Connect your film and TV catalog</h2>
+          <p className="af-meta" role="alert">
+            {managed
+              ? 'The film and TV catalog is unavailable. Ask the server administrator to check its credentials.'
+              : error}
+          </p>
+        </div>
+      </div>
+      {managed !== true && <p className="af-meta af-setup-hint">
+        Add a free TMDB Read Access Token or API key in Settings to unlock movies, TV shows, anime schedules, and release notifications.
+      </p>}
+      <div className="af-actions">
+        {managed !== true && <button className="af-button af-primary" type="button" onClick={event => openSettings('integrations', event.currentTarget, retry)}>Configure catalog</button>}
+        <ActionLink href={webHref('comics')}>Browse comics</ActionLink>
+        <ActionLink href={webHref('edition/sintel')}>Watch free classic</ActionLink>
+        <ActionLink href={webHref('watchlist')}>Open library</ActionLink>
+      </div>
+    </section>;
+  }
+  return <div className="af-empty-state">
+    <span className="af-empty-emblem" aria-hidden="true"><Icon name="film" /></span>
+    <div className="af-empty-copy">
+      <p role="alert">{error}</p>
+      <div className="af-actions">
+        <button type="button" className="af-button af-secondary" onClick={retry}>Retry</button>
+      </div>
     </div>
   </div>;
 }
@@ -147,7 +173,7 @@ export const MediaCard = memo(function MediaCard({ item, controls, href, context
       </span>
       <strong>{item.title}</strong>
       <span className="af-card-meta">{context || label}</span>
-      {!context && <Score rating={item.rating} />}
+      {!context && <Score rating={item.rating} mal={item.mal} />}
     </a>
     {!context && <SaveButton item={item} controls={controls} compact />}
   </article>;
@@ -199,47 +225,200 @@ const pages = [
   ['Comics', 'comics'], ['Releases', 'new'], ['For You', 'recommendations'],
 ];
 
-function Search({ open, close, finalFocus }: { open: boolean; close: () => void; finalFocus: () => HTMLElement | false | null }) {
+type SearchEntry =
+  | { kind: 'video'; key: string; title: string; subtitle: string; href: string; art?: string; mediaType: 'movie' | 'tv'; mediaId: number; rating?: CatalogRating; mal?: number }
+  | { kind: 'comic'; key: string; title: string; subtitle: string; href: string; art?: string; malId?: number | null; mal?: number }
+  | { kind: 'library'; key: string; title: string; subtitle: string; href: string; art?: string; isComic: boolean }
+  | { kind: 'command'; key: string; title: string; subtitle: string; icon: keyof typeof glyphs; run: () => void };
+
+const comicFormatNames: Record<string, string> = { manga: 'Manga', manhwa: 'Manhwa', manhua: 'Manhua', comic: 'Comic' };
+const recentSearchKey = 'afterframe.recentSearches';
+
+function readRecentSearches(): string[] {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(recentSearchKey) || '[]');
+    return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string' && v.trim().length > 0).slice(0, 5) : [];
+  } catch { return []; }
+}
+
+function saveRecentSearch(term: string) {
+  const clean = term.trim();
+  if (!clean) return;
+  try {
+    const next = [clean, ...readRecentSearches().filter(item => item.toLowerCase() !== clean.toLowerCase())].slice(0, 5);
+    localStorage.setItem(recentSearchKey, JSON.stringify(next));
+  } catch { /* Storage optional. */ }
+}
+
+function Search({ open, close, finalFocus, controls }: { open: boolean; close: () => void; finalFocus: () => HTMLElement | false | null; controls: LibraryControls }) {
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<Title[]>([]);
+  const [remoteResults, setRemoteResults] = useState<Extract<SearchEntry, { kind: 'video' | 'comic' }>[]>([]);
+  const [recentSearches, setRecentSearches] = useState<string[]>(() => readRecentSearches());
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState(-1);
   const [attempt, setAttempt] = useState(0);
   const input = useRef<HTMLInputElement>(null);
+  const openSettings = useSettings();
 
   useEffect(() => {
-    const search = query.trim();
-    if (!open || !search) return;
+    if (open) setRecentSearches(readRecentSearches());
+  }, [open]);
+
+  const trimmed = query.trim();
+  const needle = trimmed.toLowerCase();
+
+  const quickCommands: Extract<SearchEntry, { kind: 'command' }>[] = [
+    { kind: 'command', key: 'cmd-watchlist', title: 'My Library', subtitle: 'Open watchlist, watched titles, and history', icon: 'bookmark', run: () => { navigate('watchlist'); close(); } },
+    { kind: 'command', key: 'cmd-comics', title: 'Comics & Manga', subtitle: 'Browse and read comics', icon: 'book', run: () => { navigate('comics'); close(); } },
+    { kind: 'command', key: 'cmd-releases', title: 'New Releases', subtitle: 'Weekly movies and TV releases', icon: 'clock', run: () => { navigate('new'); close(); } },
+    { kind: 'command', key: 'cmd-settings', title: 'Settings', subtitle: 'Playback, spoilers, interface, and API keys', icon: 'settings', run: () => { close(); openSettings('general', null); } },
+    { kind: 'command', key: 'cmd-shortcuts', title: 'Keyboard shortcuts', subtitle: 'View all keyboard shortcuts (?)', icon: 'search', run: () => { close(); window.dispatchEvent(new Event('afterframe-shortcuts')); } },
+  ];
+
+  const continueItems: Extract<SearchEntry, { kind: 'library' }>[] = !trimmed ? [
+    ...resumeEntries(controls.library).slice(0, 2).map(([key, entry]) => ({
+      kind: 'library' as const,
+      key: `resume-${key}`,
+      title: entry.item.title,
+      subtitle: entry.episode ? `Continue watching · S${entry.episode.season} E${entry.episode.number}` : 'Continue watching',
+      href: resumeHref(entry.item, key, entry.episode),
+      art: entry.item.poster,
+      isComic: false,
+    })),
+    ...Object.values(controls.library.reading).sort((a, b) => b.updated - a.updated).slice(0, 1).map(entry => ({
+      kind: 'library' as const,
+      key: `reading-${entry.item.key}`,
+      title: entry.item.title,
+      subtitle: `Continue reading · ${entry.label} · Page ${entry.page}`,
+      href: webHref(`comic/${encodeURIComponent(entry.item.id)}/read/${encodeURIComponent(entry.chapter)}?lang=${encodeURIComponent(entry.language)}&position=${entry.page}`),
+      art: comicCover(entry.item.poster),
+      isComic: true,
+    })),
+  ] : [];
+
+  const libraryMatches: Extract<SearchEntry, { kind: 'library' }>[] = trimmed
+    ? Object.values(controls.library.saved)
+      .filter(item => item.title.toLowerCase().includes(needle))
+      .slice(0, 3)
+      .map(item => ({
+        kind: 'library',
+        key: `lib-${item.key}`,
+        title: item.title,
+        subtitle: `In My Library · ${item.type === 'comic' ? 'Comic' : item.type === 'tv' ? 'TV series' : 'Movie'}`,
+        href: libraryItemHref(item),
+        art: item.type === 'comic' ? comicCover(item.poster) : item.poster,
+        isComic: item.type === 'comic',
+      }))
+    : [];
+
+  const matchedCommands = trimmed
+    ? quickCommands.filter(cmd => cmd.title.toLowerCase().includes(needle) || cmd.subtitle.toLowerCase().includes(needle)).slice(0, 2)
+    : quickCommands;
+
+  const remoteFiltered = remoteResults.filter(entry => !libraryMatches.some(lib => lib.href === entry.href));
+  const results: SearchEntry[] = trimmed
+    ? [...libraryMatches, ...remoteFiltered, ...matchedCommands]
+    : [...continueItems, ...matchedCommands];
+
+  useEffect(() => {
+    if (!open || !trimmed) return;
     const task = new AbortController();
     const timer = setTimeout(() => {
-      request<TitleResults>(`/api/search?q=${encodeURIComponent(search)}`, { signal: task.signal })
-        .then(data => { if (!task.signal.aborted) setResults(normalizeTitles(data.results).slice(0, 7)); })
-        .catch(problem => { if (!task.signal.aborted) setError(problem.message); })
-        .finally(() => { if (!task.signal.aborted) setPending(false); });
+      Promise.allSettled([
+        request<TitleResults>(`/api/search?q=${encodeURIComponent(trimmed)}`, { signal: task.signal }),
+        request<{ results: Comic[] }>(`/api/comics?q=${encodeURIComponent(trimmed)}`, { signal: task.signal }),
+      ]).then(([videoRes, comicRes]) => {
+        if (task.signal.aborted) return;
+        const videos: Extract<SearchEntry, { kind: 'video' }>[] = videoRes.status === 'fulfilled'
+          ? normalizeTitles(videoRes.value.results).slice(0, 5).map(item => ({
+            kind: 'video',
+            key: item.key,
+            title: item.title,
+            subtitle: `${isAnime(item.originalLanguage, item.genreIds) ? 'Anime' : item.type === 'tv' ? 'TV series' : 'Movie'}${item.year ? ` · ${item.year}` : ''}`,
+            href: titleHref(item),
+            art: item.poster,
+            mediaType: item.type,
+            mediaId: item.id,
+            rating: item.rating,
+            mal: item.mal,
+          }))
+          : [];
+        const comics: Extract<SearchEntry, { kind: 'comic' }>[] = comicRes.status === 'fulfilled' && Array.isArray(comicRes.value.results)
+          ? comicRes.value.results.slice(0, 3).map(item => ({
+            kind: 'comic',
+            key: item.key,
+            title: item.title,
+            subtitle: `${comicFormatNames[item.format || ''] || 'Comic'}${item.year ? ` · ${item.year}` : ''}`,
+            href: comicDetailsHref(item.id),
+            art: comicCover(item.poster),
+            malId: item.malId,
+            mal: item.mal,
+          }))
+          : [];
+        if (videoRes.status === 'rejected' && comicRes.status === 'rejected') {
+          setError(videoRes.reason instanceof Error ? videoRes.reason.message : 'Search is temporarily unavailable.');
+        } else {
+          setRemoteResults([...videos, ...comics]);
+          const videoKeys = videos.map(v => `${v.mediaType}:${v.mediaId}`);
+          if (videoKeys.length) {
+            request<{ facts: Record<string, { rating?: CatalogRating | null; mal?: number | null }> }>(`/api/catalog/facts?titles=${videoKeys.join(',')}`, { signal: task.signal })
+              .then(({ facts }) => {
+                if (task.signal.aborted || !facts) return;
+                setRemoteResults(current => current.map(entry => {
+                  if (entry.kind !== 'video') return entry;
+                  const info = facts[entry.key];
+                  return info ? { ...entry, rating: info.rating ?? entry.rating, mal: info.mal ?? entry.mal } : entry;
+                }));
+              }).catch(() => {});
+          }
+          const mangaIds = comics.flatMap(c => c.malId ? [String(c.malId)] : []);
+          if (mangaIds.length) {
+            request<{ ratings: Record<string, number> }>(`/api/mal/manga/batch?ids=${mangaIds.join(',')}`, { signal: task.signal })
+              .then(({ ratings }) => {
+                if (task.signal.aborted || !ratings) return;
+                setRemoteResults(current => current.map(entry => (
+                  entry.kind === 'comic' && entry.malId && ratings[String(entry.malId)]
+                    ? { ...entry, mal: ratings[String(entry.malId)] } : entry
+                )));
+              }).catch(() => {});
+          }
+        }
+      }).finally(() => { if (!task.signal.aborted) setPending(false); });
     }, 220);
     return () => { clearTimeout(timer); task.abort(); };
-  }, [open, query, attempt]);
+  }, [open, trimmed, attempt]);
 
   function onInput(value: string) {
     setQuery(value);
     setPending(Boolean(value.trim()));
     setSelected(-1);
-    setResults([]);
+    setRemoteResults([]);
     setError('');
   }
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (!query.trim()) return;
-    window.location.assign(webHref(`search=${encodeURIComponent(query.trim())}`));
+    if (!trimmed) return;
+    saveRecentSearch(trimmed);
+    navigate(searchHref(trimmed));
+    close();
+  }
+
+  function activateEntry(entry: SearchEntry) {
+    if (trimmed) saveRecentSearch(trimmed);
+    if (entry.kind === 'command') {
+      entry.run();
+      return;
+    }
+    navigate(entry.href);
     close();
   }
 
   function onKey(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === 'Enter' && results[selected] && !event.nativeEvent.isComposing) {
       event.preventDefault();
-      window.location.assign(titleHref(results[selected])); close();
+      activateEntry(results[selected]);
       return;
     }
     if (!results.length || !['ArrowDown', 'ArrowUp'].includes(event.key)) return;
@@ -251,24 +430,52 @@ function Search({ open, close, finalFocus }: { open: boolean; close: () => void;
   return <Dialog.Portal>
     <Dialog.Backdrop className="af-scrim" />
     <Dialog.Popup className="af-modal" initialFocus={input} finalFocus={finalFocus}>
-      <header className="af-section-head"><Dialog.Title>Search</Dialog.Title><Dialog.Close className="af-icon-button" aria-label="Close search"><Icon name="close" /></Dialog.Close></header>
+      <header className="af-section-head"><Dialog.Title>Search &amp; Commands</Dialog.Title><Dialog.Close className="af-icon-button" aria-label="Close search"><Icon name="close" /></Dialog.Close></header>
       <form onSubmit={submit}>
-        <label className="af-search-field"><Icon name="search" /><input ref={input} type="search" placeholder="Search movies and series" aria-label="Search movies and series" value={query}
+        <label className="af-search-field"><Icon name="search" /><input ref={input} type="search" placeholder="Search movies, TV, anime, and comics" aria-label="Search movies, TV, anime, and comics" value={query}
           role="combobox" aria-autocomplete="list" aria-expanded={results.length > 0} aria-controls="af-search-results"
           aria-activedescendant={results[selected] ? `af-search-${selected}` : undefined}
           onChange={event => onInput(event.target.value)} onKeyDown={onKey} /></label>
-        <p className="af-search-status" role="status">{error || (pending ? 'Searching…' : query.trim() && !results.length ? 'No titles found.' : '')}</p>
+        {!trimmed && recentSearches.length > 0 && <div className="af-recent-searches">
+          <div className="af-palette-head">
+            <span>Recent searches</span>
+            <button type="button" className="af-text-link" onClick={() => { try { localStorage.removeItem(recentSearchKey); } catch { /* ignore */ } setRecentSearches([]); }}>Clear</button>
+          </div>
+          <div className="af-recent-chips">
+            {recentSearches.map(term => (
+              <button key={term} type="button" className="af-chip-btn" onClick={() => onInput(term)}>{term}</button>
+            ))}
+          </div>
+        </div>}
+        <p className="af-search-status" role="status">{error || (pending ? 'Searching…' : trimmed && !results.length ? 'No titles found.' : '')}</p>
         <div role="listbox" id="af-search-results" aria-label="Matching titles" hidden={!results.length}>
-          {results.map((item, index) => <a role="option" aria-selected={index === selected} tabIndex={-1} id={`af-search-${index}`}
-            key={item.key} href={titleHref(item)} onClick={close} className="af-search-result">
-            <span className="af-result-art"><Artwork src={item.poster} fallback={<Icon name="film" />} /></span>
-            <span><strong>{item.title}</strong><small>{item.type === 'tv' ? 'TV series' : 'Movie'}{item.year ? ` · ${item.year}` : ''}</small></span>
-            <Icon name="right" />
-          </a>)}
+          {results.map((item, index) => item.kind === 'command' ? (
+            <button
+              type="button"
+              role="option"
+              aria-selected={index === selected}
+              tabIndex={-1}
+              id={`af-search-${index}`}
+              key={item.key}
+              onClick={() => activateEntry(item)}
+              className="af-search-result af-search-command"
+            >
+              <span className="af-result-art af-command-icon"><Icon name={item.icon} /></span>
+              <span><strong>{item.title}</strong><small className="af-search-result-meta">{item.subtitle}</small></span>
+              <Icon name="right" />
+            </button>
+          ) : (
+            <a role="option" aria-selected={index === selected} tabIndex={-1} id={`af-search-${index}`}
+              key={item.key} href={item.href} onClick={() => { if (trimmed) saveRecentSearch(trimmed); close(); }} className="af-search-result">
+              <span className="af-result-art"><Artwork src={item.art} fallback={<Icon name={item.kind === 'comic' || (item.kind === 'library' && item.isComic) ? 'book' : 'film'} />} /></span>
+              <span><strong>{item.title}</strong><small className="af-search-result-meta">{item.subtitle}{item.kind !== 'library' && <Score rating={item.kind === 'video' ? item.rating : undefined} mal={item.mal} />}</small></span>
+              <Icon name="right" />
+            </a>
+          ))}
         </div>
-        {query.trim() && <div className="af-actions af-all-results">
-          <button type="submit" className="af-button af-secondary">Search movies and TV</button>
-          <a href={webHref(`comics?q=${encodeURIComponent(query.trim())}`)} onClick={close} className="af-text-link">Search comics</a>
+        {trimmed && <div className="af-actions af-all-results">
+          <button type="submit" className="af-button af-secondary">See all results</button>
+          <a href={searchHref(trimmed, { type: 'comic' })} onClick={() => { saveRecentSearch(trimmed); close(); }} className="af-text-link">Comics only</a>
           {error && <button type="button" className="af-text-link" onClick={() => { setError(''); setPending(true); setAttempt(value => value + 1); }}>Retry suggestions</button>}
         </div>}
       </form>
@@ -279,6 +486,7 @@ function Search({ open, close, finalFocus }: { open: boolean; close: () => void;
 export function Header({ controls, route }: { controls: LibraryControls; route: string }) {
   const [search, setSearch] = useState(false);
   const [browse, setBrowse] = useState(false);
+  const [titleSection, setTitleSection] = useState<string>('');
   const searchTrigger = useRef<HTMLButtonElement>(null);
   const searchReturn = useRef<HTMLElement | null>(null);
   const searchNavigated = useRef(false);
@@ -287,9 +495,27 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
   const openSettings = useSettings();
   const path = route.split('?')[0];
   useEffect(() => {
+    setTitleSection('');
+    const onSection = (event: Event) => {
+      const detail = (event as CustomEvent<string>).detail;
+      if (typeof detail === 'string') setTitleSection(detail);
+    };
+    window.addEventListener('afterframe-section', onSection);
+    return () => window.removeEventListener('afterframe-section', onSection);
+  }, [path]);
+  const isNavCurrent = (link: string) => {
+    if (path === link) return true;
+    if (titleSection) return link === titleSection;
+    return (link === 'movies' && path.startsWith('movie/'))
+      || (link === 'tv' && path.startsWith('tv/'))
+      || (link === 'comics' && path.startsWith('comic/'));
+  };
+  useEffect(() => {
     const shortcut = (event: globalThis.KeyboardEvent) => {
       if (event.defaultPrevented || event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable=true]')) return;
-      if (event.key.toLowerCase() === 'k' && (event.metaKey || event.ctrlKey)) {
+      const isCmdK = event.key.toLowerCase() === 'k' && (event.metaKey || event.ctrlKey);
+      const isSlash = event.key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey;
+      if (isCmdK || isSlash) {
         event.preventDefault();
         if (search || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
         const current = document.activeElement;
@@ -299,21 +525,36 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
       }
     };
     window.addEventListener('keydown', shortcut);
-    return () => window.removeEventListener('keydown', shortcut);
+    const openSearchEvent = () => {
+      searchReturn.current = searchTrigger.current;
+      searchNavigated.current = false;
+      setSearch(true);
+    };
+    const openBrowseEvent = () => {
+      browseOpeningSettings.current = false;
+      setBrowse(true);
+    };
+    window.addEventListener('afterframe-open-search', openSearchEvent);
+    window.addEventListener('afterframe-open-browse', openBrowseEvent);
+    return () => {
+      window.removeEventListener('keydown', shortcut);
+      window.removeEventListener('afterframe-open-search', openSearchEvent);
+      window.removeEventListener('afterframe-open-browse', openBrowseEvent);
+    };
   }, [search]);
   return <header className="af-header">
-    <a className="af-brand" href="/#home"><img src="/art/favicon.svg" alt="" />afterframe</a>
+    <a className="af-brand" href={webHref('home')}><img src="/art/favicon.svg" alt="" />afterframe</a>
     <nav className="af-nav" aria-label="Main navigation">
-      <a href="/#home" aria-current={route === 'home' ? 'page' : undefined}>Home</a>
-      {pages.map(([label, link]) => <a href={webHref(link)} key={link} aria-current={path === link || (link === 'movies' && path.startsWith('movie/')) || (link === 'tv' && path.startsWith('tv/')) || (link === 'comics' && path.startsWith('comic/')) ? 'page' : undefined}>{label}</a>)}
+      <a href={webHref('home')} aria-current={route === 'home' ? 'page' : undefined}>Home</a>
+      {pages.map(([label, link]) => <a href={webHref(link)} key={link} aria-current={isNavCurrent(link) ? 'page' : undefined}>{label}</a>)}
     </nav>
     <div className="af-tools">
       <Dialog.Root open={search} onOpenChange={open => {
         if (open) { searchReturn.current = searchTrigger.current; searchNavigated.current = false; }
         setSearch(open);
       }}>
-        <Dialog.Trigger ref={searchTrigger} className="af-icon-button af-search-trigger" aria-label="Search" aria-keyshortcuts="Control+K Meta+K" title="Search (Ctrl or Command + K)"><Icon name="search" /><span>Search</span></Dialog.Trigger>
-        <Search open={search} close={() => { searchNavigated.current = true; setSearch(false); }}
+        <Dialog.Trigger ref={searchTrigger} className="af-icon-button af-search-trigger" aria-label="Search" aria-keyshortcuts="/ Control+K Meta+K" title="Search (/ or Ctrl/Command + K)"><Icon name="search" /><span>Search</span></Dialog.Trigger>
+        <Search open={search} controls={controls} close={() => { searchNavigated.current = true; setSearch(false); }}
           finalFocus={() => searchNavigated.current ? false : searchReturn.current?.isConnected ? searchReturn.current : searchTrigger.current} />
       </Dialog.Root>
       <a className="af-icon-button" href={webHref('watchlist')} aria-label="My Library"><Icon name="bookmark" /><span>Library</span></a>
@@ -339,4 +580,29 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
       </Dialog.Root>
     </div>
   </header>;
+}
+
+export function MobileNav({ route }: { route: string }) {
+  const path = route.split('?')[0];
+  const isHome = path === 'home' || path === 'main';
+  const isBrowse = ['movies', 'tv', 'anime', 'new', 'recommendations'].includes(path) || path.startsWith('movie/') || path.startsWith('tv/');
+  const isComics = path === 'comics' || path.startsWith('comic/');
+  const isLibrary = ['watchlist', 'watched', 'ratings', 'reading', 'history', 'notifications'].includes(path);
+  return <nav className="af-mobile-nav" aria-label="Mobile navigation">
+    <a href={webHref('home')} aria-current={isHome ? 'page' : undefined}>
+      <Icon name="home" /><span>Home</span>
+    </a>
+    <button type="button" aria-pressed={isBrowse} onClick={() => window.dispatchEvent(new Event('afterframe-open-browse'))}>
+      <Icon name="film" /><span>Browse</span>
+    </button>
+    <a href={webHref('comics')} aria-current={isComics ? 'page' : undefined}>
+      <Icon name="book" /><span>Comics</span>
+    </a>
+    <button type="button" onClick={() => window.dispatchEvent(new Event('afterframe-open-search'))}>
+      <Icon name="search" /><span>Search</span>
+    </button>
+    <a href={webHref('watchlist')} aria-current={isLibrary ? 'page' : undefined}>
+      <Icon name="bookmark" /><span>Library</span>
+    </a>
+  </nav>;
 }

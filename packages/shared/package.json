@@ -1,0 +1,41 @@
+{
+  "name": "@afterframe/shared",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./catalog": {
+      "types": "./src/catalog.d.ts",
+      "default": "./src/catalog.js"
+    },
+    "./comic-display": {
+      "types": "./src/comic-display.d.ts",
+      "default": "./src/comic-display.js"
+    },
+    "./comic-ids": {
+      "types": "./src/comic-ids.d.ts",
+      "default": "./src/comic-ids.js"
+    },
+    "./discover": {
+      "types": "./src/discover.d.ts",
+      "default": "./src/discover.js"
+    },
+    "./guest-storage": {
+      "types": "./src/guest-storage.d.ts",
+      "default": "./src/guest-storage.js"
+    },
+    "./library": {
+      "types": "./src/library.d.ts",
+      "default": "./src/library.js"
+    },
+    "./playback": {
+      "types": "./src/playback.d.ts",
+      "default": "./src/playback.js"
+    },
+    "./subtitles": {
+      "types": "./src/subtitles.d.ts",
+      "default": "./src/subtitles.js"
+    },
+    "./theme.css": "./src/theme.css"
+  }
+}

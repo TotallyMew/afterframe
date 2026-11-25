@@ -1,7 +1,7 @@
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
-watchPatterns = ["/Dockerfile", "/.dockerignore", "/railway.toml", "/package*.json", "/apps/**", "/afterframe/package.json", "/afterframe/public/**"]
+watchPatterns = ["/Dockerfile", "/.dockerignore", "/railway.toml", "/package*.json", "/packages/**", "/apps/**", "/afterframe/package.json", "/afterframe/public/**"]
 
 [deploy]
 healthcheckPath = "/api/health"

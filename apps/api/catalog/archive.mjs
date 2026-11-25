@@ -1,5 +1,5 @@
-import { archiveCatalog } from '../../../afterframe/public/catalog.js';
-import { archiveCategories, matchesCatalog } from '../../../afterframe/public/discover.js';
+import { archiveCatalog } from '@afterframe/shared/catalog';
+import { archiveCategories, matchesCatalog } from '@afterframe/shared/discover';
 
 export const archiveIdPattern = /^[a-z0-9][a-z0-9_.-]{0,99}$/i;
 const origin = 'https://archive.org';
@@ -74,7 +74,8 @@ function toTitle(document, group) {
   };
 }
 
-export function searchArchive({ group = 'all', query = '', page = 1, filters = {} }) {
+/** @param {{ group?: string; query?: string; page?: number; filters?: Record<string, any> }} [options] */
+export function searchArchive({ group = 'all', query = '', page = 1, filters = {} } = {}) {
   const scope = Object.hasOwn(collections, group) ? group : 'all';
   const words = query.normalize('NFKC').match(/[\p{L}\p{N}]+/gu)?.slice(0, 12) || [];
   if (query && !words.length) return { results: [], nextPage: null };
@@ -89,8 +90,8 @@ export function searchArchive({ group = 'all', query = '', page = 1, filters = {
     url.searchParams.append('sort[]', { newest: 'date desc', oldest: 'date asc' }[filters.sort] || 'downloads desc');
     url.searchParams.append('sort[]', 'identifier asc');
     const rows = 36;
-    url.searchParams.set('rows', rows);
-    url.searchParams.set('page', page);
+    url.searchParams.set('rows', String(rows));
+    url.searchParams.set('page', String(page));
     url.searchParams.set('output', 'json');
     const { response } = await fetchJson(url);
     if (!Array.isArray(response?.docs)) throw new Error('The Internet Archive search is temporarily unavailable.');

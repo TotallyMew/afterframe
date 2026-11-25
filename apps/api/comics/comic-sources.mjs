@@ -1,3 +1,5 @@
+import { fetchWithRetry } from '../http-client.mjs';
+
 const entities = { amp: '&', apos: "'", quot: '"', lt: '<', gt: '>', nbsp: ' ' };
 
 export function decodeHtml(value) {
@@ -36,10 +38,10 @@ export function seriesQueries(item, preferred = []) {
 }
 
 export async function sourceHtml(url, provider) {
-  const response = await fetch(url, {
+  const response = await fetchWithRetry(url, {
     headers: { Accept: 'text/html', 'User-Agent': 'Afterframe/1.0' },
-    redirect: 'error', signal: AbortSignal.timeout(7000),
-  });
+    redirect: 'error',
+  }, { timeoutMs: 7000, retries: 1, hostKey: provider, circuitThreshold: 4, circuitCooldownMs: 60_000 });
   if (!response.ok || !response.headers.get('content-type')?.startsWith('text/html')) {
     await response.body?.cancel();
     throw new Error(`${provider} is temporarily unavailable.`);

@@ -25,9 +25,24 @@ async function dbQuery(sql, values) {
   }
 }
 
+const memoryLimit = 600;
+
+function writeMemory(key, payload, expires) {
+  memory.delete(key);
+  if (memory.size >= memoryLimit) memory.delete(memory.keys().next().value);
+  memory.set(key, { payload, expires });
+}
+
 export function peekMetadata(key) {
   const saved = memory.get(key);
-  return saved?.expires > Date.now() ? saved.payload : undefined;
+  if (!saved || saved.expires <= Date.now()) return undefined;
+  memory.delete(key);
+  memory.set(key, saved);
+  return saved.payload;
+}
+
+export function closeMetadataPool() {
+  return pool?.end();
 }
 
 function persistMetadata(key, payload, expires) {
@@ -43,21 +58,23 @@ function persistMetadata(key, payload, expires) {
 
 export async function cacheMetadata(key, ttl, load, refresh = false) {
   const saved = memory.get(key);
-  if (!refresh && saved?.expires > Date.now()) return saved.payload;
+  if (!refresh && saved?.expires > Date.now()) {
+    memory.delete(key);
+    memory.set(key, saved);
+    return saved.payload;
+  }
   if (requests.has(key)) return requests.get(key);
   const pending = (async () => {
     const result = await dbQuery('SELECT payload, expires_at FROM afterframe_metadata WHERE cache_key = $1', [key]);
     const stored = result?.rows[0];
     if (!refresh && stored?.expires_at > new Date()) {
-      if (memory.size >= 600) memory.delete(memory.keys().next().value);
-      memory.set(key, { payload: stored.payload, expires: stored.expires_at.getTime() });
+      writeMemory(key, stored.payload, stored.expires_at.getTime());
       return stored.payload;
     }
     try {
       const payload = await load();
       const expires = Date.now() + ttl;
-      if (memory.size >= 600) memory.delete(memory.keys().next().value);
-      memory.set(key, { payload, expires });
+      writeMemory(key, payload, expires);
       persistMetadata(key, payload, expires);
       return payload;
     } catch (error) {
@@ -91,7 +108,7 @@ export async function imdbRating(id, strict = false) {
 
 function requestOmdb(key, id) {
   const url = new URL('https://www.omdbapi.com/');
-  url.search = new URLSearchParams({ apikey: key, i: id });
+  url.search = new URLSearchParams({ apikey: key, i: id }).toString();
   return fetch(url, { signal: AbortSignal.timeout(4000) });
 }
 
@@ -139,7 +156,7 @@ export async function cachedRatings(keys) {
 }
 
 export function refreshMetadataPeriodically(refreshTitle) {
-  if (!pool) return;
+  if (!pool) return () => {};
   const timer = setInterval(async () => {
     const result = await dbQuery(`SELECT cache_key FROM afterframe_metadata
       WHERE (cache_key LIKE 'title:%' OR cache_key LIKE 'imdb:%')
@@ -151,4 +168,5 @@ export function refreshMetadataPeriodically(refreshTitle) {
     }
   }, 30 * 60000);
   timer.unref();
+  return () => clearInterval(timer);
 }

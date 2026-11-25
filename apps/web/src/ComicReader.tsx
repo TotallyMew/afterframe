@@ -1,25 +1,30 @@
-import { comicEditionCredit, comicLanguage } from '../../../afterframe/public/comic-display.js';
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react';
-import { request, routeWithParams, webHref, type Comic } from './catalog';
+import { comicEditionCredit, comicLanguage, groupComicEditions } from '@afterframe/shared/comic-display';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { navigate, request, routeWithParams, webHref, type Comic } from './catalog';
 import { ActionLink, Icon, Loading } from './components';
 import type { LibraryControls } from './library';
 import './comic-reader.css';
 
 type ReaderComic = Comic & { longStrip?: boolean };
-type Chapter = { id: string; title?: string; label: string; language: string; groups?: { name?: string }[]; source?: string };
+type Chapter = { id: string; title?: string; label: string; number?: string | number; language: string; groups?: { name?: string }[]; source?: string };
 type ChapterContent = { chapter: Chapter; pages: string[]; transcript?: { pages?: string[]; source?: string } };
 type Neighbor = { entry: Chapter; page: number };
 type ChapterNavigation = { previous: Neighbor | null; next: Neighbor | null };
 type ReaderData = ChapterContent & { item: ReaderComic };
-type Layout = 'pages' | 'scroll';
-type Fit = 'page' | 'width';
+type Layout = 'single' | 'double' | 'scroll';
+type Direction = 'rtl' | 'ltr';
+type Fit = 'page' | 'width' | 'height' | 'original';
 
-function readOption(key: string) {
-  try { return JSON.parse(localStorage.getItem(`afterframe.${key}`) || 'null') as unknown; }
-  catch { return null; }
+function readOption<T>(key: string, fallback: T): T {
+  try {
+    const val = JSON.parse(localStorage.getItem(`afterframe.${key}`) || 'null');
+    return val === null ? fallback : (val as T);
+  } catch {
+    return fallback;
+  }
 }
 
-function writeOption(key: string, value: string) {
+function writeOption(key: string, value: unknown) {
   try { localStorage.setItem(`afterframe.${key}`, JSON.stringify(value)); }
   catch { /* The setting still works in the open reader. */ }
 }
@@ -61,7 +66,7 @@ export function ComicReader({ id, chapterId, query, controls }: { id: string; ch
       .then(([item, chapter]) => {
         if (options.signal.aborted) return;
         if (item.type !== 'comic' || typeof item.title !== 'string' || typeof chapter.chapter?.label !== 'string' ||
-            typeof chapter.chapter.language !== 'string' || !Array.isArray(chapter.pages)) {
+          typeof chapter.chapter.language !== 'string' || !Array.isArray(chapter.pages)) {
           throw new Error('The chapter source returned an incomplete chapter.');
         }
         document.title = `${chapter.chapter.label} · ${item.title} · Afterframe`;
@@ -72,27 +77,19 @@ export function ComicReader({ id, chapterId, query, controls }: { id: string; ch
   }, [id, chapterId, attempt]);
 
   const backHref = chaptersHref(id, data?.chapter.language || params.get('lang') || '', listPage, chapterId, back);
-  if (!data) return <section className="af-wrap af-comic-reader">
+  if (!data) return <section className="af-wrap af-directory">
     <a className="af-text-link" href={backHref}><Icon name="left" /> Back to chapters</a>
     <h1>{error ? 'Chapter unavailable' : 'Comic reader'}</h1>
     {error ? <p className="af-state" role="alert">{error} <button className="af-text-link" type="button" onClick={retry}>Retry chapter</button></p>
       : <Loading label="Loading chapter…" shape="hero" />}
   </section>;
-  if (!data.pages.length) return <section className="af-wrap af-comic-reader">
+  if (!data.pages.length) return <section className="af-wrap af-directory">
     <a className="af-text-link" href={backHref}><Icon name="left" /> {data.item.title}</a>
     <h1>{data.chapter.label}</h1>
     <p className="af-state" role="status">This edition has no pages available.</p>
     <ActionLink href={backHref}>Back to chapters</ActionLink>
   </section>;
   return <ChapterReader key={`${chapterId}:${position}`} data={data} listPage={listPage} requestedPage={position} controls={controls} back={back} />;
-}
-
-function ChapterLinks({ id, neighbors, back, label }: { id: string; neighbors: ChapterNavigation; back: string; label: string }) {
-  if (!neighbors.previous && !neighbors.next) return null;
-  return <nav className="af-actions af-reader-chapter-links" aria-label={label}>
-    {neighbors.previous && <ActionLink href={neighboringHref(id, neighbors.previous, back)}><Icon name="left" /> Previous chapter</ActionLink>}
-    {neighbors.next && <ActionLink href={neighboringHref(id, neighbors.next, back)}>Next chapter <Icon name="right" /></ActionLink>}
-  </nav>;
 }
 
 function Transcript({ transcript, count }: { transcript: ChapterContent['transcript']; count: number }) {
@@ -113,7 +110,6 @@ function ReaderImage({ page, src, visible, described, onLoad }: { page: number; 
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  // Retrying the same proxy address without its cached failure lets the server obtain a fresh manifest.
   const address = src && attempt ? `${src}${src.includes('?') ? '&' : '?'}retry=${attempt}` : src;
   return <div className="af-reader-page" data-page-number={page} data-page-loaded={loaded || undefined}>
     {failed || !address ? <div className="af-reader-page-state" role="status">
@@ -129,9 +125,18 @@ function ReaderImage({ page, src, visible, described, onLoad }: { page: number; 
 }
 
 function ExpandIcon({ expanded }: { expanded: boolean }) {
-  return <svg className="af-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+  return <svg className="af-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d={expanded ? 'M4 9h5V4m6 0v5h5m0 6h-5v5m-6 0v-5H4' : 'M9 4H4v5m16 0V4h-5m0 16h5v-5M4 15v5h5'} />
   </svg>;
+}
+
+function doublePageSpread(page: number, total: number, offsetCover: boolean): number[] {
+  if (offsetCover && page === 1) return [1];
+  const base = offsetCover
+    ? (page % 2 === 0 ? page : page - 1)
+    : (page % 2 === 1 ? page : page - 1);
+  const first = Math.max(1, base);
+  return first + 1 <= total ? [first, first + 1] : [first];
 }
 
 function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, requestedPage, controls, back }: {
@@ -139,46 +144,70 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
 }) {
   const recent = controls.library.reading[item.key];
   const total = pages.length;
-  const bounded = (page: number) => Math.max(1, Math.min(total, page));
+  const bounded = (p: number) => Math.max(1, Math.min(total, p));
   const start = bounded(requestedPage || (recent?.chapter === chapter.id && controls.ready ? recent.page : 1));
   const [page, setPage] = useState(start);
   const [loaded, setLoaded] = useState<Set<number>>(() => new Set());
   const [layout, setLayout] = useState<Layout>(() => {
-    const saved = readOption('comicLayout');
-    return saved === 'scroll' || saved === 'pages' ? saved : item.longStrip ? 'scroll' : 'pages';
+    const saved = readOption<string>('comicLayout', '');
+    if (saved === 'single' || saved === 'double' || saved === 'scroll') return saved;
+    if (saved === 'pages') return 'single';
+    return item.longStrip || item.format === 'manhwa' ? 'scroll' : 'single';
   });
-  const [fit, setFit] = useState<Fit>(() => readOption('comicFit') === 'width' ? 'width' : 'page');
+  const [direction, setDirection] = useState<Direction>(() => {
+    const saved = readOption<string>('comicDirection', '');
+    if (saved === 'rtl' || saved === 'ltr') return saved;
+    return item.format === 'manga' ? 'rtl' : 'ltr';
+  });
+  const [fit, setFit] = useState<Fit>(() => {
+    const saved = readOption<string>('comicFit', '');
+    if (saved === 'page' || saved === 'width' || saved === 'height' || saved === 'original') return saved;
+    return 'page';
+  });
+  const [offsetCover, setOffsetCover] = useState<boolean>(() => readOption('comicOffsetCover', true));
+  const [seamlessStrip, setSeamlessStrip] = useState<boolean>(() => readOption('comicSeamless', item.format === 'manhwa' || Boolean(item.longStrip)));
+  const [showProgressBar, setShowProgressBar] = useState<boolean>(() => readOption('comicShowProgress', true));
+  const [oledMode, setOledMode] = useState<boolean>(() => readOption('comicOled', false));
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const dragStateRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
+  const prefetchedNextRef = useRef<string>('');
+  const [hudVisible, setHudVisible] = useState(true);
+  const [pinHud, setPinHud] = useState<boolean>(() => readOption('comicPinHud', true));
+  const [drawerTab, setDrawerTab] = useState<'settings' | 'chapters' | null>(null);
   const [nativeFullscreen, setNativeFullscreen] = useState(false);
-  const [expanded, setExpanded] = useState(false);
   const [neighbors, setNeighbors] = useState<ChapterNavigation | null>();
+  const [chapterList, setChapterList] = useState<Chapter[]>([]);
+  const [chapterFilter, setChapterFilter] = useState('');
   const [navError, setNavError] = useState('');
   const [navigationAttempt, setNavigationAttempt] = useState(0);
   const [resumeAttempt, setResumeAttempt] = useState(0);
-  const [alignmentRequest, realign] = useState(0);
+
   const resumeResolved = useRef(Boolean(requestedPage || controls.state !== 'loading'));
   const pendingAlign = useRef(start > 1 ? start : 0);
   const lastAttempt = useRef<{ accountId: number | null; page: number; retry: number } | undefined>(undefined);
-  const viewer = useRef<HTMLElement>(null);
-  const toolbar = useRef<HTMLDivElement>(null);
-  const stage = useRef<HTMLDivElement>(null);
-  const expandButton = useRef<HTMLButtonElement>(null);
-  const dialog = useRef<HTMLDialogElement>(null);
-  const fullscreen = nativeFullscreen || expanded;
+  const shellRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const listHref = chaptersHref(item.id, chapter.language, listPage, chapter.id, back);
   const mutationKey = `reading/${item.key}`;
   const saveProblem = controls.problems[mutationKey];
 
+  // Fetch all chapters & neighbors so chapter search works across the whole comic
   useEffect(() => {
     const controller = new AbortController();
-    const params = new URLSearchParams({ lang: chapter.language, page: String(listPage), chapter: chapter.id });
-    request<{ neighbors?: ChapterNavigation | null; partial?: boolean }>(`/api/comics/${item.id}/chapters?${params}`, { signal: controller.signal })
+    const params = new URLSearchParams({ lang: chapter.language, chapter: chapter.id, all: '1' });
+    request<{ results?: Chapter[]; neighbors?: ChapterNavigation | null; partial?: boolean }>(`/api/comics/${item.id}/chapters?${params}`, { signal: controller.signal })
       .then(result => {
         if (controller.signal.aborted) return;
         setNeighbors(result.neighbors ?? null);
+        if (Array.isArray(result.results)) {
+          const primary = groupComicEditions(result.results).map(group => group.find(entry => entry.id === chapter.id) ?? group[0]);
+          setChapterList(primary);
+        }
         if (result.partial) setNavError('Some chapter sources are unavailable.');
       }).catch(() => { if (!controller.signal.aborted) setNavError('Chapter navigation could not load.'); });
     return () => controller.abort();
-  }, [item.id, chapter.id, chapter.language, listPage, navigationAttempt]);
+  }, [item.id, chapter.id, chapter.language, navigationAttempt]);
 
   useEffect(() => {
     if (!resumeResolved.current && controls.state !== 'loading') {
@@ -188,6 +217,7 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
     }
   }, [controls.state, start]);
 
+  // Save reading position
   useEffect(() => {
     if (!controls.ready || controls.replaying || !resumeResolved.current || !loaded.has(page) || (recent?.chapter === chapter.id && recent.page === page)) return;
     const accountId = controls.account?.id ?? null;
@@ -201,65 +231,78 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
     });
   }, [controls, loaded, page, recent, chapter, item, listPage, resumeAttempt]);
 
-  useLayoutEffect(() => {
-    const modal = dialog.current;
-    if (!modal) return;
-    if (expanded && !modal.open) modal.showModal();
-    if (!expanded && modal.open) { modal.close(); expandButton.current?.focus({ preventScroll: true }); }
-  }, [expanded]);
+  // Preload next 2 pages silently for snappy page turns, plus next chapter's first page near chapter end
+  useEffect(() => {
+    const preload: HTMLImageElement[] = [];
+    if (layout !== 'scroll') {
+      for (const offset of [1, 2]) {
+        const url = pages[page - 1 + offset];
+        if (!url) continue;
+        const img = new Image();
+        img.src = url;
+        preload.push(img);
+      }
+    }
+    const nextChapter = neighbors?.next?.entry;
+    if (nextChapter && page >= Math.max(1, total - 1) && prefetchedNextRef.current !== nextChapter.id) {
+      prefetchedNextRef.current = nextChapter.id;
+      const controller = new AbortController();
+      request<ChapterContent>(`/api/comics/${item.id}/chapters/${nextChapter.id}`, { signal: controller.signal })
+        .then(nextData => {
+          if (controller.signal.aborted || !nextData.pages?.[0]) return;
+          const img = new Image();
+          img.src = nextData.pages[0];
+          preload.push(img);
+        }).catch(() => {});
+      return () => { controller.abort(); preload.length = 0; };
+    }
+    return () => { preload.length = 0; };
+  }, [page, pages, layout, total, neighbors?.next?.entry, item.id]);
+
+  // Reset zoom/pan when changing page or layout
+  useEffect(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, [page, layout]);
+
+  const adjustZoom = (next: number) => {
+    const clamped = Math.round(Math.max(1, Math.min(3, next)) * 100) / 100;
+    setZoom(clamped);
+    if (clamped <= 1) setPan({ x: 0, y: 0 });
+  };
 
   useEffect(() => {
-    const change = () => {
-      pendingAlign.current = page;
-      setNativeFullscreen(document.fullscreenElement === viewer.current);
-    };
-    document.addEventListener('fullscreenchange', change);
-    return () => document.removeEventListener('fullscreenchange', change);
-  }, [page]);
-
-  useLayoutEffect(() => {
-    const element = toolbar.current;
-    if (!element || !viewer.current) return;
-    const container = viewer.current;
-    const measure = () => {
-      container.style.setProperty('--reader-toolbar', `${Math.ceil(element.getBoundingClientRect().height)}px`);
-    };
-    const observer = new ResizeObserver(measure);
-    measure();
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [expanded]);
+    const onFs = () => setNativeFullscreen(document.fullscreenElement === shellRef.current);
+    document.addEventListener('fullscreenchange', onFs);
+    return () => document.removeEventListener('fullscreenchange', onFs);
+  }, []);
 
   useLayoutEffect(() => {
     const target = pendingAlign.current;
-    if (!target || !stage.current) return;
+    if (!target || !stageRef.current || layout !== 'scroll') return;
     const tick = requestAnimationFrame(() => {
-      const slot = stage.current?.querySelector(`[data-page-number="${target}"]`);
-      if (!slot || !toolbar.current) return;
-      const scroller = expanded ? dialog.current : nativeFullscreen ? viewer.current : window;
-      const header = fullscreen ? 0 : document.querySelector('.af-header')?.getBoundingClientRect().height ?? 0;
-      const offset = getComputedStyle(toolbar.current).position === 'sticky' ? toolbar.current.offsetHeight + header : header;
-      scroller?.scrollBy({ top: slot.getBoundingClientRect().top - offset, behavior: 'instant' });
+      const slot = stageRef.current?.querySelector(`[data-page-number="${target}"]`);
+      if (slot) slot.scrollIntoView({ block: 'start', behavior: 'instant' });
       pendingAlign.current = 0;
     });
     return () => cancelAnimationFrame(tick);
-  }, [page, fit, layout, expanded, nativeFullscreen, fullscreen, alignmentRequest]);
+  }, [page, layout]);
 
+  // Track active page while scrolling in Long Strip mode
   useEffect(() => {
     if (layout !== 'scroll') return;
-    const scroller = expanded ? dialog.current : nativeFullscreen ? viewer.current : window;
     let timer: number | undefined;
     const track = () => {
       clearTimeout(timer);
       timer = window.setTimeout(() => {
-        const marker = Math.min(window.innerHeight - 1, (toolbar.current?.getBoundingClientRect().bottom ?? 0) + 24);
-        const slots = stage.current?.children;
-        if (!slots || pendingAlign.current || marker < 0) return;
+        const slots = stageRef.current?.children;
+        if (!slots || pendingAlign.current) return;
+        const marker = Math.min(window.innerHeight * 0.35, 220);
         let low = 0, high = slots.length;
         while (low < high) {
-          const middle = Math.floor((low + high) / 2);
-          if (slots[middle].getBoundingClientRect().bottom > marker) high = middle;
-          else low = middle + 1;
+          const mid = Math.floor((low + high) / 2);
+          if (slots[mid].getBoundingClientRect().bottom > marker) high = mid;
+          else low = mid + 1;
         }
         if (slots[low] && slots[low].getBoundingClientRect().top < window.innerHeight) {
           resumeResolved.current = true;
@@ -267,100 +310,369 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
         }
       }, 120);
     };
-    scroller?.addEventListener('scroll', track, { passive: true });
-    return () => { scroller?.removeEventListener('scroll', track); clearTimeout(timer); };
-  }, [layout, nativeFullscreen, expanded]);
+    window.addEventListener('scroll', track, { passive: true });
+    return () => { window.removeEventListener('scroll', track); clearTimeout(timer); };
+  }, [layout]);
 
-  function jump(next: number) {
-    if (next < 1 || next > total) return;
+  const visiblePages = useMemo(() => {
+    if (layout === 'scroll') return pages.map((_, idx) => idx + 1);
+    if (layout === 'double') return doublePageSpread(page, total, offsetCover);
+    return [page];
+  }, [layout, page, total, offsetCover, pages]);
+
+  const stepForward = () => {
+    const step = layout === 'double' ? visiblePages.length : 1;
+    const next = visiblePages[visiblePages.length - 1] + 1;
+    if (next <= total) {
+      resumeResolved.current = true;
+      setPage(next);
+      window.scrollTo(0, 0);
+    } else if (neighbors?.next) {
+      navigate(neighboringHref(item.id, neighbors.next, back));
+    } else if (page + step <= total) {
+      setPage(bounded(page + step));
+    }
+  };
+
+  const stepBackward = () => {
+    if (layout === 'double') {
+      const first = visiblePages[0];
+      if (first > 1) {
+        resumeResolved.current = true;
+        setPage(Math.max(1, first - (offsetCover && first === 2 ? 1 : 2)));
+        window.scrollTo(0, 0);
+        return;
+      }
+    } else if (page > 1) {
+      resumeResolved.current = true;
+      setPage(page - 1);
+      window.scrollTo(0, 0);
+      return;
+    }
+    if (neighbors?.previous) {
+      navigate(neighboringHref(item.id, neighbors.previous, back));
+    }
+  };
+
+  const jump = (next: number) => {
+    const clamped = bounded(next);
     resumeResolved.current = true;
-    pendingAlign.current = next;
-    if (next === page) realign(value => value + 1);
-    else setPage(next);
-  }
+    pendingAlign.current = clamped;
+    setPage(clamped);
+    if (layout !== 'scroll') window.scrollTo(0, 0);
+  };
 
-  async function toggleFullscreen() {
-    pendingAlign.current = page;
-    if (expanded) { setExpanded(false); return; }
+  const toggleFullscreen = async () => {
     if (nativeFullscreen) { await document.exitFullscreen().catch(() => {}); return; }
-    const container = viewer.current;
-    if (container && document.fullscreenEnabled) {
-      try { await container.requestFullscreen(); return; } catch { /* The browser may restrict native fullscreen. */ }
+    if (shellRef.current && document.fullscreenEnabled) {
+      await shellRef.current.requestFullscreen().catch(() => {});
     }
-    if (container?.isConnected) setExpanded(true);
-  }
+  };
 
-  function shortcuts(event: KeyboardEvent<HTMLElement>) {
+  const shortcuts = (event: KeyboardEvent<HTMLElement>) => {
     const target = event.target as HTMLElement;
-    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
-        target.closest('input, select, textarea, [contenteditable]') || document.querySelector('dialog[open]:not(.af-reader-expanded)')) return;
-    if (event.key.toLowerCase() === 'f' && viewer.current?.contains(target)) {
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey ||
+      target.closest('input, select, textarea, [contenteditable]')) return;
+    const key = event.key.toLowerCase();
+    if (key === 'escape' && drawerTab) { event.preventDefault(); setDrawerTab(null); return; }
+    if (key === 'f') { event.preventDefault(); void toggleFullscreen(); return; }
+    if (key === 'm') { event.preventDefault(); setHudVisible(v => !v); return; }
+    if (key === 'g') { event.preventDefault(); setDrawerTab(current => current === 'chapters' ? null : 'chapters'); return; }
+    if (key === 's') { event.preventDefault(); setDrawerTab(current => current === 'settings' ? null : 'settings'); return; }
+    if (key === '+' || key === '=') { event.preventDefault(); adjustZoom(zoom + 0.25); return; }
+    if (key === '-') { event.preventDefault(); adjustZoom(zoom - 0.25); return; }
+    if (key === '0') { event.preventDefault(); adjustZoom(1); return; }
+    if (key === 'd') {
       event.preventDefault();
-      void toggleFullscreen();
-    } else if (layout === 'pages' && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
-      event.preventDefault();
-      jump(page + (event.key === 'ArrowLeft' ? -1 : 1));
+      setDirection(curr => {
+        const next = curr === 'rtl' ? 'ltr' : 'rtl';
+        writeOption('comicDirection', next);
+        return next;
+      });
+      return;
     }
-  }
+    if (layout !== 'scroll' && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+      event.preventDefault();
+      const leftPressed = event.key === 'ArrowLeft';
+      if ((direction === 'rtl' && leftPressed) || (direction === 'ltr' && !leftPressed)) stepForward();
+      else stepBackward();
+    }
+  };
 
-  function markLoaded(number: number) {
-    setLoaded(current => current.has(number) ? current : new Set([...current, number]));
-  }
+  const markLoaded = (num: number) => {
+    setLoaded(current => current.has(num) ? current : new Set([...current, num]));
+  };
 
-  const fullscreenLabel = fullscreen ? 'Exit fullscreen' : 'Fullscreen';
-  const view = <section className="af-reader-view" tabIndex={0} aria-label="Chapter reader" ref={viewer}>
-    <div className="af-reader-toolbar" ref={toolbar}>
-      <div className="af-reader-paging">
-        <button className="af-icon-button" type="button" disabled={page <= 1} aria-label="Previous page" onClick={() => jump(page - 1)}><Icon name="left" /></button>
-        <label><span>Page</span><select className="af-select" value={page} onChange={event => jump(Number(event.currentTarget.value))}>
-          {pages.map((_, index) => <option value={index + 1} key={index}>{index + 1} / {total}</option>)}
-        </select></label>
-        <button className="af-icon-button" type="button" disabled={page >= total} aria-label="Next page" onClick={() => jump(page + 1)}><Icon name="right" /></button>
-      </div>
-      <div className="af-reader-options">
-        <label><span>Layout</span><select className="af-select" value={layout} onChange={event => {
-          const value = event.currentTarget.value as Layout;
-          pendingAlign.current = page;
-          writeOption('comicLayout', value);
-          setLayout(value);
-        }}><option value="pages">Single page</option><option value="scroll">Vertical scroll</option></select></label>
-        {layout === 'pages' && <label><span>Fit</span><select className="af-select" value={fit} onChange={event => {
-          const value = event.currentTarget.value as Fit;
-          pendingAlign.current = page;
-          writeOption('comicFit', value);
-          setFit(value);
-        }}><option value="page">Whole page</option><option value="width">Width</option></select></label>}
-        <button ref={expandButton} type="button" className="af-icon-button" autoFocus={expanded} aria-label={fullscreenLabel} title={fullscreenLabel} onClick={() => void toggleFullscreen()}><ExpandIcon expanded={fullscreen} /></button>
-      </div>
-    </div>
-    <p className="sr-only" role="status">Page {page} of {total}</p>
-    <div className="af-reader-pages" data-layout={layout} data-fit={fit} ref={stage}>
-      {(layout === 'scroll' ? pages.map((_, index) => index + 1) : [page]).map(number => {
-        const text = transcript?.pages?.[number - 1];
-        return <ReaderImage key={number} page={number} src={pages[number - 1]}
-          visible={number === page} described={typeof text === 'string' && Boolean(text.trim())} onLoad={markLoaded} />;
-      })}
-    </div>
-  </section>;
+  const pct = total > 1 ? `${((page - 1) / (total - 1)) * 100}%` : '100%';
   const credit = comicEditionCredit(chapter);
-  return <section className="af-wrap af-comic-reader" onKeyDown={shortcuts}>
-    <header className="af-reader-heading">
-      <div><a className="af-text-link" href={listHref}><Icon name="left" /> {item.title}</a>
-        <h1>{chapter.label}{chapter.title ? ` · ${chapter.title}` : ''}</h1>
-        <p className="af-meta">{comicLanguage(chapter.language)} · {total} {total === 1 ? 'page' : 'pages'}{credit ? ` · ${credit}` : ''}</p></div>
-      {neighbors && <ChapterLinks id={item.id} neighbors={neighbors} back={back} label="Chapter navigation" />}
-    </header>
-    {navError ? <p className="af-meta" role="status">{navError} <button className="af-text-link" type="button" onClick={() => { setNavError(''); setNavigationAttempt(value => value + 1); }}>Retry chapter navigation</button></p>
-      : neighbors === undefined && <p className="sr-only" role="status">Loading chapter navigation…</p>}
-    <Transcript transcript={transcript} count={total} />
-    {saveProblem && <p className="af-state" role="alert">Reading position could not be saved. {saveProblem} <button className="af-text-link" type="button" disabled={!controls.ready || controls.replaying} onClick={() => setResumeAttempt(value => value + 1)}>Retry saving position</button></p>}
-    {!expanded && view}
-    <dialog className="af-reader-expanded" aria-label="Fullscreen chapter reader" ref={dialog} onCancel={event => { event.preventDefault(); pendingAlign.current = page; setExpanded(false); }}>
-      {expanded && view}
-    </dialog>
-    <footer className="af-reader-end">
-      <a className="af-text-link" href={listHref}><Icon name="book" /> All chapters</a>
-      {neighbors && <ChapterLinks id={item.id} neighbors={neighbors} back={back} label="Chapter navigation after reading" />}
-    </footer>
+  const hudShown = pinHud || hudVisible || drawerTab !== null;
+  const pageIndicator = layout === 'double' && visiblePages.length === 2
+    ? `${visiblePages[0]}–${visiblePages[1]} / ${total}`
+    : `${page} / ${total}`;
+
+  return <section className="af-comic-reader" data-oled={oledMode || undefined} onKeyDown={shortcuts}>
+    <div className={`af-reader-shell ${hudShown ? '' : 'is-hud-hidden'}`} ref={shellRef} tabIndex={0} aria-label="Chapter reader">
+      {/* Top HUD Bar */}
+      <header className="af-reader-topbar">
+        <div className="af-reader-topbar-left">
+          <a className="af-reader-hud-btn" href={listHref} aria-label={`Back to ${item.title}`}>
+            <Icon name="left" /><span>{item.title}</span>
+          </a>
+          <div className="af-reader-title-group">
+            <h1>{chapter.label}{chapter.title ? ` · ${chapter.title}` : ''}</h1>
+            <p className="af-meta">{comicLanguage(chapter.language)} · {total} {total === 1 ? 'page' : 'pages'}{credit ? ` · ${credit}` : ''}</p>
+          </div>
+        </div>
+        <div className="af-reader-topbar-right">
+          <button type="button" className="af-reader-hud-btn" aria-expanded={drawerTab === 'chapters'} onClick={() => setDrawerTab(t => t === 'chapters' ? null : 'chapters')}>
+            <Icon name="book" /><span>Chapters</span>
+          </button>
+          <button type="button" className="af-reader-hud-btn" aria-expanded={drawerTab === 'settings'} onClick={() => setDrawerTab(t => t === 'settings' ? null : 'settings')}>
+            <Icon name="settings" /><span>Settings</span>
+          </button>
+          <button type="button" className="af-reader-hud-btn" aria-label={nativeFullscreen ? 'Exit fullscreen' : 'Fullscreen'} onClick={() => void toggleFullscreen()}>
+            <ExpandIcon expanded={nativeFullscreen} />
+          </button>
+        </div>
+      </header>
+
+      {/* Main Reading Stage */}
+      <div className="af-reader-stage">
+        <p className="sr-only" role="status">Page {page} of {total}</p>
+        {saveProblem && <p className="af-state" role="alert">Reading position could not be saved. {saveProblem} <button className="af-text-link" type="button" disabled={!controls.ready || controls.replaying} onClick={() => setResumeAttempt(v => v + 1)}>Retry saving position</button></p>}
+
+        <div
+          className={`af-reader-pages ${zoom > 1 ? 'is-zoomed' : ''}`}
+          data-layout={layout}
+          data-fit={fit}
+          data-direction={direction}
+          data-seamless={seamlessStrip || undefined}
+          style={zoom > 1 ? { transform: `translate3d(${pan.x}px, ${pan.y}px, 0) scale(${zoom})` } : undefined}
+          onDoubleClick={() => adjustZoom(zoom > 1 ? 1 : 2)}
+          onPointerDown={event => {
+            if (zoom <= 1) return;
+            dragStateRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: pan.x, originY: pan.y };
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerMove={event => {
+            const drag = dragStateRef.current;
+            if (!drag || drag.pointerId !== event.pointerId) return;
+            setPan({ x: drag.originX + (event.clientX - drag.startX), y: drag.originY + (event.clientY - drag.startY) });
+          }}
+          onPointerUp={event => {
+            if (dragStateRef.current?.pointerId === event.pointerId) dragStateRef.current = null;
+          }}
+          onPointerCancel={() => { dragStateRef.current = null; }}
+          ref={stageRef}
+        >
+          {visiblePages.map(num => {
+            const text = transcript?.pages?.[num - 1];
+            return <ReaderImage key={num} page={num} src={pages[num - 1]}
+              visible={num === page || visiblePages.includes(num)}
+              described={typeof text === 'string' && Boolean(text.trim())}
+              onLoad={markLoaded} />;
+          })}
+        </div>
+
+        {zoom > 1 && <button type="button" className="af-reader-zoom-reset" onClick={() => adjustZoom(1)} aria-label="Reset zoom">
+          {Math.round(zoom * 100)}% · Reset zoom
+        </button>}
+
+        {/* MangaFire-style Tap / Click Zones (disabled while zoomed so panning works cleanly) */}
+        {zoom <= 1 && (layout !== 'scroll' ? <div className="af-reader-zones">
+          <button type="button" tabIndex={-1} className="af-reader-zone af-reader-zone-prev"
+            aria-label={direction === 'rtl' ? 'Tap zone: next page' : 'Tap zone: previous page'}
+            onClick={direction === 'rtl' ? stepForward : stepBackward} />
+          <button type="button" tabIndex={-1} className="af-reader-zone af-reader-zone-center"
+            aria-label={hudShown ? 'Tap zone: hide reader controls' : 'Tap zone: show reader controls'}
+            onClick={() => { if (pinHud) { setPinHud(false); writeOption('comicPinHud', false); setHudVisible(false); } else setHudVisible(v => !v); }} />
+          <button type="button" tabIndex={-1} className="af-reader-zone af-reader-zone-next"
+            aria-label={direction === 'rtl' ? 'Tap zone: previous page' : 'Tap zone: next page'}
+            onClick={direction === 'rtl' ? stepBackward : stepForward} />
+        </div> : <div className="af-reader-zones" style={{ pointerEvents: 'none' }}>
+          <div />
+          <button type="button" tabIndex={-1} className="af-reader-zone af-reader-zone-center"
+            aria-label={hudShown ? 'Tap zone: hide reader controls' : 'Tap zone: show reader controls'}
+            onClick={() => { if (pinHud) { setPinHud(false); writeOption('comicPinHud', false); setHudVisible(false); } else setHudVisible(v => !v); }} />
+          <div />
+        </div>)}
+      </div>
+
+      {/* Bottom Interactive Progress Bar HUD */}
+      {showProgressBar && <div className="af-reader-bottombar" role="region" aria-label="Reading progress">
+        <div className="af-reader-scrubber-row">
+          {neighbors?.previous
+            ? <a className="af-reader-hud-btn" href={neighboringHref(item.id, neighbors.previous, back)} title="Previous chapter"><Icon name="left" /><span>Prev ch</span></a>
+            : <button type="button" className="af-reader-hud-btn" disabled aria-label="No previous chapter"><Icon name="left" /><span>Prev ch</span></button>}
+          <button type="button" className="af-reader-hud-btn" aria-label="Previous page" disabled={page <= 1 && !neighbors?.previous} onClick={stepBackward}>
+            <Icon name="left" />
+          </button>
+          <div className="af-reader-progress-track">
+            <input
+              className="af-reader-range"
+              type="range"
+              dir={direction}
+              min={1}
+              max={total}
+              value={page}
+              aria-label="Page progress"
+              aria-valuetext={`Page ${page} of ${total}`}
+              style={{ '--pct': pct } as React.CSSProperties}
+              onChange={event => jump(Number(event.currentTarget.value))}
+            />
+            <span className="af-reader-page-badge">{pageIndicator}</span>
+          </div>
+          <button type="button" className="af-reader-hud-btn" aria-label="Next page" disabled={page >= total && !neighbors?.next} onClick={stepForward}>
+            <Icon name="right" />
+          </button>
+          {neighbors?.next
+            ? <a className="af-reader-hud-btn" href={neighboringHref(item.id, neighbors.next, back)} title="Next chapter"><span>Next ch</span><Icon name="right" /></a>
+            : <button type="button" className="af-reader-hud-btn" disabled aria-label="No next chapter"><span>Next ch</span><Icon name="right" /></button>}
+        </div>
+      </div>}
+
+      {!hudShown && <button type="button" className="af-reader-floating-pill" onClick={() => setHudVisible(true)} aria-label="Show reader controls">
+        {pageIndicator}
+      </button>}
+
+      {/* Slide-Over Settings & Chapters Drawer */}
+      {drawerTab && <>
+        <div className="af-reader-drawer-scrim" onClick={() => setDrawerTab(null)} aria-hidden="true" />
+        <aside className="af-reader-drawer" role="dialog" aria-label="Reader menu">
+          <div className="af-reader-drawer-head">
+            <h2>Reader menu</h2>
+            <button type="button" className="af-icon-button" aria-label="Close reader menu" onClick={() => setDrawerTab(null)}><Icon name="close" /></button>
+          </div>
+          <div className="af-reader-drawer-tabs" role="tablist">
+            <button type="button" role="tab" aria-selected={drawerTab === 'settings'} onClick={() => setDrawerTab('settings')}>Settings</button>
+            <button type="button" role="tab" aria-selected={drawerTab === 'chapters'} onClick={() => setDrawerTab('chapters')}>Chapters</button>
+          </div>
+          <div className="af-reader-drawer-body">
+            {drawerTab === 'settings' ? <>
+              <div className="af-reader-control-group">
+                <span className="af-reader-control-label">Page style</span>
+                <div className="af-reader-segmented" role="group" aria-label="Page style">
+                  {([['single', 'Single'], ['double', 'Double'], ['scroll', 'Long strip']] as const).map(([val, lbl]) => (
+                    <button key={val} type="button" aria-pressed={layout === val} onClick={() => {
+                      writeOption('comicLayout', val);
+                      setLayout(val);
+                    }}>{lbl}</button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="af-reader-control-group">
+                <span className="af-reader-control-label">Reading direction</span>
+                <div className="af-reader-segmented" role="group" aria-label="Reading direction">
+                  {([['rtl', 'Right to Left'], ['ltr', 'Left to Right']] as const).map(([val, lbl]) => (
+                    <button key={val} type="button" aria-pressed={direction === val} onClick={() => {
+                      writeOption('comicDirection', val);
+                      setDirection(val);
+                    }}>{lbl}</button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="af-reader-control-group">
+                <span className="af-reader-control-label">Image sizing</span>
+                <div className="af-reader-segmented" role="group" aria-label="Image sizing">
+                  {([['page', 'Fit both'], ['width', 'Fit width'], ['height', 'Fit height'], ['original', 'No limit']] as const).map(([val, lbl]) => (
+                    <button key={val} type="button" aria-pressed={fit === val} onClick={() => {
+                      writeOption('comicFit', val);
+                      setFit(val);
+                    }}>{lbl}</button>
+                  ))}
+                </div>
+              </div>
+
+              {layout === 'double' && <label className="af-reader-toggle">
+                <span>Offset cover page (solo page 1)</span>
+                <input type="checkbox" checked={offsetCover} onChange={e => { setOffsetCover(e.target.checked); writeOption('comicOffsetCover', e.target.checked); }} />
+              </label>}
+
+              {layout === 'scroll' && <label className="af-reader-toggle">
+                <span>Seamless vertical strip (no gaps)</span>
+                <input type="checkbox" checked={seamlessStrip} onChange={e => { setSeamlessStrip(e.target.checked); writeOption('comicSeamless', e.target.checked); }} />
+              </label>}
+
+              <label className="af-reader-toggle">
+                <span>Show bottom progress bar</span>
+                <input type="checkbox" checked={showProgressBar} onChange={e => { setShowProgressBar(e.target.checked); writeOption('comicShowProgress', e.target.checked); }} />
+              </label>
+
+              <div className="af-reader-control-group">
+                <span className="af-reader-control-label">Zoom ({Math.round(zoom * 100)}%)</span>
+                <div className="af-reader-segmented" role="group" aria-label="Zoom">
+                  <button type="button" disabled={zoom <= 1} onClick={() => adjustZoom(zoom - 0.25)}>−</button>
+                  <button type="button" aria-pressed={zoom === 1} onClick={() => adjustZoom(1)}>100%</button>
+                  <button type="button" disabled={zoom >= 3} onClick={() => adjustZoom(zoom + 0.25)}>+</button>
+                </div>
+              </div>
+
+              <label className="af-reader-toggle">
+                <span>True black OLED background</span>
+                <input type="checkbox" checked={oledMode} onChange={e => { setOledMode(e.target.checked); writeOption('comicOled', e.target.checked); }} />
+              </label>
+
+              <label className="af-reader-toggle">
+                <span>Pin reader HUD</span>
+                <input type="checkbox" checked={pinHud} onChange={e => { setPinHud(e.target.checked); setHudVisible(true); writeOption('comicPinHud', e.target.checked); }} />
+              </label>
+
+              <div className="af-reader-shortcuts">
+                <span className="af-reader-control-label">Shortcuts</span>
+                <div><span>Turn page</span><kbd>← / →</kbd></div>
+                <div><span>Zoom</span><kbd>+ / − / 0</kbd></div>
+                <div><span>Toggle HUD</span><kbd>M</kbd></div>
+                <div><span>Chapters</span><kbd>G</kbd></div>
+                <div><span>Settings</span><kbd>S</kbd></div>
+                <div><span>Flip RTL / LTR</span><kbd>D</kbd></div>
+                <div><span>Fullscreen</span><kbd>F</kbd></div>
+              </div>
+            </> : <>
+              {navError && <p className="af-meta" role="alert">{navError} <button type="button" className="af-text-link" onClick={() => { setNavError(''); setNavigationAttempt(v => v + 1); }}>Retry</button></p>}
+              {chapterList.length > 0 && <input
+                type="search"
+                className="af-select af-input af-reader-chapter-search"
+                placeholder="Search chapter # or title"
+                aria-label="Search chapters"
+                value={chapterFilter}
+                onChange={event => setChapterFilter(event.target.value)}
+              />}
+              {chapterList.length > 0 ? <div className="af-reader-chapter-list">
+                {chapterList.filter(entry => {
+                  const needle = chapterFilter.trim().toLowerCase();
+                  if (!needle) return true;
+                  return String(entry.number ?? '').toLowerCase().includes(needle)
+                    || entry.label.toLowerCase().includes(needle)
+                    || (entry.title?.toLowerCase().includes(needle) ?? false);
+                }).map(entry => (
+                  <a key={entry.id} className="af-reader-chapter-item"
+                    aria-current={entry.id === chapter.id ? 'page' : undefined}
+                    href={neighboringHref(item.id, { entry, page: 1 }, back)}
+                    onClick={() => setDrawerTab(null)}>
+                    <span>{entry.label}{entry.title ? ` · ${entry.title}` : ''}</span>
+                    {entry.id === chapter.id && <Icon name="check" />}
+                  </a>
+                ))}
+              </div> : <p className="af-meta">Loading chapter list…</p>}
+              <a className="af-text-link" href={listHref}><Icon name="book" /> Back to comic details</a>
+            </>}
+          </div>
+        </aside>
+      </>}
+    </div>
+
+    {/* Accessible transcript & end-of-chapter footer */}
+    <div className="af-wrap af-reader-footer-wrap">
+      <Transcript transcript={transcript} count={total} />
+      <footer className="af-reader-end">
+        <a className="af-text-link" href={listHref}><Icon name="book" /> All chapters</a>
+        {neighbors && (neighbors.previous || neighbors.next) && <nav className="af-actions" aria-label="Chapter navigation after reading">
+          {neighbors.previous && <ActionLink href={neighboringHref(item.id, neighbors.previous, back)}><Icon name="left" /> Previous chapter</ActionLink>}
+          {neighbors.next && <ActionLink primary href={neighboringHref(item.id, neighbors.next, back)}>Next chapter <Icon name="right" /></ActionLink>}
+        </nav>}
+      </footer>
+    </div>
   </section>;
 }

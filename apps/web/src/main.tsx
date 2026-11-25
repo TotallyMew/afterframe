@@ -1,54 +1,78 @@
-import { Component, useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react';
+import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { comicChapterIdSource, comicIdSource } from '../../../afterframe/public/comic-ids.js';
+import { comicChapterIdSource, comicIdSource } from '@afterframe/shared/comic-ids';
 import { AccountButton, AccountProvider, useAccountDialog } from './Account';
-import { playerHref, rememberRoute, type MediaType } from './catalog';
-import { Catalogue } from './Catalogue';
-import { ComicDetailsPage, ComicsPage } from './Comics';
-import { ComicReader } from './ComicReader';
-import { Header } from './components';
-import { DetailsPage } from './Details';
-import { AnimePage, RecommendationsPage } from './Discovery';
-import { Home } from './Home';
-import { LibraryPage } from './LibraryPage';
+import { rememberRoute, webHref, type MediaType } from './catalog';
+import { ConfirmProvider, useConfirm } from './ConfirmDialog';
+import { Header, Loading, MobileNav } from './components';
+import { Footer } from './Footer';
+import { useLibrary } from './library';
+import { parsePlayerRoute, playerTitleKey } from './player/route';
+import {
+  currentLocationHref, handleSpaClick, normalizeBackParam, normalizeRouteString, routeSnapshot, subscribeRoute,
+} from './router';
 import { SettingsProvider } from './Settings';
 import { useSettings } from './settings-context';
-import { useLibrary } from './library';
+import { ShortcutsDialog } from './ShortcutsDialog';
+import { ToastProvider } from './Toast';
 import './styles.css';
+
+const Home = lazy(() => import('./Home').then(m => ({ default: m.Home })));
+const DetailsPage = lazy(() => import('./Details').then(m => ({ default: m.DetailsPage })));
+const PlayerPage = lazy(() => import('./PlayerPage').then(m => ({ default: m.PlayerPage })));
+const Catalogue = lazy(() => import('./Catalogue').then(m => ({ default: m.Catalogue })));
+const AnimePage = lazy(() => import('./Discovery').then(m => ({ default: m.AnimePage })));
+const RecommendationsPage = lazy(() => import('./Discovery').then(m => ({ default: m.RecommendationsPage })));
+const ComicsPage = lazy(() => import('./Comics').then(m => ({ default: m.ComicsPage })));
+const ComicDetailsPage = lazy(() => import('./Comics').then(m => ({ default: m.ComicDetailsPage })));
+const ComicReader = lazy(() => import('./ComicReader').then(m => ({ default: m.ComicReader })));
+const LibraryPage = lazy(() => import('./LibraryPage').then(m => ({ default: m.LibraryPage })));
 
 const comicPath = new RegExp(`^comic/(${comicIdSource})$`, 'i');
 const readerPath = new RegExp(`^comic/(${comicIdSource})/read/(${comicChapterIdSource})$`, 'i');
-const mediaPath = /^(?:(?:movie|tv)\/[1-9]\d{0,9}\/(?:watch|s\d{1,4}e[1-9]\d{0,3})|edition\/[\w.-]+(?:\/watch(?:\/[\w.-]+)?)?)$/;
-const { panel: entryPanel, returnTo: entryReturn } = normalizeEntry();
+const { panel: entryPanel } = normalizeEntry();
 
 function normalizeEntry() {
   const url = new URL(window.location.href);
-  const wasLegacy = /^\/legacy\/?$/.test(url.pathname);
+  const wasLegacy = /^\/(?:legacy|player)\/?$/.test(url.pathname);
   const panel = url.searchParams.get('panel');
   const hasPanel = panel === 'settings' || panel === 'integrations' || panel === 'account';
   const requested = url.searchParams.get('return');
-  const returnTo = requested && /^\/#(?:home|movies|tv|new|anime|comics|search|watchlist|watched|ratings|reading|history|notifications|recommendations|movie\/|comic\/)(?:[\w/?&=%.#-]*)$/i.test(requested)
-    ? requested.slice(1) : '';
-  if (hasPanel || wasLegacy || returnTo) {
-    url.pathname = '/';
-    if (hasPanel) {
-      url.searchParams.delete('panel');
-      url.searchParams.delete('return');
-      if (returnTo) url.hash = returnTo;
-    } else if (returnTo) {
-      const [path, query = ''] = url.hash.slice(1).split('?', 2);
-      if (readerPath.test(path)) {
-        const params = new URLSearchParams(query);
-        const [prior, priorQuery = ''] = returnTo.split('?', 2);
-        const back = comicPath.test(prior.slice(1)) ? new URLSearchParams(priorQuery).get('back') : returnTo;
-        if (back && !params.has('back')) params.set('back', back);
-        url.hash = `${path}?${params}`;
-      }
-      url.searchParams.delete('return');
-    }
-    window.history.replaceState(null, '', url);
+  const returnTo = normalizeBackParam(requested);
+  const hasLegacyHash = (url.pathname === '/' || wasLegacy) && Boolean(url.hash) && url.hash !== '#main' && url.hash.startsWith('#');
+
+  let targetHref: string | null = null;
+  if (hasLegacyHash) {
+    targetHref = webHref(normalizeRouteString(url.hash));
+  } else if (wasLegacy) {
+    targetHref = '/';
   }
-  return { panel: hasPanel ? panel : null, returnTo };
+
+  if (hasPanel || wasLegacy || returnTo || hasLegacyHash) {
+    const nextUrl = new URL(targetHref || `${url.pathname}${url.search}`, url.origin);
+    if (hasPanel) {
+      nextUrl.searchParams.delete('panel');
+      nextUrl.searchParams.delete('return');
+      if (returnTo) {
+        const dest = new URL(returnTo, url.origin);
+        nextUrl.pathname = dest.pathname;
+        nextUrl.search = dest.search;
+      }
+    } else if (returnTo) {
+      const targetRoute = normalizeRouteString(`${nextUrl.pathname}${nextUrl.search}`);
+      const [path] = targetRoute.split('?', 2);
+      if (readerPath.test(path) || parsePlayerRoute(path)) {
+        const priorUrl = new URL(returnTo, url.origin);
+        const priorRoute = normalizeRouteString(`${priorUrl.pathname}${priorUrl.search}`).split('?', 2)[0];
+        const back = comicPath.test(priorRoute) ? priorUrl.searchParams.get('back') : returnTo;
+        if (back && !nextUrl.searchParams.has('back')) nextUrl.searchParams.set('back', back);
+      }
+      nextUrl.searchParams.delete('return');
+    }
+    nextUrl.hash = '';
+    window.history.replaceState(null, '', `${nextUrl.pathname}${nextUrl.search}`);
+  }
+  return { panel: hasPanel ? panel : null };
 }
 
 function OpenEntryPanel() {
@@ -64,12 +88,6 @@ function OpenEntryPanel() {
   return null;
 }
 
-const routeSnapshot = () => window.location.hash.replace(/^#\/?/, '') || 'home';
-function subscribeRoute(notify: () => void) {
-  window.addEventListener('hashchange', notify);
-  return () => window.removeEventListener('hashchange', notify);
-}
-
 class PageBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false };
   static getDerivedStateFromError() { return { failed: true }; }
@@ -82,10 +100,16 @@ class PageBoundary extends Component<{ children: ReactNode }, { failed: boolean 
   }
 }
 
-function restoreRoute(path: string, focusOnEntry: boolean) {
+function RouteFallback({ shape = 'posters' }: { shape?: 'posters' | 'hero' | 'rows' }) {
+  return <div className="af-wrap af-directory" data-route-loading>
+    <Loading label="" shape={shape} />
+  </div>;
+}
+
+function restoreRoute(locationKey: string, focusOnEntry: boolean) {
   let view: { y: number; focus?: string } | undefined;
   try {
-    const key = `afterframe.view:#${path}`;
+    const key = `afterframe.view:${locationKey}`;
     view = JSON.parse(sessionStorage.getItem(key) ?? 'null') ?? undefined;
     sessionStorage.removeItem(key);
   } catch { /* Restore the page heading when storage is unavailable. */ }
@@ -130,52 +154,86 @@ function restoreRoute(path: string, focusOnEntry: boolean) {
     controller.abort();
   }, 31_000);
   controller.signal.addEventListener('abort', () => { observer.disconnect(); clearTimeout(timeout); }, { once: true });
-  // A user who starts navigating the new page takes ownership of focus.
   for (const event of ['pointerdown', 'keydown', 'wheel', 'touchstart']) {
     window.addEventListener(event, () => controller.abort(), { once: true, passive: true, signal: controller.signal });
   }
   return () => controller.abort();
 }
 
-function App() {
+function AppShell() {
+  const confirmAction = useConfirm();
   const route = useSyncExternalStore(subscribeRoute, routeSnapshot);
   const [path, query = ''] = route.split('?', 2);
   const title = path.match(/^(movie|tv)\/([1-9]\d{0,9})$/);
   const comic = path.match(comicPath);
   const reader = path.match(readerPath);
-  const playback = mediaPath.test(path);
+  const playerRoute = parsePlayerRoute(path);
+  const playerKey = playerRoute ? playerTitleKey(playerRoute) : null;
   const home = path === 'home' || path === 'main';
-  const catalogue = ['movies', 'tv', 'new'].includes(path) || path.startsWith('search=');
+  const catalogue = ['movies', 'tv', 'new', 'search'].includes(path) || path.startsWith('search=');
   const library = ['watchlist', 'watched', 'ratings', 'reading', 'history', 'notifications'].includes(path);
-  const controls = useLibrary();
+  const controls = useLibrary(confirmAction);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const comicRoute = Boolean(comic || reader);
   const oldPath = useRef('');
+  const oldPlayerKey = useRef<string | null>(null);
+
   useEffect(() => {
-    if (playback) {
-      const back = entryReturn || (path.startsWith('edition/') ? '#home' : `#${path.split('/', 2).join('/')}`);
-      window.location.replace(playerHref(path, back));
-      return;
-    }
+    const openShortcuts = () => setShortcutsOpen(true);
+    window.addEventListener('afterframe-shortcuts', openShortcuts);
+    return () => window.removeEventListener('afterframe-shortcuts', openShortcuts);
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    if (controls.undoable) void controls.undo(controls.undoable);
+  }, [controls]);
+
+  const libraryFeedback = useMemo(() => ({
+    message: controls.mutationMessage,
+    onUndo: controls.undoable && controls.ready ? handleUndo : undefined,
+  }), [controls.mutationMessage, controls.undoable, controls.ready, handleUndo]);
+
+  // Convert legacy hash changes (e.g., manual hash edits or external bookmarks) into clean paths
+  useEffect(() => {
+    const syncLegacyHash = () => {
+      if ((window.location.pathname === '/' || window.location.pathname === '') && window.location.hash && window.location.hash !== '#main') {
+        const href = webHref(normalizeRouteString(window.location.hash));
+        window.history.replaceState(null, '', href);
+        window.dispatchEvent(new Event('afterframe-navigate'));
+      }
+    };
+    window.addEventListener('hashchange', syncLegacyHash);
+    return () => window.removeEventListener('hashchange', syncLegacyHash);
+  }, []);
+
+  useEffect(() => {
     const localChapterChange = comicRoute && oldPath.current === path;
+    const samePlayerFullscreen = Boolean(playerKey && oldPlayerKey.current === playerKey && document.fullscreenElement);
     const focusOnEntry = path !== 'home' || Boolean(oldPath.current && oldPath.current !== path);
     oldPath.current = path;
-    if (path !== 'main' && !localChapterChange) return restoreRoute(route, focusOnEntry);
-  }, [route, path, playback, comicRoute]);
+    oldPlayerKey.current = playerKey;
+    if (path !== 'main' && !localChapterChange && !samePlayerFullscreen) return restoreRoute(currentLocationHref(), focusOnEntry);
+  }, [route, path, comicRoute, playerKey]);
   useEffect(() => { document.documentElement.classList.toggle('reduce-motion', controls.library.preferences.reducedMotion === true); }, [controls.library.preferences.reducedMotion]);
 
-  let page = playback ? <p className="af-wrap af-state" role="status">Opening the player…</p>
-    : <section className="af-wrap af-directory"><h1>Page unavailable</h1><a className="af-text-link" href="/#home">Go to Home</a></section>;
-  if (home) page = <Home controls={controls} />;
-  else if (title) page = <DetailsPage key={path} type={title[1] as MediaType} id={Number(title[2])} controls={controls} />;
+  let page = <section className="af-wrap af-directory"><h1>Page unavailable</h1><p className="af-meta">This page does not exist in Afterframe.</p><a className="af-text-link" href={webHref('home')}>Go to Home</a></section>;
+  let fallbackShape: 'posters' | 'hero' | 'rows' = 'posters';
+  if (home) { page = <Home controls={controls} />; fallbackShape = 'hero'; }
+  else if (title) { page = <DetailsPage key={path} type={title[1] as MediaType} id={Number(title[2])} controls={controls} />; fallbackShape = 'hero'; }
+  else if (playerRoute && playerKey) { page = <PlayerPage key={playerKey} route={playerRoute} controls={controls} />; fallbackShape = 'hero'; }
   else if (catalogue) page = <Catalogue key={route} route={route} controls={controls} />;
-  else if (path === 'anime') page = <AnimePage key={route} query={query} />;
+  else if (path === 'anime') page = <AnimePage key={route} query={query} controls={controls} />;
   else if (path === 'comics') page = <ComicsPage key={route} query={query} controls={controls} />;
-  else if (comic) page = <ComicDetailsPage key={path} id={comic[1]} query={query} controls={controls} />;
-  else if (reader) page = <ComicReader key={path} id={reader[1]} chapterId={reader[2]} query={query} controls={controls} />;
+  else if (comic) { page = <ComicDetailsPage key={path} id={comic[1]} query={query} controls={controls} />; fallbackShape = 'hero'; }
+  else if (reader) { page = <ComicReader key={path} id={reader[1]} chapterId={reader[2]} query={query} controls={controls} />; fallbackShape = 'hero'; }
   else if (path === 'recommendations') page = <RecommendationsPage controls={controls} />;
-  else if (library) page = <LibraryPage key={path} path={path} query={query} controls={controls} />;
+  else if (library) { page = <LibraryPage key={path} path={path} query={query} controls={controls} />; fallbackShape = 'rows'; }
 
-  return <SettingsProvider controls={controls}><AccountProvider controls={controls}><OpenEntryPanel /><div onClickCapture={event => { if (event.target instanceof Element && event.target.closest('a[href]')) rememberRoute(event.target.closest('a[href]')); }} className="af-app" data-page={home ? 'home' : title ? 'title' : 'directory'}>
+  return <ToastProvider libraryFeedback={libraryFeedback}><SettingsProvider controls={controls}><AccountProvider controls={controls}><OpenEntryPanel /><div
+    onClick={event => handleSpaClick(event, anchor => rememberRoute(anchor))}
+    className="af-app"
+    data-page={home ? 'home' : title || comic ? 'title' : reader ? 'reader' : playerRoute ? 'player' : 'directory'}
+  >
     <a href="#main" className="af-skip" onClick={event => { event.preventDefault(); document.getElementById('main')?.focus(); }}>Skip to content</a>
     <Header controls={controls} route={route} />
     {controls.error && <div className="af-notice" role="alert">{controls.error} {controls.state === 'expired' ? <AccountButton className="af-text-link">Sign in</AccountButton> : <button className="af-text-link" type="button" onClick={() => void controls.refresh()}>Retry connection</button>}</div>}
@@ -195,17 +253,27 @@ function App() {
     {controls.hasDeferredForOtherAccount && <div className="af-wrap af-recovery" role="status">
       A pending change belongs to another account. <AccountButton className="af-text-link">Switch accounts</AccountButton> to recover it.
     </div>}
-    <div className="af-wrap af-library-feedback" aria-live="polite">
-      {controls.mutationMessage && <span>{controls.mutationMessage}</span>}
-      {controls.undoable && controls.ready && <button type="button" className="af-text-link"
-        onClick={() => { if (controls.undoable) void controls.undo(controls.undoable); }}>Undo</button>}
-    </div>
     <main id="main" tabIndex={-1}>
-      <PageBoundary key={comicRoute ? path : route}>{page}</PageBoundary>
+      <PageBoundary key={playerKey ?? (comicRoute ? path : route)}>
+        <Suspense fallback={<RouteFallback shape={fallbackShape} />}>{page}</Suspense>
+      </PageBoundary>
     </main>
-  </div></AccountProvider></SettingsProvider>;
+    {!reader && <Footer onOpenShortcuts={() => setShortcutsOpen(true)} />}
+    {!reader && !playerRoute && <MobileNav route={route} />}
+    <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+  </div></AccountProvider></SettingsProvider></ToastProvider>;
+}
+
+function App() {
+  return <ConfirmProvider><AppShell /></ConfirmProvider>;
 }
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Afterframe could not find its root element.');
 createRoot(root).render(<App />);
+
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  window.addEventListener('load', () => {
+    void navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}

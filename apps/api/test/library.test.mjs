@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { migrateAccounts } from '../accounts/account-migrations.mjs';
 import { recommendations } from '../catalog/discovery.mjs';
 import { malRating } from '../catalog/mal.mjs';
-import { recommendationProfile, titleProgress } from '../../../afterframe/public/library.js';
+import { recommendationProfile, titleProgress } from '@afterframe/shared/library';
 
 const item = { key: 'tv-8001', id: 8001, title: 'Fixture series', type: 'tv', genreIds: [18], totalEpisodes: 10 };
 

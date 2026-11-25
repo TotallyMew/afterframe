@@ -1,9 +1,10 @@
-import { comicEditionCredit, comicLanguage, groupComicEditions } from '../../../afterframe/public/comic-display.js';
-import { useEffect, useState } from 'react';
-import { comicCover, comicDetailsHref, previousBrowse, request, routeWithParams, webHref, type Comic } from './catalog';
+import { comicEditionCredit, comicLanguage, groupComicEditions } from '@afterframe/shared/comic-display';
+import { useEffect, useMemo, useState } from 'react';
+import { comicCover, comicDetailsHref, navigate, previousBrowse, request, routeWithParams, webHref, type Comic } from './catalog';
+import { currentLocationHref, currentSearchParams } from './router';
 import { InputField, PageHeading, ResultsSummary, RouteTabs, SelectField } from './Catalogue';
 import { ActionLink, Artwork, Icon, Loading, RatingProblem, SaveButton, Score, Shelf, useOptionalRating } from './components';
-import type { LibraryControls } from './library';
+import { readingStatuses, savedRating, type LibraryControls, type WatchStatus } from './library';
 
 const formats = [['', 'All comics'], ['manga', 'Manga'], ['manhwa', 'Manhwa'], ['manhua', 'Manhua'], ['comic', 'Comics']] as const;
 const statuses = [['ongoing', 'Ongoing'], ['completed', 'Completed'], ['hiatus', 'On hiatus'], ['cancelled', 'Cancelled']] as const;
@@ -17,8 +18,8 @@ export function readerHref(item: Pick<Comic, 'id'>, chapter: string, language: s
   const variables = new URLSearchParams({ lang: language });
   if (page > 1) variables.set('page', String(page));
   if (position > 1) variables.set('position', String(position));
-  const [prior, priorQuery = ''] = location.hash.split('?', 2);
-  const back = prior.startsWith('#comic/') ? new URLSearchParams(priorQuery).get('back') : location.hash;
+  const prior = currentLocationHref();
+  const back = prior.startsWith('/comic/') ? currentSearchParams().get('back') : prior;
   if (back) variables.set('back', back);
   return webHref(routeWithParams(`comic/${encodeURIComponent(item.id)}/read/${encodeURIComponent(chapter)}`, variables));
 }
@@ -34,6 +35,7 @@ export function ComicCard({ item, controls, href, context, eager }: { item: Comi
   return <article className="af-media-card"><a href={href || comicHref(item)}>
     <span className="af-poster"><Artwork src={cover} loading={eager ? 'eager' : 'lazy'} decoding="async" fallback={<Icon name="book" />} /></span>
     <strong>{item.title}</strong><span className="af-card-meta">{context || comicFacts(item)}</span>
+    {!context && <Score mal={item.mal} />}
   </a><SaveButton item={item} controls={controls} compact /></article>;
 }
 
@@ -41,8 +43,10 @@ type ComicsResults = { results: Comic[]; nextPage?: number | null };
 
 export function ComicsPage({ query, controls }: { query: string; controls: LibraryControls }) {
   const params = new URLSearchParams(query);
-  const initialPage = Number(params.get('page') || 1);
-  const [data, setData] = useState<ComicsResults>();
+  const [items, setItems] = useState<Comic[]>([]);
+  const [page, setPage] = useState(1);
+  const [nextPage, setNextPage] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
   const [recent, setRecent] = useState<Comic[]>([]);
   const [genres, setGenres] = useState<NonNullable<Comic['genres']>>([]);
   const [error, setError] = useState('');
@@ -56,15 +60,22 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
   const genreOptions = genres.map(genre => [genre.id, genre.name] as const);
   if (selectedGenre && !genreOptions.some(([id]) => id === selectedGenre)) genreOptions.unshift([selectedGenre, 'Selected genre']);
 
-
   useEffect(() => {
     const task = new AbortController();
     const { signal } = task;
-    request<ComicsResults>(`/api/comics?${query}`, { signal })
-      .then(value => { if (!Array.isArray(value.results)) throw new Error('The comic catalog returned invalid results.'); if (!signal.aborted) setData(value); })
-      .catch(problem => { if (!signal.aborted) setError(problem.message); });
+    const reqParams = new URLSearchParams(query);
+    reqParams.set('page', String(page));
+    request<ComicsResults>(`/api/comics?${reqParams}`, { signal })
+      .then(value => {
+        if (!Array.isArray(value.results)) throw new Error('The comic catalog returned invalid results.');
+        if (signal.aborted) return;
+        setItems(current => page === 1 ? value.results : [...new Map([...current, ...value.results].map(item => [item.key, item])).values()]);
+        setNextPage(value.nextPage ?? null);
+      })
+      .catch(problem => { if (!signal.aborted) setError(problem.message); })
+      .finally(() => { if (!signal.aborted) setLoading(false); });
     return () => task.abort();
-  }, [query, attempt]);
+  }, [query, page, attempt]);
 
   useEffect(() => {
     const task = new AbortController();
@@ -103,41 +114,47 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
   return <div className="af-wrap af-directory">
     <PageHeading title="Comics" />
     <div className="af-catalog-tools">
-    <RouteTabs tabs={formats.map(([key, label]) => [withParam('type', key), label])} active={withParam('type', type)} label="Comic formats" />
-    <form className="af-field-bar" onSubmit={event => {
-      event.preventDefault();
-      const update = new URLSearchParams();
-      if (type) update.set('type', type);
-      for (const [key, value] of new FormData(event.currentTarget)) if (typeof value === 'string' && value.trim()) update.set(key, value.trim());
-      window.location.hash = routeWithParams('comics', update);
-    }}>
-      <div className="af-catalog-search"><InputField name="q" label="Find comics" type="search" maxLength={180} defaultValue={text} /></div>
-      <div className="af-facet-with-status">
-        <SelectField label="Genre" name="genre" empty="All genres" value={selectedGenre} options={genreOptions} />
-        {auxError.genres && <p className="af-meta" role="status">Genres are unavailable. <button type="button" className="af-text-link" onClick={() => setGenreAttempt(value => value + 1)}>Retry genres</button></p>}
-      </div>
-      <SelectField label="Status" name="status" empty="Any status" value={params.get('status') || ''} options={statuses} />
-      <SelectField label="Sort by" name="sort" empty={text ? 'Relevance' : 'Default order'} value={params.get('sort') || ''} options={sorts} />
-      <button className="af-button af-primary" type="submit">Apply filters</button>
-    </form>
+      <RouteTabs tabs={formats.map(([key, label]) => [withParam('type', key), label])} active={withParam('type', type)} label="Comic formats" />
+      <form className="af-field-bar" onSubmit={event => {
+        event.preventDefault();
+        const update = new URLSearchParams();
+        if (type) update.set('type', type);
+        for (const [key, value] of new FormData(event.currentTarget)) if (typeof value === 'string' && value.trim()) update.set(key, value.trim());
+        navigate(routeWithParams('comics', update));
+      }}>
+        <div className="af-catalog-search"><InputField name="q" label="Find comics" type="search" maxLength={180} defaultValue={text} /></div>
+        <div className="af-facet-with-status">
+          <SelectField label="Genre" name="genre" empty="All genres" value={selectedGenre} options={genreOptions} />
+          {auxError.genres && <p className="af-meta" role="status">Genres are unavailable. <button type="button" className="af-text-link" onClick={() => setGenreAttempt(value => value + 1)}>Retry genres</button></p>}
+        </div>
+        <SelectField label="Status" name="status" empty="Any status" value={params.get('status') || ''} options={statuses} />
+        <SelectField label="Sort by" name="sort" empty={text ? 'Relevance' : 'Default order'} value={params.get('sort') || ''} options={sorts} />
+        <button className="af-button af-primary" type="submit">Apply filters</button>
+      </form>
     </div>
     {auxError.updates && <p className="af-state" role="alert">Recently updated comics could not load. <button type="button" className="af-text-link" onClick={() => setUpdateAttempt(value => value + 1)}>Retry updates</button></p>}
     {recent.length > 0 && <Shelf title="Recently updated">
       {recent.map((item, index) => <ComicCard item={item} key={item.key} controls={controls} eager={index < 5} />)}
     </Shelf>}
     {recent.length > 0 && <h2 className="af-comic-catalog-heading">Browse the catalog</h2>}
-    <ResultsSummary count={data?.results.length} route="comics" filters={params} clear={webHref('comics')} labels={{
+    <ResultsSummary count={!loading || items.length ? items.length : null} loading={loading && page === 1 && !items.length} route="comics" filters={params} clear={webHref('comics')} labels={{
       type: value => formats.find(([key]) => key === value)?.[1] ?? '',
       genre: value => genreOptions.find(([id]) => id === value)?.[1] ?? '',
       status: value => statuses.find(([key]) => key === value)?.[1] ?? '',
       sort: value => sorts.find(([key]) => key === value)?.[1] ?? '',
     }} />
-    {error ? <p className="af-state" role="alert">{error} <button className="af-text-link" type="button" onClick={() => { setError(''); setAttempt(value => value + 1); }}>Retry</button></p>
-      : !data ? <Loading label="Loading comics…" /> : !data.results.length ? <p className="af-state" role="status">{query ? 'No comics match these filters.' : 'No comics are available in the catalog yet.'}</p>
-        : <div className="af-poster-grid">{data.results.map((item, index) => <ComicCard item={item} key={item.key} controls={controls} eager={!recent.length && index < 5} />)}</div>}
-    {data && <div className="af-pagination">
-      {initialPage > 1 && <ActionLink href={webHref(withParam('page', String(initialPage - 1)))}>Previous page</ActionLink>}
-      {data.nextPage && <ActionLink href={webHref(withParam('page', String(data.nextPage)))}>Next page</ActionLink>}
+    {items.length > 0 && <div className="af-poster-grid">{items.map((item, index) => <ComicCard item={item} key={item.key} controls={controls} eager={!recent.length && index < 6} />)}</div>}
+    {loading && page === 1 && <Loading label="Loading comics…" />}
+    {error && page === 1 && <p className="af-state" role="alert">{error} <button className="af-text-link" type="button" onClick={() => { setError(''); setLoading(true); setAttempt(value => value + 1); }}>Retry</button></p>}
+    {!loading && !error && !items.length && <p className="af-state" role="status">{query ? 'No comics match these filters.' : 'No comics are available in the catalog yet.'}</p>}
+    {page > 1 && <p className="af-meta" role="status">{loading ? 'Loading more comics…' : error || `${items.length} comics shown`}</p>}
+    {(nextPage || (page > 1 && (loading || error))) && <div className="af-pagination">
+      <button type="button" className="af-button af-secondary" aria-disabled={loading} onClick={() => {
+        if (loading) return;
+        setLoading(true);
+        if (error) { setError(''); setAttempt(value => value + 1); }
+        else if (nextPage) setPage(nextPage);
+      }}>{error ? 'Retry loading more' : loading ? 'Loading more…' : 'Load more comics'}</button>
     </div>}
   </div>;
 }
@@ -146,22 +163,30 @@ type ComicRecord = Comic & { synopsis?: string; author?: string[]; languages: st
 type Chapter = { id: string; label: string; number?: string | number; title?: string; language: string; groups?: (string | { name?: string })[]; source?: string };
 type Chapters = { results: Chapter[]; nextPage?: number | null; ranges?: { start: string; end: string }[]; totalChapters?: number; partial?: boolean; preview?: boolean };
 
+function scrollToSection(id: string) {
+  const section = document.getElementById(id);
+  section?.focus({ preventScroll: true });
+  section?.scrollIntoView({ block: 'start' });
+}
+
 export function ComicDetailsPage({ id, query, controls }: { id: string; query: string; controls: LibraryControls }) {
   const [item, setItem] = useState<ComicRecord>();
   const [chapterResult, setChapterResult] = useState<{ key: string; data: Chapters }>();
+  const [related, setRelated] = useState<Comic[]>([]);
   const mal = useOptionalRating<number>(item?.malId ? `/api/mal/manga/${item.malId}?status=1` : undefined);
   const [error, setError] = useState('');
   const [chapterError, setChapterError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [chapterAttempt, setChapterAttempt] = useState(0);
   const [chapterPending, setChapterPending] = useState(false);
+  const [chapterQuery, setChapterQuery] = useState('');
+  const [chapterOrder, setChapterOrder] = useState<'asc' | 'desc'>('asc');
   const [coverFailed, setCoverFailed] = useState(false);
   const params = new URLSearchParams(query);
   const recent = item && controls.library.reading[item.key];
   const preferred = params.get('lang') || recent?.language || item?.defaultLanguage || 'en';
   const language = item?.languages.includes(preferred) ? preferred : item?.defaultLanguage;
-  const page = Math.max(1, Math.min(200, Number(params.get('page')) || 1));
-  const chapterKey = `${id}:${language}:${page}`;
+  const chapterKey = `${id}:${language}`;
   const chapters = chapterResult?.key === chapterKey ? chapterResult.data : undefined;
 
   useEffect(() => {
@@ -172,16 +197,24 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
         if (signal.aborted) return;
         if (!Array.isArray(value.languages) || typeof value.title !== 'string') throw new Error('This comic record is incomplete.');
         setItem(value);
-
+        document.title = `${value.title} · Afterframe`;
       }).catch(problem => { if (!signal.aborted) setError(problem.message); });
     return () => task.abort();
   }, [id, attempt]);
 
   useEffect(() => {
+    const task = new AbortController();
+    request<{ results: Comic[] }>(`/api/comics/${id}/related`, { signal: task.signal })
+      .then(result => { if (!task.signal.aborted && Array.isArray(result.results)) setRelated(result.results); })
+      .catch(() => {});
+    return () => task.abort();
+  }, [id]);
+
+  useEffect(() => {
     if (!language) return;
     const task = new AbortController();
     const { signal } = task;
-    const path = `/api/comics/${id}/chapters?${new URLSearchParams({ lang: language, page: String(page) })}`;
+    const path = `/api/comics/${id}/chapters?${new URLSearchParams({ lang: language, all: '1' })}`;
     let complete = false;
     setChapterError('');
     setChapterPending(true);
@@ -193,79 +226,156 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
       })
       .catch(problem => { if (!signal.aborted) setChapterError(problem.message); })
       .finally(() => { if (!signal.aborted) setChapterPending(false); });
-    if (page === 1) request<Chapters>(`${path}&scope=native`, { signal }).then(result => {
+    request<Chapters>(`${path}&scope=native`, { signal }).then(result => {
       if (!signal.aborted && !complete && result.results.length) setChapterResult({ key: chapterKey, data: result });
     }).catch(() => {});
     return () => task.abort();
-  }, [id, language, page, chapterAttempt, chapterKey]);
+  }, [id, language, chapterAttempt, chapterKey]);
+
+  const groupedChapters = useMemo(() => (chapters ? groupComicEditions(chapters.results) : []), [chapters]);
+  const filteredChapters = useMemo(() => {
+    const ordered = chapterOrder === 'desc' ? [...groupedChapters].reverse() : groupedChapters;
+    const needle = chapterQuery.trim().toLowerCase();
+    if (!needle) return ordered;
+    const numeric = /^\d+(?:\.\d+)?$/.test(needle);
+    const matches = ordered.filter(editions => editions.some(entry => {
+      const num = entry.number != null ? String(entry.number).toLowerCase() : '';
+      const credit = comicEditionCredit(entry).toLowerCase();
+      return num.includes(needle)
+        || entry.label.toLowerCase().includes(needle)
+        || (entry.title?.toLowerCase().includes(needle) ?? false)
+        || credit.includes(needle);
+    }));
+    if (!numeric) return matches;
+    return matches.sort((a, b) => {
+      const aExact = a.some(entry => String(entry.number ?? '') === needle) ? 0 : 1;
+      const bExact = b.some(entry => String(entry.number ?? '') === needle) ? 0 : 1;
+      return aExact - bExact;
+    });
+  }, [groupedChapters, chapterQuery, chapterOrder]);
 
   if (!item || !language) return <div className="af-wrap af-directory">
     <PageHeading title={error ? 'Comic unavailable' : 'Comics'} />
     {error ? <p className="af-state" role="alert">{error} <button className="af-text-link" type="button" onClick={() => { setError(''); setAttempt(value => value + 1); }}>Retry</button></p>
       : <Loading label="Loading comic…" shape="hero" />}
   </div>;
+
   const cover = coverFailed ? undefined : comicCover(item.poster);
   const first = chapters?.results[0];
   const synopsis = item.synopsis?.split(/\n(?:-{3,}|\*\*Links:)/i)[0].trim();
   const retryChapters = () => { setChapterError(''); setChapterAttempt(value => value + 1); };
-  const ranges = chapters?.ranges ?? chapterResult?.data.ranges;
-  const listing = (lang: string, range: number) => routeWithParams(`comic/${id}`, new URLSearchParams({ lang, ...(range > 1 ? { page: String(range) } : {}), ...(params.has('back') ? { back: params.get('back')! } : {}) }));
-  return <div className="af-wrap af-directory">
-    <a href={previousBrowse('comics')} className="af-text-link"><Icon name="left" /> Back to browse</a>
-    <section className={`af-comic-intro ${cover ? '' : 'af-no-cover'}`}>
-      {cover && <img className="af-comic-cover" src={cover} alt="" fetchPriority="high" onError={() => setCoverFailed(true)} />}
-      <div>
-        <PageHeading title={item.title} />
-        <p className="af-meta">{comicFacts(item)} <Score mal={mal.value} /></p>
-        <RatingProblem name="MyAnimeList" rating={mal} />
-        {item.author && item.author.length > 0 && <p className="af-meta">{item.author.join(', ')}</p>}
-        {synopsis && <p className="af-overview">{synopsis}</p>}
-        <div className="af-actions">
-          {recent ? <ActionLink primary href={readerHref(item, recent.chapter, recent.language, recent.listPage, recent.page)}>Resume {recent.label} · Page {recent.page}</ActionLink>
-            : first && <ActionLink primary href={readerHref(item, first.id, first.language, page)}>{page === 1 ? 'Start reading' : `Read ${first.label}`}</ActionLink>}
-          <SaveButton item={item} controls={controls} />
+  const saved = controls.library.saved[item.key];
+  const listing = (lang: string) => routeWithParams(`comic/${id}`, new URLSearchParams({ lang, ...(params.has('back') ? { back: params.get('back')! } : {}) }));
+
+  return <>
+    <section className={`af-hero af-details-hero af-comic-hero ${cover ? '' : 'af-no-backdrop'}`}>
+      {cover && <img className="af-backdrop af-comic-hero-backdrop" src={cover} alt="" aria-hidden="true" />}
+      <div className="af-wrap af-hero-inner">
+        <a href={previousBrowse('comics')} className="af-text-link af-back"><Icon name="left" /> Back to browse</a>
+        <div className={`af-comic-intro ${cover ? '' : 'af-no-cover'}`}>
+          {cover && <img className="af-comic-cover" src={cover} alt="" fetchPriority="high" onError={() => setCoverFailed(true)} />}
+          <div className="af-copy">
+            <h1>{item.title}</h1>
+            <div className="af-meta af-details-meta af-title-facts">
+              <span>{comicFacts(item)}</span>
+              {item.genres?.slice(0, 3).map(g => <span key={g.id}>{g.name}</span>)}
+              <Score mal={mal.value} />
+            </div>
+            <RatingProblem name="MyAnimeList" rating={mal} />
+            {item.author && item.author.length > 0 && <p className="af-meta">By {item.author.join(', ')}</p>}
+            {synopsis && <p className="af-overview">{synopsis}</p>}
+            <div className="af-actions">
+              {recent ? <ActionLink primary href={readerHref(item, recent.chapter, recent.language, recent.listPage, recent.page)}><Icon name="book" /> Resume {recent.label} · Page {recent.page}</ActionLink>
+                : first ? <ActionLink primary href={readerHref(item, first.id, first.language, 1)}><Icon name="book" /> Start reading</ActionLink>
+                  : <button type="button" className="af-button af-primary" disabled><Icon name="book" /> {chapterPending ? 'Loading chapters…' : 'No chapters yet'}</button>}
+              <SaveButton item={item} controls={controls} />
+              {saved && <select className="af-select" aria-label="Reading status" value={saved.watchStatus ?? 'planned'}
+                disabled={!controls.ready || controls.isPending(item.key)}
+                onChange={event => void controls.setComicStatus(item, event.target.value as WatchStatus)}>
+                {Object.entries(readingStatuses).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+              </select>}
+            </div>
+          </div>
+        </div>
+        <div className="af-details-footer">
+          <nav aria-label="Comic sections" className="af-title-nav">
+            <button className="af-text-link" type="button" onClick={() => scrollToSection('chapters')}>Chapters</button>
+            {related.length > 0 && <button className="af-text-link" type="button" onClick={() => scrollToSection('related')}>Related</button>}
+          </nav>
+          <label className="af-rating">Your rating
+            <select className="af-select" value={savedRating(controls.library.ratings[item.key])}
+              disabled={!controls.ready || controls.isPending(item.key)}
+              onChange={event => void controls.rate(item, Number(event.target.value))}>
+              <option value={0}>Choose 1–10</option>
+              {Array.from({ length: 10 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
+            </select>
+          </label>
         </div>
       </div>
     </section>
-    <section className="af-section" aria-labelledby="chapters-heading">
-      <header className="af-section-head"><div><h2 id="chapters-heading">Chapters</h2>{chapters?.totalChapters != null && <p className="af-meta" role="status">{chapters.totalChapters} chapters</p>}</div>
-        <div className="af-actions">
-          <select className="af-select" aria-label="Language" value={language} onChange={event => { window.location.hash = listing(event.target.value, 1); }}>
-            {[...new Set(item.languages)].sort().map(code => <option key={code} value={code}>{comicLanguage(code)}</option>)}
-          </select>
-          {ranges && ranges.length > 1 && <select className="af-select" aria-label="Chapter range" value={page} onChange={event => { window.location.hash = listing(language, Number(event.target.value)); }}>
-            {ranges.map(({ start, end }, index) => <option key={index} value={index + 1}>Chapters {start}–{end}</option>)}
-          </select>}
-        </div>
-      </header>
-      {chapterError && <p className="af-state" role="alert">{chapterError} <button type="button" className="af-text-link" onClick={retryChapters}>Retry</button></p>}
-      {chapterPending && chapters && <p className="af-state" role="status">{chapters.preview ? 'Checking other chapter sources…' : 'Updating chapters…'}</p>}
-      {!chapters && !chapterError && <Loading label="Loading chapters…" shape="rows" />}
-      {chapters && !chapters.results.length && !chapters.partial && !chapterPending && <p className="af-state" role="status">No chapters are available in this language.</p>}
-      {chapters?.partial && !chapterError && <p className="af-state" role="status">Some chapter sources are temporarily unavailable. <button type="button" className="af-text-link" onClick={retryChapters}>Retry sources</button></p>}
-      {chapters && groupComicEditions(chapters.results).map(editions => {
-        const chapter = editions.find(release => release.id === recent?.chapter) ?? editions[0];
-        const credits = comicEditionCredit(chapter);
-        const otherEditions = editions.filter(release => release.id !== chapter.id);
-        return <article className="af-activity-row" key={chapter.id}>
-          <div><strong>{chapter.label}{chapter.title ? ` · ${chapter.title}` : ''}</strong>{chapter.id === recent?.chapter && <p className="af-meta">Last read · Page {recent.page}</p>}
-            {credits && <p className="af-meta">{credits}</p>}
-            {otherEditions.length > 0 && <details>
-              <summary>{otherEditions.length} other {otherEditions.length === 1 ? 'edition' : 'editions'}</summary>
-              <ul>{otherEditions.map((release, index) => <li key={release.id}>
-                <a className="af-text-link" href={readerHref(item, release.id, release.language, page)}>
-                  Read {release.label} · {comicEditionCredit(release) || release.title || `Edition ${index + 2}`}
-                </a>
-              </li>)}</ul>
-            </details>}
+
+    <div className="af-wrap af-content">
+      <section id="chapters" className="af-section" tabIndex={-1} aria-labelledby="chapters-heading">
+        <header className="af-section-head">
+          <div>
+            <h2 id="chapters-heading">Chapters</h2>
+            {chapters?.totalChapters != null && <p className="af-meta" role="status">
+              {chapterQuery.trim() ? `${filteredChapters.length} of ${chapters.totalChapters} chapters` : `${chapters.totalChapters} chapters`}
+            </p>}
           </div>
-          <ActionLink href={readerHref(item, chapter.id, chapter.language, page, chapter.id === recent?.chapter ? recent.page : 1)} label={`${chapter.id === recent?.chapter ? 'Resume' : 'Read'} ${chapter.label}${credits ? ` from ${credits}` : ''}`}>{chapter.id === recent?.chapter ? 'Resume' : 'Read'}</ActionLink>
-        </article>;
-      })}
-      {chapters && <div className="af-pagination">
-        {page > 1 && <ActionLink href={webHref(listing(language, page - 1))}>Previous page</ActionLink>}
-        {chapters.nextPage && <ActionLink href={webHref(listing(language, chapters.nextPage))}>Next page</ActionLink>}
-      </div>}
-    </section>
-  </div>;
+          <div className="af-actions af-chapter-controls">
+            <input
+              type="search"
+              className="af-select af-input af-chapter-search"
+              placeholder="Search chapter # or title"
+              aria-label="Search chapters"
+              value={chapterQuery}
+              onChange={event => setChapterQuery(event.target.value)}
+            />
+            <button
+              type="button"
+              className="af-button af-secondary"
+              onClick={() => setChapterOrder(order => order === 'asc' ? 'desc' : 'asc')}
+            >
+              {chapterOrder === 'asc' ? 'Oldest first' : 'Newest first'}
+            </button>
+            <select className="af-select" aria-label="Language" value={language} onChange={event => { setChapterQuery(''); navigate(listing(event.target.value)); }}>
+              {[...new Set(item.languages)].sort().map(code => <option key={code} value={code}>{comicLanguage(code)}</option>)}
+            </select>
+          </div>
+        </header>
+        {chapterError && <p className="af-state" role="alert">{chapterError} <button type="button" className="af-text-link" onClick={retryChapters}>Retry</button></p>}
+        {chapterPending && chapters && <p className="af-state" role="status">{chapters.preview ? 'Checking other chapter sources…' : 'Updating chapters…'}</p>}
+        {!chapters && !chapterError && <Loading label="Loading chapters…" shape="rows" />}
+        {chapters && !chapters.results.length && !chapters.partial && !chapterPending && <p className="af-state" role="status">No chapters are available in this language.</p>}
+        {chapters?.partial && !chapterError && <p className="af-state" role="status">Some chapter sources are temporarily unavailable. <button type="button" className="af-text-link" onClick={retryChapters}>Retry sources</button></p>}
+        {chapters && chapters.results.length > 0 && !filteredChapters.length && <p className="af-state" role="status">No chapters match “{chapterQuery.trim()}”.</p>}
+        {filteredChapters.length > 0 && <div className="af-chapter-list">
+          {filteredChapters.map(editions => {
+            const chapter = editions.find(release => release.id === recent?.chapter) ?? editions[0];
+            const credits = comicEditionCredit(chapter);
+            const otherEditions = editions.filter(release => release.id !== chapter.id);
+            return <article className="af-activity-row" key={chapter.id}>
+              <div><strong>{chapter.label}{chapter.title ? ` · ${chapter.title}` : ''}</strong>{chapter.id === recent?.chapter && <p className="af-meta">Last read · Page {recent.page}</p>}
+                {credits && <p className="af-meta">{credits}</p>}
+                {otherEditions.length > 0 && <details>
+                  <summary>{otherEditions.length} other {otherEditions.length === 1 ? 'edition' : 'editions'}</summary>
+                  <ul>{otherEditions.map((release, index) => <li key={release.id}>
+                    <a className="af-text-link" href={readerHref(item, release.id, release.language, 1)}>
+                      Read {release.label} · {comicEditionCredit(release) || release.title || `Edition ${index + 2}`}
+                    </a>
+                  </li>)}</ul>
+                </details>}
+              </div>
+              <ActionLink href={readerHref(item, chapter.id, chapter.language, 1, chapter.id === recent?.chapter ? recent.page : 1)} label={`${chapter.id === recent?.chapter ? 'Resume' : 'Read'} ${chapter.label}${credits ? ` from ${credits}` : ''}`}>{chapter.id === recent?.chapter ? 'Resume' : 'Read'}</ActionLink>
+            </article>;
+          })}
+        </div>}
+      </section>
+
+      {related.length > 0 && <div id="related" tabIndex={-1}><Shelf title="Related comics">
+        {related.map(other => <ComicCard item={other} controls={controls} key={other.key} />)}
+      </Shelf></div>}
+    </div>
+  </>;
 }

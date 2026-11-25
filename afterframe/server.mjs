@@ -1,1 +1,3 @@
-import '../apps/api/server.mjs';
+import { startApiServer } from '../apps/api/server.mjs';
+
+await startApiServer();

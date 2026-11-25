@@ -1,6 +1,6 @@
 import { Dialog } from '@base-ui/react/dialog';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { preferenceDefaults } from '../../../afterframe/public/playback.js';
+import { preferenceDefaults } from '@afterframe/shared/playback';
 import { post, request } from './catalog';
 import { Icon, MutationStatus } from './components';
 import type { BooleanPreference, LibraryControls } from './library';

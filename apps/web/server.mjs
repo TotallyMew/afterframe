@@ -18,7 +18,11 @@ await access(new URL('index.html', build)).catch(() => {
 const assets = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.woff2': 'font/woff2',
+  '.webmanifest': 'application/manifest+json; charset=utf-8', '.png': 'image/png',
+  '.svg': 'image/svg+xml',
 };
+const spaRoute = /^\/(?:(?:home|main|movies|tv|new|anime|comics|recommendations|search|watchlist|watched|ratings|reading|history|notifications)\/?|(?:movie|tv)\/[1-9]\d{0,9}(?:\/(?:watch|s\d{1,4}e[1-9]\d{0,3}))?\/?|comic\/[\w-]+(?:\/read\/[\w.-]+)?\/?|edition\/[\w.-]+(?:\/watch(?:\/[\w-]+)?)?\/?)?$/i;
+const staticBuildPath = /^\/(?:assets\/[a-z0-9][\w.-]*|icons\/[a-z0-9][\w.-]*\.png|manifest\.webmanifest|sw\.js)$/i;
 const hopHeaders = ['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
 
 function withoutHopHeaders(headers) {
@@ -32,9 +36,21 @@ function reply(response, code, error) {
   response.end(JSON.stringify({ error }));
 }
 
+function forwardedClientIp(request) {
+  if (publicOrigin) {
+    const incoming = request.headers['x-forwarded-for'];
+    if (typeof incoming === 'string' && incoming.trim()) {
+      const parts = incoming.split(',').map(part => part.trim()).filter(Boolean);
+      if (parts.length) return parts.at(-1);
+    }
+  }
+  return request.socket?.remoteAddress || '127.0.0.1';
+}
+
 function forward(request, response, host) {
   const headers = withoutHopHeaders(request.headers);
   headers.host = host;
+  headers['x-forwarded-for'] = forwardedClientIp(request);
   const proxy = proxyRequest(upstream, { method: request.method, path: request.url, headers }, incoming => {
     response.writeHead(incoming.statusCode, withoutHopHeaders(incoming.headers));
     pipeline(incoming, response).catch(() => response.destroy());
@@ -56,29 +72,45 @@ const server = createServer(async (request, response) => {
   }
   if (!request.url.startsWith('/')) return reply(response, 400, 'Invalid request path.');
   const path = request.url.split('?')[0];
-  if (/^\/legacy\/?$/.test(path) && ['GET', 'HEAD'].includes(request.method)) {
+  if (/^\/(?:legacy|player)\/?$/.test(path) && ['GET', 'HEAD'].includes(request.method)) {
     response.writeHead(302, { location: `/${request.url.slice(path.length)}`, 'cache-control': 'no-store' });
     return response.end();
   }
-  const staticFile = path === '/' ? 'index.html' : /^\/assets\/[a-z0-9][\w.-]*$/i.test(path) ? path.slice(1) : null;
-  if (!staticFile) {
-    if (/^\/(?:api|art|player|stream|comic-cover|comic-page)\//.test(path) || /^\/[a-z0-9][\w.-]*\.(?:css|js|vtt)$/i.test(path)) {
-      return forward(request, response, railwayHealth ? publicOrigin?.host || `localhost:${port}` : request.headers.host);
-    }
-    return reply(response, 404, 'Not found.');
+  const isAsset = staticBuildPath.test(path);
+  const isProxy = /^\/(?:api|art|stream|comic-cover|comic-page)\//.test(path);
+  if (isProxy) {
+    return forward(request, response, railwayHealth ? publicOrigin?.host || `localhost:${port}` : request.headers.host);
   }
   if (!['GET', 'HEAD'].includes(request.method)) return reply(response, 405, 'Method unavailable.');
+  const staticFile = path === '/' ? 'index.html' : isAsset ? path.slice(1) : !extname(path) ? 'index.html' : null;
+  if (!staticFile) return reply(response, 404, 'Not found.');
   const file = new URL(staticFile, build);
   const type = assets[extname(staticFile)];
   const info = type && await stat(file).catch(() => null);
   if (!info?.isFile()) return reply(response, 404, 'Not found.');
-  response.writeHead(200, {
+  const statusCode = staticFile === 'index.html' && !spaRoute.test(path) ? 404 : 200;
+  const cacheControl = path.startsWith('/assets/')
+    ? 'public, max-age=31536000, immutable'
+    : path.startsWith('/icons/')
+      ? 'public, max-age=86400'
+      : 'no-cache';
+  response.writeHead(statusCode, {
     'content-type': type,
     'content-length': info.size,
-    'cache-control': path === '/' ? 'no-cache' : 'public, max-age=31536000, immutable',
+    'cache-control': cacheControl,
   });
   if (request.method === 'HEAD') return response.end();
   await pipeline(createReadStream(file), response).catch(() => response.destroy());
 });
 
 server.listen(port, process.env.AFTERFRAME_HOST || '127.0.0.1', () => console.log(`Afterframe web is listening on port ${port}`));
+
+let shuttingDown = false;
+const shutdown = () => {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(1), 10000).unref();
+};
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);

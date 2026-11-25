@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { activeSkipSegment, bufferedIntervals, completionReached, movieDurationMismatch, samplePlayback, viewingSession } from '../../../afterframe/public/playback.js';
-import { playbackLanguage, samePlaybackLanguage } from '../../../afterframe/public/subtitles.js';
+import { activeSkipSegment, bufferedIntervals, completionReached, movieDurationMismatch, samplePlayback, viewingSession } from '@afterframe/shared/playback';
+import { playbackLanguage, samePlaybackLanguage } from '@afterframe/shared/subtitles';
 
 test('a large runtime discrepancy is flagged while ordinary release differences remain playable', () => {
   assert.equal(movieDurationMismatch(173, 86 * 60 + 3), true);

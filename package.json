@@ -1,5 +1,25 @@
 {
   "name": "afterframe-workspace",
   "private": true,
-  "workspaces": ["apps/api", "afterframe"]
+  "workspaces": [
+    "packages/shared",
+    "apps/api",
+    "apps/web",
+    "afterframe"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @afterframe/web",
+    "dev:api": "npm start --workspace @afterframe/api",
+    "dev:web": "npm run dev --workspace @afterframe/web",
+    "test": "npm test --workspace @afterframe/api && npm test --workspace @afterframe/web",
+    "typecheck": "npm run typecheck --workspace @afterframe/web && npm run typecheck --workspace @afterframe/api",
+    "lint": "eslint apps/api apps/web/src packages/shared/src"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "eslint": "^9.39.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^16.5.0",
+    "typescript-eslint": "^8.49.0"
+  }
 }

@@ -1,0 +1,104 @@
+.af-toast-region {
+  position: fixed;
+  z-index: var(--af-z-toast);
+  inset-block-end: var(--af-space-5);
+  inset-inline-end: var(--gutter);
+  display: grid;
+  gap: var(--af-space-2);
+  width: min(24rem, calc(100vw - 2 * var(--gutter)));
+  pointer-events: none;
+}
+
+.af-toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--af-space-3);
+  padding: var(--af-space-3) var(--af-space-4);
+  border: 1px solid var(--af-divider);
+  border-radius: var(--af-radius-art);
+  background: var(--af-raised);
+  color: var(--af-ink);
+  font-size: var(--af-type-secondary);
+  box-shadow: 0 12px 32px var(--af-shadow-strong);
+  animation: af-toast-in var(--af-duration-normal) var(--af-ease-out);
+}
+
+.af-toast-success {
+  border-color: color-mix(in srgb, var(--af-success) 45%, var(--af-divider));
+}
+
+.af-toast-error {
+  border-color: color-mix(in srgb, var(--af-danger) 60%, var(--af-divider));
+}
+
+.af-toast-message {
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.af-toast-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--af-space-1);
+  flex: none;
+}
+
+.af-toast-action {
+  min-block-size: 2rem;
+  padding-inline: var(--af-space-2);
+  border-radius: var(--af-radius-sm);
+  color: var(--af-selection);
+  font-size: var(--af-type-secondary);
+  font-weight: 650;
+}
+
+.af-toast-action:hover {
+  background: var(--af-selection-fill);
+}
+
+.af-toast-close {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 2rem;
+  block-size: 2rem;
+  border-radius: var(--af-radius-sm);
+  color: var(--af-secondary-ink);
+}
+
+.af-toast-close .af-icon {
+  inline-size: 1rem;
+  block-size: 1rem;
+}
+
+.af-toast-close:hover {
+  color: var(--af-ink);
+  background: var(--af-panel);
+}
+
+@keyframes af-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (max-width: 45rem) {
+  .af-toast-region {
+    inset-inline: var(--gutter);
+    inset-block-end: calc(var(--af-mobile-nav-height) + env(safe-area-inset-bottom, 0px) + var(--af-space-3));
+    width: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .af-toast { animation: none; }
+}
+
+.reduce-motion .af-toast { animation: none; }

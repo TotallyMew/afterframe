@@ -1,6 +1,6 @@
 import { cacheMetadata } from './metadata.mjs';
 import { animeCatalogTitles } from './anime.mjs';
-import { recommendationProfile } from '../../../afterframe/public/library.js';
+import { recommendationProfile } from '@afterframe/shared/library';
 import { malRating } from './mal.mjs';
 
 export async function recommendations(library, tmdb, tmdbEnabled) {
@@ -23,14 +23,20 @@ export async function recommendations(library, tmdb, tmdbEnabled) {
     return results;
   };
   if (personalized) {
-    const selected = seeds.filter(({ item }) => Number.isSafeInteger(item.id) && item.id > 0).slice(0, 3);
+    const sectionLimit = 18;
+    const selected = seeds.filter(({ item }) => Number.isSafeInteger(item.id) && Number(item.id) > 0).slice(0, 5);
     await Promise.allSettled(selected.map(async ({ item }) => {
-      const data = await cacheMetadata(`related:${item.type}:${item.id}`, 12 * 3600000, () => tmdb(`/${item.type}/${item.id}/recommendations`, { language: 'en-US', page: 1 }));
-      return { label: completedSeries.has(item.key) ? `Because you completed ${item.title}` : `Based on ${item.title}`, candidates: data.results.map(result => ({ ...result, media_type: item.type })) };
+      const page1 = await cacheMetadata(`related:${item.type}:${item.id}`, 12 * 3600000, () => tmdb(`/${item.type}/${item.id}/recommendations`, { language: 'en-US', page: 1 }));
+      let candidates = (page1.results || []).map(result => ({ ...result, media_type: item.type }));
+      if (page1.total_pages > 1 && candidates.length < sectionLimit) {
+        const page2 = await cacheMetadata(`related:${item.type}:${item.id}:2`, 12 * 3600000, () => tmdb(`/${item.type}/${item.id}/recommendations`, { language: 'en-US', page: 2 })).catch(() => null);
+        if (page2?.results?.length) candidates = [...candidates, ...page2.results.map(result => ({ ...result, media_type: item.type }))];
+      }
+      return { label: completedSeries.has(String(item.key)) ? `Because you completed ${item.title}` : `Based on ${item.title}`, candidates };
     })).then(results => {
       for (const result of results) {
         if (result.status !== 'fulfilled') continue;
-        const items = filter(result.value.candidates, shown, 6);
+        const items = filter(result.value.candidates, shown, sectionLimit);
         if (items.length) sections.push({ label: result.value.label, items });
       }
     });
@@ -42,19 +48,25 @@ export async function recommendations(library, tmdb, tmdbEnabled) {
         genres.set(key, (genres.get(key) || 0) + weight);
       }
     }
-    const favorite = [...genres].sort((a, b) => b[1] - a[1])[0]?.[0];
-    if (favorite) {
+    const favoriteGenres = [...genres].sort((a, b) => b[1] - a[1]).slice(0, 2);
+    for (let idx = 0; idx < favoriteGenres.length; idx++) {
+      const favorite = favoriteGenres[idx][0];
       const [type, genre] = favorite.split(':');
-      const response = await cacheMetadata(`recommend-genre:${favorite}`, 3600000, () => tmdb(`/discover/${type}`, { with_genres: genre, sort_by: 'popularity.desc', include_adult: 'false' })).catch(() => null);
-      const items = filter((response?.results || []).map(item => ({ ...item, media_type: type })), shown, 6);
-      if (items.length) sections.push({ label: 'Based on genres you watch', items });
+      const page1 = await cacheMetadata(`recommend-genre:${favorite}`, 3600000, () => tmdb(`/discover/${type}`, { with_genres: genre, sort_by: 'popularity.desc', include_adult: 'false', page: 1 })).catch(() => null);
+      let candidates = (page1?.results || []).map(item => ({ ...item, media_type: type }));
+      if (page1?.total_pages > 1) {
+        const page2 = await cacheMetadata(`recommend-genre:${favorite}:2`, 3600000, () => tmdb(`/discover/${type}`, { with_genres: genre, sort_by: 'popularity.desc', include_adult: 'false', page: 2 })).catch(() => null);
+        if (page2?.results?.length) candidates = [...candidates, ...page2.results.map(item => ({ ...item, media_type: type }))];
+      }
+      const items = filter(candidates, shown, sectionLimit);
+      if (items.length) sections.push({ label: idx === 0 ? 'Based on genres you watch' : 'More from your favorite genres', items });
     }
   }
   if (!sections.length) {
     const items = [];
-    for (let page = 1; page <= 3 && items.length < 12; page++) {
+    for (let page = 1; page <= 3 && items.length < 20; page++) {
       const trending = await cacheMetadata(`trending:all:${page}`, 15 * 60000, () => tmdb('/trending/all/week', { language: 'en-US', page }));
-      items.push(...filter(trending.results, shown, 12 - items.length));
+      items.push(...filter(trending.results, shown, 20 - items.length));
       if (!trending.total_pages || page >= trending.total_pages) break;
     }
     if (items.length) sections.push({ label: 'Trending discovery picks', items });
@@ -86,7 +98,9 @@ export async function seasonalAnime(params) {
     if (!allowed.includes(value)) throw invalid(`Invalid anime ${key}.`);
     variables[key] = value;
   }
-  for (const [key, lower, upper] of [['year', 1900, 2100], ['min', 1, 5000], ['max', 1, 5000]]) {
+  /** @type {readonly [string, number, number][]} */
+  const bounds = [['year', 1900, 2100], ['min', 1, 5000], ['max', 1, 5000]];
+  for (const [key, lower, upper] of bounds) {
     if (!params.get(key)) continue;
     const value = Number(params.get(key));
     if (!Number.isSafeInteger(value) || value < lower || value > upper) throw invalid(`Invalid anime ${key}.`);
@@ -115,7 +129,10 @@ export async function seasonalAnime(params) {
     return result;
   });
   const mapped = await animeCatalogTitles(data.media.map(item => item.id)).catch(() => new Map());
-  const results = data.media.map(item => ({ ...item, catalog: mapped.get(item.id), mal: null }));
+  const results = data.media.map(item => {
+    const match = mapped.get(item.id);
+    return { ...item, catalog: match?.catalog ?? undefined, catalogSeason: match?.season ?? undefined, mal: null };
+  });
   for (let start = 0; start < results.length; start += 6) {
     await Promise.all(results.slice(start, start + 6).map(async item => { item.mal = await malRating('anime', item.idMal); }));
   }

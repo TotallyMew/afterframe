@@ -78,4 +78,5 @@ export function monitorReleases(loadDetails, canLoad, loadSeason) {
   const timer = setInterval(run, checkInterval);
   timer.unref();
   run();
+  return () => clearInterval(timer);
 }

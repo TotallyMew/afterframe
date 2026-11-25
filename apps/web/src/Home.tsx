@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   normalizeTitle, normalizeTitles, playHref, request, resumeHref, titleHref, today, webHref,
-  type CatalogRating, type MediaType, type RawTitle, type Title, type TitleResults,
+  type CatalogRating, type Comic, type MediaType, type RawTitle, type Title, type TitleResults,
 } from './catalog';
 import { ActionLink, Artwork, CatalogProblem, HeroBackdrop, Icon, Loading, MediaCard, SaveButton, Score, Shelf } from './components';
 import { ComicCard, readerHref } from './Comics';
@@ -26,6 +26,9 @@ export function Home({ controls }: { controls: LibraryControls }) {
   const [featuredKey, setFeaturedKey] = useState('');
   const [ratings, setRatings] = useState<Record<string, CatalogRating>>({});
   const [featuredDetails, setFeaturedDetails] = useState<Title>();
+  const [recentComics, setRecentComics] = useState<Comic[]>([]);
+  const [comicsError, setComicsError] = useState('');
+  const [comicsAttempt, setComicsAttempt] = useState(0);
 
   const jobs = useRef<Partial<Record<ShelfKey, AbortController>>>({});
   const [retrying, setRetrying] = useState<Partial<Record<ShelfKey, boolean>>>({});
@@ -50,8 +53,31 @@ export function Home({ controls }: { controls: LibraryControls }) {
   useEffect(() => {
     document.title = 'Afterframe · Movies, TV & Comics';
     for (const [key] of shelves) loadShelf(key);
-    return () => { for (const task of Object.values(jobs.current)) task?.abort(); };
+    const currentJobs = jobs.current;
+    return () => { for (const task of Object.values(currentJobs)) task?.abort(); };
   }, []);
+
+  useEffect(() => {
+    const task = new AbortController();
+    request<{ results: Comic[] }>('/api/comics/updates', { signal: task.signal })
+      .then(async res => {
+        if (task.signal.aborted) return;
+        if (Array.isArray(res.results) && res.results.length) {
+          setRecentComics(res.results.slice(0, 10));
+          setComicsError('');
+          return;
+        }
+        const fallback = await request<{ results: Comic[] }>('/api/comics', { signal: task.signal });
+        if (!task.signal.aborted && Array.isArray(fallback.results)) {
+          setRecentComics(fallback.results.slice(0, 10));
+          setComicsError('');
+        }
+      })
+      .catch(problem => {
+        if (!task.signal.aborted) setComicsError(problem instanceof Error ? problem.message : 'Comics are temporarily unavailable.');
+      });
+    return () => task.abort();
+  }, [comicsAttempt]);
 
   const visibleKeys = shelves.flatMap(([key]) => {
     const shelf = data[key];
@@ -76,7 +102,7 @@ export function Home({ controls }: { controls: LibraryControls }) {
   const pending = Object.keys(data).length < shelves.length || failures.length === shelves.length && refreshing;
 
   function withRating(item: Title) {
-    return { ...item, rating: ratings[`${item.type}:${item.id}`] ?? item.rating };
+    return { ...item, rating: ratings[item.key] ?? ratings[`${item.type}:${item.id}`] ?? item.rating };
   }
 
   const featuredChoices = [...new Map([...shelfTitles('trending'), ...(data.trending ? shelfTitles('newMovies') : [])]
@@ -124,10 +150,10 @@ export function Home({ controls }: { controls: LibraryControls }) {
 
   return <>
     {featured ? <section className="af-wrap af-hero af-home-hero" aria-label="Featured film">
-      <div className="af-feature-artwork">
+      <div className="af-feature-artwork af-hero-transition" key={`art-${featured.key}`}>
         <HeroBackdrop src={featured.backdrop} sizes="(max-width: 760px) 100vw, min(58vw, 850px)" />
       </div>
-      <div className="af-copy">
+      <div className="af-copy af-hero-transition" key={`copy-${featured.key}`}>
         <h1>{featured.title}</h1>
         <div className="af-meta af-title-facts">
           {[featured.year, featured.genre, featureDuration ? `${featureDuration} min` : ''].filter(Boolean).map(fact => <span key={fact}>{fact}</span>)}
@@ -193,6 +219,11 @@ export function Home({ controls }: { controls: LibraryControls }) {
       {collections.map(([key, label, path]) => shelfTitles(key).length ? <Shelf title={label} key={key} href={webHref(path)}>
         {shelfTitles(key).slice(0, 8).map(item => <MediaCard key={item.key} item={withRating(item)} controls={controls} />)}
       </Shelf> : !error && !pending && shelfStatus(key, label))}
+      {recentComics.length > 0 ? <Shelf title="Comics & Manga" href={webHref('comics')}>
+        {recentComics.map(item => <ComicCard key={item.key} item={item} controls={controls} />)}
+      </Shelf> : comicsError && <section className="af-section"><h2>Comics &amp; Manga</h2>
+        <p className="af-state" role="alert">{comicsError} <button type="button" className="af-text-link" onClick={() => { setComicsError(''); setComicsAttempt(v => v + 1); }}>Retry comics</button></p>
+      </section>}
     </div>
   </>;
 }

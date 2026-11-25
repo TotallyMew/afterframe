@@ -1,6 +1,6 @@
 import { cacheMetadata } from '../catalog/metadata.mjs';
 import { decodeHtml, seriesQueries, sourceHtml, titleMatcher } from './comic-sources.mjs';
-import { chapterNumberSource } from '../../../afterframe/public/comic-ids.js';
+import { chapterNumberSource } from '@afterframe/shared/comic-ids';
 
 const origin = 'https://lector-mangas.lat';
 const minute = 60_000;
@@ -36,7 +36,7 @@ function findListing(item) {
       }
     }
     const checked = await Promise.allSettled([...candidates].slice(0, 4).map(listing));
-    const matchesFormat = checked.flatMap(result => result.value?.format === item.format ? [result.value] : []);
+    const matchesFormat = checked.flatMap(result => result.status === 'fulfilled' && result.value?.format === item.format ? [result.value] : []);
     if (!matchesFormat.length && checked.length && checked.every(result => result.status === 'rejected')) throw checked[0].reason;
     // Duplicate listings can have different chapter coverage for the same title.
     return matchesFormat.sort((a, b) => b.numbers.length - a.numbers.length)[0] || null;

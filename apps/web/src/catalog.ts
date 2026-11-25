@@ -1,3 +1,6 @@
+import { currentLocationHref, currentSearchParams, navigate, normalizeBackParam, searchHref, webHref } from './router';
+
+export { navigate, searchHref, webHref };
 export type MediaType = 'movie' | 'tv';
 
 export interface CatalogRating {
@@ -21,7 +24,7 @@ export interface RawTitle {
   runtime?: number;
   imdb_id?: string;
   external_ids?: { imdb_id?: string };
-  catalog_facts?: { rating?: CatalogRating };
+  catalog_facts?: { rating?: CatalogRating; mal?: number };
 }
 
 export interface Title {
@@ -41,6 +44,7 @@ export interface Title {
   duration?: number;
   imdb?: string;
   rating?: CatalogRating;
+  mal?: number;
   totalEpisodes?: number;
 }
 
@@ -54,6 +58,8 @@ export interface Comic {
   poster?: string;
   status?: string;
   updated?: number;
+  malId?: number | null;
+  mal?: number;
   genres?: { id: string; name: string }[];
 }
 
@@ -101,10 +107,6 @@ export const catalogGenres = [
   'Action', 'Adventure', 'Animation', 'Comedy', 'Crime', 'Documentary', 'Drama', 'Family',
   'Fantasy', 'History', 'Horror', 'Music', 'Mystery', 'Romance', 'Science Fiction', 'Thriller', 'War', 'Western', 'Anime',
 ];
-
-export function webHref(route: string) {
-  return `/#${route}`;
-}
 
 export function routeWithParams(route: string, params: URLSearchParams) {
   return params.size ? `${route}?${params}` : route;
@@ -162,7 +164,7 @@ export function normalizeTitle(raw: RawTitle, type = raw.media_type): Title {
     poster: imagePath(raw.poster_path), backdrop: imagePath(raw.backdrop_path, 'w1280'),
     genre: raw.genres?.[0]?.name || genres[genreIds?.[0] ?? 0], genreIds,
     originalLanguage: raw.original_language, duration: raw.runtime || undefined,
-    imdb: raw.external_ids?.imdb_id || raw.imdb_id, rating: raw.catalog_facts?.rating,
+    imdb: raw.external_ids?.imdb_id || raw.imdb_id, rating: raw.catalog_facts?.rating, mal: raw.catalog_facts?.mal,
   };
 }
 
@@ -175,27 +177,30 @@ export function titleHref(item: Pick<Title, 'type' | 'id'>) {
   return recordHref(`${item.type}/${item.id}`);
 }
 
-export function playerHref(route: string, back = location.hash || '#home') {
-  const params = back ? new URLSearchParams({ return: `/${back}` }) : undefined;
-  return `/player/${params ? `?${params}` : ''}#${route}`;
+export function playerHref(route: string, back = currentLocationHref()) {
+  const [path, existingQuery = ''] = route.split('?', 2);
+  const params = new URLSearchParams(existingQuery);
+  if (back && !params.has('back')) params.set('back', back);
+  return webHref(routeWithParams(path, params));
 }
 
 export function rememberRoute(invoker: Element | null = null) {
   const focused = invoker ?? document.activeElement;
   const focus = focused instanceof HTMLAnchorElement ? focused.getAttribute('href') : focused?.getAttribute('aria-label');
-  try { sessionStorage.setItem(`afterframe.view:${location.hash || '#home'}`, JSON.stringify({ y: scrollY, focus })); }
+  try { sessionStorage.setItem(`afterframe.view:${currentLocationHref()}`, JSON.stringify({ y: scrollY, focus })); }
   catch { /* Browsing still works without session storage. */ }
 }
 
 export function previousBrowse(fallback: string) {
-  const back = new URLSearchParams(location.hash.split('?')[1]).get('back');
-  return back && /^#(?:home|movies|tv|new|anime|comics|search|watchlist|watched|ratings|reading|history|recommendations)(?:[?=]|$)/.test(back)
-    ? `/${back}` : webHref(fallback);
+  const back = currentSearchParams().get('back');
+  return normalizeBackParam(back) ?? webHref(fallback);
 }
 
 function recordHref(route: string) {
-  const prior = location.hash;
-  return webHref(prior && !prior.startsWith(`#${route}`) && !/^#(?:movie|tv|comic)\//.test(prior)
+  const prior = currentLocationHref();
+  const targetHref = webHref(route);
+  const isDetailPrior = /^\/(?:movie|tv|comic)\//.test(prior);
+  return webHref(prior && !prior.startsWith(targetHref) && !isDetailPrior
     ? `${route}?back=${encodeURIComponent(prior)}` : route);
 }
 

@@ -72,6 +72,12 @@ test('chapter ranges and reader links follow the same ordered list of chapters',
   assert.equal(boundary.neighbors.next.page, 2);
   const end = await load({ chapter: special.id });
   assert.equal(end.neighbors.next, null);
+
+  const allChapters = await load({ all: '1' });
+  assert.equal(allChapters.totalChapters, 107);
+  assert.deepEqual(allChapters.ranges, []);
+  assert.equal(allChapters.nextPage, null);
+  assert.equal(allChapters.results.length, entries.length);
 });
 
 test('native MangaDex pages are served through the local image route', async t => {

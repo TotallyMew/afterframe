@@ -1,21 +1,53 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { comicChapterIdPattern, comicIdPattern } from '../../../afterframe/public/comic-ids.js';
-import { preferenceDefaults } from '../../../afterframe/public/playback.js';
-import { ratingOnTen, watchStatuses, watchStatus } from '../../../afterframe/public/library.js';
+import { comicChapterIdPattern, comicIdPattern } from '@afterframe/shared/comic-ids';
+import { preferenceDefaults } from '@afterframe/shared/playback';
+import { ratingOnTen, watchStatuses, watchStatus } from '@afterframe/shared/library';
 import { openAccountStorage } from './account-storage.mjs';
 
 const db = await openAccountStorage();
 export const accountStorageHealth = db.health;
+export const closeAccountStorage = () => db.close();
 
-const hashPassword = promisify(scrypt);
+/** @type {(password: string, salt: string, keylen: number, options: import('node:crypto').ScryptOptions) => Promise<Buffer>} */
+const hashPassword = /** @type {any} */ (promisify(scrypt));
 const work = { N: 2 ** 17, r: 8, p: 1, maxmem: 160 * 1024 ** 2 };
 const guestSalt = randomBytes(24).toString('hex');
 const cookie = 'afterframe_session';
 const maxAge = 30 * 24 * 60 * 60;
 const cookieFlags = `Path=/; HttpOnly; SameSite=Strict${process.env.AFTERFRAME_ORIGIN ? '; Secure' : ''}`;
-let hashing = false;
+const maxConcurrentHashes = 2;
+const maxQueuedHashes = 16;
+let activeHashes = 0;
+const hashQueue = [];
 const attempts = new Map();
+
+export function clientAddress(request) {
+  const remote = request.socket?.remoteAddress || 'local';
+  const trustProxy = Boolean(process.env.AFTERFRAME_ORIGIN || process.env.AFTERFRAME_TRUST_PROXY || process.env.AFTERFRAME_WEB_PORT);
+  if (trustProxy) {
+    const forwarded = request.headers?.['x-forwarded-for'];
+    if (typeof forwarded === 'string' && forwarded.trim()) {
+      const parts = forwarded.split(',').map(part => part.trim()).filter(Boolean);
+      if (parts.length) return parts.at(-1);
+    }
+  }
+  return remote;
+}
+
+async function derivePasswordHash(password, salt) {
+  if (activeHashes >= maxConcurrentHashes) {
+    if (hashQueue.length >= maxQueuedHashes) return null;
+    await new Promise(resolve => hashQueue.push(resolve));
+  }
+  activeHashes++;
+  try {
+    return await hashPassword(password, salt, 64, work);
+  } finally {
+    activeHashes--;
+    hashQueue.shift()?.();
+  }
+}
 
 const accountByName = db.prepare('SELECT * FROM accounts WHERE username = ?', 'SELECT * FROM accounts WHERE lower(username) = lower(?)');
 const addAccount = db.prepare('INSERT INTO accounts (username, salt, password_hash) VALUES (?, ?, ?) ON CONFLICT DO NOTHING RETURNING id');
@@ -151,7 +183,7 @@ function libraryValue(kind, value, key) {
       && Number.isFinite(value.updated) ? value : undefined;
   }
   if (kind === 'ratings') return Number.isInteger(value?.score) && value.score >= 1 && value.score <= (value.scale === 10 ? 10 : 5)
-    && value.item?.key === key && typeof value.item.title === 'string' && ['movie', 'tv'].includes(value.item.type) ? ratingOnTen(value) : undefined;
+    && value.item?.key === key && typeof value.item.title === 'string' && ['movie', 'tv', 'comic'].includes(value.item.type) ? ratingOnTen(value) : undefined;
   if (kind === 'history') return /^[a-f0-9-]{36}$/.test(key) && typeof value?.item?.key === 'string' && typeof value.item.title === 'string' && ['movie', 'tv'].includes(value.item.type)
     && typeof value.mediaKey === 'string' && (value.mediaKey === value.item.key || value.mediaKey.startsWith(`${value.item.key}/`))
     && Number.isFinite(value.duration) && value.duration > 0 && value.duration <= 86400 && Number.isFinite(value.time) && value.time >= 0 && value.time <= value.duration
@@ -239,6 +271,61 @@ export async function accountApi(request, response, path, body) {
     });
   }
 
+  if (path === '/api/account/import') {
+    if (!account) return status(401, 'Sign in to import your library.');
+    const { accountId, library: incoming } = body || {};
+    if (account.id !== accountId) return status(409, 'The signed-in account changed. Reload to import.');
+    if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return status(400, 'Invalid library import payload.');
+    const allowedKinds = ['saved', 'watched', 'ratings', 'progress', 'reading', 'history', 'preferences'];
+    const keyPattern = /^[a-z0-9][\w.-]*(?:\/[\w-]+)?$/i;
+    const validOps = [];
+    let skipped = 0;
+    for (const kind of allowedKinds) {
+      const bucket = incoming[kind];
+      if (!bucket || typeof bucket !== 'object' || Array.isArray(bucket)) continue;
+      for (const [key, rawValue] of Object.entries(bucket)) {
+        if (validOps.length >= 5000) { skipped++; continue; }
+        if (typeof key !== 'string' || !keyPattern.test(key) || key.length > 145 || rawValue === null) {
+          skipped++;
+          continue;
+        }
+        const entry = libraryValue(kind, rawValue, key);
+        if (entry === undefined) { skipped++; continue; }
+        validOps.push({ kind, key, entry });
+      }
+    }
+    const counts = Object.fromEntries(allowedKinds.map(k => [k, 0]));
+    let totalImported = 0;
+    await db.transaction(async () => {
+      await db.lockAccount(account.id);
+      const now = Date.now();
+      for (const { kind, key, entry } of validOps) {
+        const existingRow = await getEntry.get(account.id, kind, key);
+        const existing = existingRow ? JSON.parse(existingRow.value) : null;
+        if (kind === 'preferences') {
+          if (existing !== null) { skipped++; continue; }
+          await setEntry.run(account.id, kind, key, JSON.stringify(entry));
+          await setVersion.run(account.id, kind, key, now);
+          counts[kind]++;
+          totalImported++;
+          continue;
+        }
+        const incomingTs = Math.min(Number(entry?.updated ?? entry?.added ?? now) || now, now + 60000);
+        const version = await getVersion.get(account.id, kind, key);
+        const existingTs = version ? Number(version.updated) : Number(existing?.updated ?? existing?.added ?? 0);
+        if (existing !== null && incomingTs <= existingTs) {
+          skipped++;
+          continue;
+        }
+        await setEntry.run(account.id, kind, key, JSON.stringify(entry));
+        await setVersion.run(account.id, kind, key, Math.max(existingTs + 1, incomingTs));
+        counts[kind]++;
+        totalImported++;
+      }
+    });
+    return { code: 200, body: { ok: true, imported: counts, totalImported, skipped, library: await readLibrary(account.id) } };
+  }
+
   if (path === '/api/account/complete-series') {
     if (!account) return status(401, 'Sign in first.');
     const { accountId, item, episodes } = body || {};
@@ -273,11 +360,10 @@ export async function accountApi(request, response, path, body) {
   if (!/^[a-z0-9][a-z0-9_-]{2,29}$/i.test(username) || typeof password !== 'string' || password.length < 8 || password.length > 128) {
     return status(400, 'Enter a valid username and a password of at least 8 characters.');
   }
-  if (hashing) return status(429, 'An account request is in progress. Try again in a moment.');
   const now = Date.now();
   for (const [key, entry] of attempts) if (now >= entry.expires) attempts.delete(key);
   const limitKey = `${path}:${username.toLowerCase()}`;
-  const addressKey = `${path}:ip:${request.socket?.remoteAddress || 'local'}`;
+  const addressKey = `${path}:ip:${clientAddress(request)}`;
   if ((attempts.get(limitKey)?.count || 0) >= 8 || (attempts.get(addressKey)?.count || 0) >= 60) return status(429, 'Too many attempts. Try again in 15 minutes.');
   for (const key of [limitKey, addressKey]) {
     const entry = attempts.get(key) || { count: 0, expires: now + 15 * 60000 };
@@ -290,10 +376,8 @@ export async function accountApi(request, response, path, body) {
   if (creating && process.env.AFTERFRAME_REGISTRATION === 'closed') return status(403, 'Registration is closed on this installation.');
   if (creating && existing) return status(409, 'That username is already in use.');
   const salt = creating || resetting ? randomBytes(24).toString('hex') : existing?.salt || guestSalt;
-  let passwordHash;
-  if (hashing) return status(429, 'An account request is in progress. Try again in a moment.');
-  hashing = true;
-  try { passwordHash = await hashPassword(password, salt, 64, work); } finally { hashing = false; }
+  const passwordHash = await derivePasswordHash(password, salt);
+  if (!passwordHash) return status(429, 'Too many account requests are in progress. Try again in a moment.');
   if (resetting) {
     const code = typeof body.code === 'string' && /^[a-f0-9]{48}$/i.test(body.code) ? body.code.toLowerCase() : '';
     if (!existing || !code) return status(400, 'The username or recovery code is invalid.');
