@@ -13,8 +13,10 @@ export function Footer({ onOpenShortcuts }: { onOpenShortcuts: () => void }) {
           Catalog powered by <a href="https://www.themoviedb.org/" target="_blank" rel="noopener noreferrer">TMDB</a>,{' '}
           <a href="https://mangadex.org/" target="_blank" rel="noopener noreferrer">MangaDex</a>,{' '}
           <a href="https://archive.org/" target="_blank" rel="noopener noreferrer">Internet Archive</a>,{' '}
-          <a href="https://aniskip.com/" target="_blank" rel="noopener noreferrer">AniSkip</a>, and{' '}
-          <a href="https://theintrodb.org/" target="_blank" rel="noopener noreferrer">TheIntroDB</a>.
+          <a href="https://skipdb.tv/" target="_blank" rel="noopener noreferrer">SkipDB</a>,{' '}
+          <a href="https://introdb.app/" target="_blank" rel="noopener noreferrer">IntroDB</a>,{' '}
+          <a href="https://theintrodb.org/" target="_blank" rel="noopener noreferrer">TheIntroDB</a>, and{' '}
+          <a href="https://aniskip.com/" target="_blank" rel="noopener noreferrer">AniSkip</a>.
         </p>
       </div>
       <nav className="af-footer-links" aria-label="Footer">

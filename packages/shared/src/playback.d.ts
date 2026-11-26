@@ -3,7 +3,7 @@ export interface SkipSegment {
   start: number;
   end: number;
   autoSkip?: boolean;
-  source?: 'verified' | 'aniskip' | 'theintrodb';
+  source?: 'verified' | 'aniskip' | 'skipdb' | 'theintrodb' | 'introdb';
 }
 
 export interface ViewingSession {

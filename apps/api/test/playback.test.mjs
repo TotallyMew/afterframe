@@ -2,7 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { activeSkipSegment, bufferedIntervals, completionReached, movieDurationMismatch, samplePlayback, viewingSession } from '@afterframe/shared/playback';
 import { playbackLanguage, samePlaybackLanguage } from '@afterframe/shared/subtitles';
-import { isReasonableSegment } from '../catalog/segments.mjs';
+import {
+  isReasonableSegment,
+  mergeSkipCandidates,
+  parseAniSkipPayload,
+  parseIntroDbPayload,
+  parseSkipDbPayload,
+  parseTheIntroDbPayload,
+} from '../catalog/segments.mjs';
 import { stripAnimeSeasonTitle } from '../catalog/discovery.mjs';
 
 test('a large runtime discrepancy is flagged while ordinary release differences remain playable', () => {
@@ -93,4 +100,68 @@ test('anime season suffix stripping extracts parent series title and season numb
   assert.deepEqual(stripAnimeSeasonTitle('Blue Box Season 2'), { baseTitle: 'Blue Box', season: 2 });
   assert.deepEqual(stripAnimeSeasonTitle('Frieren: 2nd Season'), { baseTitle: 'Frieren', season: 2 });
   assert.deepEqual(stripAnimeSeasonTitle('Firefly Wedding'), { baseTitle: 'Firefly Wedding', season: null });
+});
+
+test('multi-source skip parser & merger combines SkipDB, IntroDB, TheIntroDB, and AniSkip with consensus promotion', () => {
+  const durationSec = 3180; // Dexter S1E1 (53:00)
+  const durationMs = durationSec * 1000;
+
+  const theIntroDb = parseTheIntroDbPayload({
+    type: 'tv',
+    group_duration_ms: 3183180, // 3.18s delta -> valid manual intro
+    intro: [{ start_ms: null, end_ms: 21586, confidence: 0.8245, submission_count: 2 }],
+    recap: [{ start_ms: 114000, end_ms: 284000, confidence: 0.6, submission_count: 1 }],
+  }, 'tv', durationMs);
+  assert.equal(theIntroDb.length, 1);
+  assert.equal(theIntroDb[0].kind, 'intro');
+  assert.equal(theIntroDb[0].autoSkip, false);
+
+  const skipDb = parseSkipDbPayload({
+    segments: {
+      intro: null,
+      recap: null,
+      outro: { start_ms: 3085100, end_ms: 3180000, adjusted: true, offset_ms: -3200, match: 'shifted', confidence: 0.82 },
+    },
+  }, durationSec);
+  assert.equal(skipDb.length, 1);
+  assert.equal(skipDb[0].kind, 'credits');
+  assert.equal(skipDb[0].source, 'skipdb');
+  assert.equal(skipDb[0].autoSkip, true);
+
+  const introDb = parseIntroDbPayload({
+    intro: { start_ms: 1000, end_ms: 28000, confidence: 1, submission_count: 1 },
+    recap: null,
+    outro: { start_ms: 3088000, end_ms: 3190000, confidence: 1, submission_count: 1 },
+  }, durationSec);
+  assert.equal(introDb.length, 2);
+  assert.equal(introDb[1].end, 3180); // Clamped to durationSec
+
+  // Merging picks TheIntroDB intro (higher multi-vote score) AND SkipDB outro (corroborated by IntroDB within 3s)
+  const merged = mergeSkipCandidates([...theIntroDb, ...skipDb, ...introDb], durationSec);
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0].kind, 'intro');
+  assert.equal(merged[0].source, 'theintrodb');
+  assert.equal(merged[1].kind, 'credits');
+  assert.equal(merged[1].source, 'skipdb');
+  assert.equal(merged[1].autoSkip, true);
+
+  // Two manual-only sources agreeing within ±4s promote autoSkip to true
+  const consensus = mergeSkipCandidates([
+    { kind: 'intro', start: 229, end: 246.5, autoSkip: false, source: 'skipdb', score: 60 },
+    { kind: 'intro', start: 228.6, end: 246.5, autoSkip: false, source: 'introdb', score: 64 },
+  ], 3500);
+  assert.equal(consensus[0].autoSkip, true);
+
+  // AniSkip accepts op/ed and mixed-op/mixed-ed, preferring exact episodeLength and downgrading minor drift to manual
+  const aniSkip = parseAniSkipPayload({
+    found: true,
+    results: [
+      { skipType: 'op', interval: { startTime: 54.7, endTime: 145.1 }, episodeLength: 1435.1 },
+      { skipType: 'mixed-ed', interval: { startTime: 1338.2, endTime: 1428.2 }, episodeLength: 1441.0 },
+    ],
+  }, 1435);
+  assert.equal(aniSkip.length, 2);
+  assert.equal(aniSkip[0].autoSkip, true);
+  assert.equal(aniSkip[1].kind, 'credits');
+  assert.equal(aniSkip[1].autoSkip, false); // 6s drift -> manual skip only
 });
