@@ -1,12 +1,85 @@
-# Afterframe
+<div align="center">
+  <img src="afterframe/public/art/favicon.svg" alt="Afterframe logo" width="56" height="56" />
+  <h1>Afterframe</h1>
+  <p><strong>A self-hosted personal media library, video player, and manga reader for movies, TV shows, anime, and manga.</strong></p>
 
-Afterframe is a personal media library that runs on localhost. Browse trending titles, new movies and series, anime, and comics, or search for a specific title. The video catalog supports genre, release year, IMDb rating, and runtime filters. The IMDb filter checks scores as each page loads.
+  <p>
+    <img src="https://img.shields.io/badge/Node.js-22%2B-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js 22+" />
+    <img src="https://img.shields.io/badge/React-19-149ECA?style=flat-square&logo=react&logoColor=white" alt="React 19" />
+    <img src="https://img.shields.io/badge/TypeScript-5-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript" />
+    <img src="https://img.shields.io/badge/PostgreSQL%20%7C%20SQLite-Storage-4169E1?style=flat-square&logo=postgresql&logoColor=white" alt="PostgreSQL or SQLite" />
+    <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker&logoColor=white" alt="Docker Ready" />
+  </p>
 
-Movies and shows have dedicated records with artwork, cast and crew, ratings, related titles, and episode lists. Local profiles keep separate watchlists, watched titles and episodes, personal ratings, playback history, and preferences. Guest activity and preferences are saved in the browser.
+  <img src="docs/screenshots/home.png" alt="Afterframe Home" width="100%" />
+</div>
 
-## Run locally
+---
 
-Install Node.js 22.19 or newer, then run these commands from the repository root.
+## Overview
+
+**Afterframe** brings discovery, tracking, playback, and manga reading into one fast, editorial dark-mode web application. Run it locally on Node.js, self-host with Docker Compose, or deploy to Railway with PostgreSQL-backed accounts and multi-device sync.
+
+### Key Features
+
+- **Unified Discovery & Search**
+  - Browse Movies, TV Shows, Anime (with seasonal schedules and airing countdowns), Manga (manga, manhwa, manhua, comics), Weekly Releases, and personalized **For You** picks.
+  - Filter by genre, decade, release year range, runtime, and IMDb/MAL ratings, or press `/` / `Ctrl+K` (`⌘K`) anywhere for instant command palette search.
+- **Personal Library, Stats & Custom Folders**
+  - Track watch and reading statuses (`Watching`, `Completed`, `On-Hold`, `Dropped`, `Plan to Watch`), 1–10 personal ratings, custom color-coded folders, and day-grouped watch history.
+  - Built-in **Library Statistics** filterable across `All`, `Movies`, `TV Shows`, and `Anime`, showing time watched, mean score, status distribution bar, and episode totals.
+  - **Auto-add as Watching** (enabled by default in **Settings → Playback**) automatically adds series and movies to your Library as `Watching` once you complete an episode or make meaningful playback progress.
+  - Works seamlessly in Guest Mode (local browser storage) or signed-in accounts synced across devices.
+- **Smart Video Player**
+  - Resumes exact playback position, tracks actual watched coverage per episode, and supports automatic next-episode playback with a cancellable countdown.
+  - Verified **Intro / Recap / Credits** skipping powered by [AniSkip](https://aniskip.com/) and [TheIntroDB](https://theintrodb.org/) with confidence guards and a one-click **Undo** pill.
+  - Keyboard shortcuts (`Space`, `←/→`, `F`, `S`) and subtitle/audio/quality preference persistence.
+- **Immersive Manga Reader**
+  - Built-in reader supporting **Long strip** (default on mobile, full-bleed edge-to-edge with `0px` gaps), **Single**, and **Double** page spreads with RTL/LTR direction and image fit controls.
+  - Auto-hiding translucent floating controls on scroll, tap-to-reveal capsules, an ultra-thin `3px` clickable edge progress bar (`Left` / `Bottom` / `Right` / `Off`), centered Settings & Chapters modals, screen dimming, grayscale mode, and true-black OLED canvas.
+  - Aggregates chapters from [MangaDex](https://mangadex.org/) alongside fallback English/Spanish chapter sources and optional publisher-authorized text transcripts.
+
+---
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <strong>Personal Library, Filterable Stats &amp; Custom Folders</strong><br /><br />
+      <img src="docs/screenshots/library.png" alt="Afterframe Library and Stats" width="100%" />
+    </td>
+    <td width="50%" valign="top">
+      <strong>Title Details, Ratings &amp; Cast</strong><br /><br />
+      <img src="docs/screenshots/details.png" alt="Afterframe Title Details" width="100%" />
+    </td>
+  </tr>
+</table>
+
+<details open>
+  <summary><strong>Mobile Manga Reader (Edge-to-Edge Long Strip &amp; Subtle Floating Controls)</strong></summary>
+  <br />
+  <div align="center">
+    <img src="docs/screenshots/manga-reader-mobile.png" alt="Afterframe Mobile Manga Reader" width="320" />
+  </div>
+</details>
+
+---
+
+## Architecture
+
+| Workspace | Purpose |
+| --- | --- |
+| `apps/web` | Unified React 19 + Vite + TypeScript frontend (discovery, Library, video player, manga reader, Settings, Base UI dialogs/popovers) + static/proxy web server (`server.mjs`). |
+| `apps/api` | Node.js HTTP API serving catalog proxies, AniBridge anime mappings, AniSkip/TheIntroDB skip timings, MangaDex/chapter aggregation, release notifications, and SQLite/PostgreSQL account storage. |
+| `packages/shared` | Shared design tokens (`theme.css`), playback tracking math, comic display helpers, and discovery utilities shared between `web` and `api`. |
+| `afterframe` | Public icons/artwork and local runtime configuration/data directory (ignored by git). |
+
+---
+
+## Quick Start
+
+### 1. Run Locally (Node.js 22.19+)
 
 ```sh
 npm ci
@@ -14,112 +87,95 @@ npm run build
 npm start --workspace @afterframe/api
 ```
 
-Open [localhost:4173](http://localhost:4173/). The server listens on the loopback interface. Set `PORT` in the environment or in `afterframe/.env` to choose another port.
+Open [http://localhost:4173](http://localhost:4173). By default the server binds to loopback (`127.0.0.1`). Set `PORT` in the environment or `afterframe/.env` to customize the port.
 
-Run `npm test` from the repository root to execute both API and web tests, `npm run typecheck` to type-check the frontend, and `npm run lint` to run ESLint. The API and tests live in `apps/api`, the unified React web app and player live in `apps/web`, shared modules live in `packages/shared`, and `afterframe` holds media assets and local configuration and data.
+#### Development Mode (Hot Reload)
 
-## Web development
+Run the API and Vite dev server in two terminals:
 
-Browse, search, comics, playback, account controls, and Settings all run inside the unified React web app. Bookmarks for `/legacy/` or `/player/` redirect to their current destinations.
-
-Start the API from the repository root with `npm run dev:api`. In another terminal, run:
+```sh
+npm run dev:api
+```
 
 ```sh
 npm run dev:web
 ```
 
-Open [localhost:5174](http://localhost:5174/). Set `AFTERFRAME_API_URL` before starting Vite if the API uses a port other than 4173. Run `npm run build` from the repository root to type-check and build the frontend. Restart the API to serve a new build from its main address. Use `AFTERFRAME_WEB_DIST` to select a different build directory.
+Open [http://localhost:5174](http://localhost:5174). Set `AFTERFRAME_API_URL` if the API runs on a port other than `4173`.
 
-## Run with Docker Compose
+### 2. Run with Docker Compose
 
-From the repository root, build and start the web frontend, API and PostgreSQL.
+Build and start the `web`, `api`, and `PostgreSQL` stack from the repository root:
 
 ```sh
 docker compose up -d --build --wait
 ```
 
-Open [localhost:4173](http://localhost:4173/). If you already use `afterframe/.env` for catalog keys, run `docker compose --env-file afterframe/.env up -d --build --wait` to pass those keys to the API. Set `AFTERFRAME_PORT` if port 4173 is in use.
+To pass existing catalog keys from `afterframe/.env`:
 
-The Compose database starts with its own library and settings. If you saved your catalog key through Settings in the Node-only installation, enter it in Settings on the Docker instance or provide it through the API environment.
+```sh
+docker compose --env-file afterframe/.env up -d --build --wait
+```
 
-Only the web port is published, on the local loopback interface. The web service proxies API, playback and reader requests over the Compose network. PostgreSQL stores signed-in accounts and library data in the `postgres-data` volume, which persists across container restarts and ordinary `docker compose down`.
+Only the web service port (`4173` by default, override with `AFTERFRAME_PORT`) is published on loopback. Account and library data persists in the `postgres-data` volume.
 
-## Deploy to Railway
+### 3. Deploy to Railway
 
-Use two services named `web` and `api`, plus a PostgreSQL service named `Postgres`. Add a public HTTPS domain to `web` and route its API traffic over the private network. Set the healthcheck path to `/api/health` on both app services.
+Deploy two app services (`web` and `api`) backed by a `Postgres` service, with `/api/health` configured as the healthcheck path on both services and a public HTTPS domain attached to `web`.
 
-For image-backed services, build both Docker targets from the same revision for `linux/amd64`. Publish matching versioned `web-<version>` and `api-<version>` tags, then select the corresponding Source Image in each Railway service. Verify both deployments are active and confirm that the public web URL serves the new frontend and returns 200 from `/api/health`. The previous tags provide a rollback target.
-
-For GitHub-backed services, use the repository root and the branch containing the deployment configuration for both services. Railway builds the root Dockerfile and uses `AFTERFRAME_SERVICE` to select the corresponding target.
-
-| Service | Variables |
+| Service | Required Environment Variables |
 | --- | --- |
 | `web` | `AFTERFRAME_SERVICE=web`, `PORT=8080`, `AFTERFRAME_API_URL=http://${{api.RAILWAY_PRIVATE_DOMAIN}}:8080`, `AFTERFRAME_ORIGIN=https://your-public-domain` |
 | `api` | `AFTERFRAME_SERVICE=api`, `PORT=8080`, `AFTERFRAME_ORIGIN=https://your-public-domain`, `AFTERFRAME_ACCOUNTS_DATABASE_URL=${{Postgres.DATABASE_URL}}`, `DATABASE_URL=${{Postgres.DATABASE_URL}}` |
 
-Replace `https://your-public-domain` with the same HTTPS origin on both services. Set the catalog and rating credentials on the API service using the environment variable names below. Test the public URL from a second device. Sign in, save a title, reload the page and confirm that it remains in My Library. Sign in with the same test account on another device to check that the saved title appears there.
+For image-backed Railway deploys, build matching `linux/amd64` Docker targets (`--target web` and `--target api`) with versioned tags and connect each service to its corresponding image tag.
 
-## Move an existing account library to PostgreSQL
+---
 
-The Node-only setup uses SQLite unless `AFTERFRAME_ACCOUNTS_DATABASE_URL` is set. `DATABASE_URL` independently enables the metadata cache. For an existing installation, stop writes to the SQLite source and take a database snapshot. Set `AFTERFRAME_ACCOUNTS_DATABASE_URL` in the shell to a reachable, empty Afterframe PostgreSQL database and run this from the repository root.
+## Configuration & Integrations
+
+Catalog credentials can be configured via **Settings → Integrations** (in local single-host installs) or environment variables (recommended for Docker/Railway and required in public HTTPS deployments):
+
+| Variable | Description |
+| --- | --- |
+| `TMDB_READ_TOKEN` / `TMDB_API_KEY` | Required for the full Movies & TV catalog ([Get a TMDb key](https://www.themoviedb.org/settings/api)). |
+| `OMDB_API_KEY` | Optional — supplies IMDb scores and vote counts ([Get an OMDb key](https://www.omdbapi.com/apikey.aspx)). |
+| `MAL_CLIENT_ID` | Optional — supplies MyAnimeList scores for mapped anime and manga ([MAL API](https://myanimelist.net/apiconfig)). |
+| `DATABASE_URL` | Optional — enables persistent PostgreSQL metadata caching (falls back to in-memory cache). |
+| `AFTERFRAME_ACCOUNTS_DATABASE_URL` | Optional — stores accounts and libraries in PostgreSQL instead of `afterframe/data/accounts.sqlite`. |
+| `AFTERFRAME_ORIGIN` | Public HTTPS origin when running behind a reverse proxy or on Railway. |
+| `AFTERFRAME_REGISTRATION` | Set to `closed` to disable new account sign-ups after creating your accounts. |
+| `AFTERFRAME_ANNOUNCEMENTS_FILE` | Optional JSON file path for verified upcoming season announcements (`seriesId`, `season`, `source`). |
+| `AFTERFRAME_COMIC_TRANSCRIPTS_FILE` | Optional JSON file path for publisher-authorized manga chapter text transcripts. |
+| `MANGADEX_BLOCKED_GROUPS` | Optional comma-separated MangaDex scanlation group IDs to exclude. |
+
+### Migrating SQLite Accounts to PostgreSQL
+
+Stop writes to the SQLite database, set `AFTERFRAME_ACCOUNTS_DATABASE_URL` to an empty PostgreSQL database, and run:
 
 ```sh
 npm run import:accounts --workspace @afterframe/api -- /path/to/accounts-snapshot.sqlite
 ```
 
-The import retains account IDs, password hashes, libraries, playback preferences, recovery codes and release history. Sign in again on the destination and configure its integration keys through environment variables. The SQLite snapshot stays available for rollback.
+This preserves account IDs, password hashes, libraries, folders, playback preferences, recovery codes, and release notification history.
 
-## Library, search and releases
+---
 
-- **My Library** includes title search, watch statuses, progress and rating filters, and a session history. Register or sign in to keep these records on the server and resume on another browser connected to the same installation. Existing five-star ratings are doubled once to preserve their relative scores on the 1–10 scale.
-- **Recommendations** start with discovery picks. Completing two distinct series or meaningfully watching three titles or episodes enables personalized recommendations. **Anime** supports season, year, format, status, genre, theme and episode count filters.
-- **My Library → Notifications** shows newly aired episodes and season premieres detected from TMDb's last-aired episode data. Afterframe checks followed series in the background and records a baseline on the first check. Configure notification types under **Settings → General**.
-- To publish verified season announcements, point `AFTERFRAME_ANNOUNCEMENTS_FILE` to a JSON file containing an array of objects with `seriesId` (TMDb), `season`, and `source` (an HTTPS link from the publisher or broadcaster). Add an entry only after confirming the announcement. Afterframe includes the source link in the notification and deduplicates by series and season.
+## Testing & Verification
 
-## Run behind an HTTPS reverse proxy
+```sh
+npm run typecheck   # TypeScript checks across web & API
+npm run lint        # ESLint across apps/api, apps/web/src, packages/shared/src
+npm test            # Node test runner (API) + Vitest (web)
+npm run build       # Production Vite bundle
+```
 
-Afterframe listens on loopback. For a public installation, terminate HTTPS at a reverse proxy on the same host, forward the configured public hostname as `Host`, and set `AFTERFRAME_ORIGIN` to that HTTPS origin. For example, with a proxy at `https://afterframe.example.com` forwarding to `127.0.0.1:4173`, set `AFTERFRAME_ORIGIN=https://afterframe.example.com`. Supply service credentials in the server environment. Published installations manage integration credentials exclusively on the server.
+---
 
-Set `AFTERFRAME_REGISTRATION=closed` to restrict registration after creating your accounts. From the account dialog, generate a one-time recovery code and save it in a password manager. Resetting the password with the code signs out all existing sessions. The account dialog also lets you sign out other devices while keeping the current session.
+## Credits & Attribution
 
-Point availability checks at `GET /api/health`. In HTTPS mode, API request logs include a request ID, path, status, and duration. Query strings, request bodies, and cookies are omitted.
-
-## Configure the catalog
-
-- **TMDb** supplies the full movie and TV catalog. Open **Settings → API Keys / Integrations** and save your API Read Access Token or v3 API key. [Get a TMDb key](https://www.themoviedb.org/settings/api)
-- **OMDb** is optional and supplies IMDb scores and vote counts. Save your OMDb API key in the same section. [Get an OMDb key](https://www.omdbapi.com/apikey.aspx)
-- **MyAnimeList** supplies anime and manga scores for titles with a verified MAL mapping. Set `MAL_CLIENT_ID` in `afterframe/.env` with a Client ID from your registered MyAnimeList application. [MyAnimeList API](https://myanimelist.net/apiconfig)
-- **PostgreSQL** is optional. Set `DATABASE_URL` in `afterframe/.env` to persist the metadata cache. Afterframe creates its cache table on first use and periodically refreshes recently expired records. It also reads `afterframe/data/metadata-pg.env` when present. Without PostgreSQL, metadata is cached in memory.
-
-API keys saved in Settings survive restarts and apply to all local profiles. They take precedence over `TMDB_READ_TOKEN`, `TMDB_API_KEY`, and `OMDB_API_KEY` in `afterframe/.env`. With the default SQLite setup, accounts, API keys, personal ratings, and viewing history are stored in `afterframe/data/accounts.sqlite`. Git ignores environment files and the data directory.
-
-Afterframe uses Inter for interface text and Instrument Sans for display text. The display font stack also accepts Founders Grotesk when it is available in the browser.
-
-## Playback
-
-Select **Watch now** on a movie or choose an episode from its season. Playback for TMDb catalog titles depends on [CineSrc](https://cinesrc.st/docs) having a working source. Selected public-domain and Creative Commons editions are available through the Internet Archive or Wikimedia Commons.
-
-Afterframe uses [AniBridge episode mappings](https://github.com/anibridge/anibridge-mappings) to translate TMDb seasons and episode numbers to AniList. [AnimeEmbed](https://animeembed.com/) plays mapped episodes inside Afterframe when a stream is available. The player can switch to [Ani.pm](https://ani.pm/developers) and CineSrc. Third-party players manage their own audio and subtitle controls and may show ads.
-
-Afterframe saves the position and ranges you watched per movie or episode. Once you've watched enough of a title to complete it, it leaves **Continue Watching** and stays in **My Library → Watched**. Use the previous and next buttons beside Play or choose an episode from the list below the player. Long seasons have an **Episode range** picker. Upcoming episodes show the scheduled date when TMDb provides one.
-
-The Afterframe player uses bundled or [TheIntroDB](https://theintrodb.org/) timings for intros, recaps, and credits. With auto-next enabled, a cancellable 10-second countdown begins at matched credits or at playback end when credits timings are unavailable. Use **Cancel** to stay for an extra scene, or **Skip credits** to open the next episode immediately. Fullscreen stays active when the Afterframe player switches episodes. Native video shows actual buffered ranges behind the current playback position on the seek bar.
-
-For CineSrc titles in the Afterframe player, the captions button uses the OpenSubtitles catalog with a secondary source. Changes in **Settings → General** apply during playback and carry over between episodes when **Remember subtitles** is enabled. Embedded players have their own caption controls when using the provider's interface. The loaded-range indicator is available when Afterframe can read the video element's actual buffer. **Video sources** opens CineSrc's server controls. **Use Afterframe controls** returns to the Afterframe interface at the current playback position.
-
-Press **/** or **Ctrl+K / ⌘K** to search. Click the video picture to play or pause, or double-click it to toggle fullscreen. With the watch page focused, use **Space** to play or pause, **← / →** to seek, **F** for fullscreen, and **S** to skip an available segment. On touch devices, tap the picture to reveal the controls.
-
-## Comics
-
-Open **Comics** to browse manga, manhwa, manhua, and other comics from [MangaDex](https://mangadex.org/). Use the format tabs, genre and publication filters, or the search box. Browse and search include titles before they have chapters available in the reader. The **Recently updated** shelf highlights recently added English MangaDex chapters. The catalog uses MangaDex's safe and suggestive content ratings.
-
-Choose a chapter language to see chapters that open in the built-in reader. Afterframe checks [Weeb Central](https://weebcentral.com/) and [Manga Scans](https://manga-scans.com/) for English chapters and [Lector Manga](https://lector-mangas.lat/) for Spanish chapters. The lookup tries alternate titles and combines chapter lists even when MangaDex already has some chapters. MangaDex releases appear first for each chapter. Coverage depends on matching editions and available pages. Chapter ranges and previous or next chapter links help you navigate longer series.
-
-The reader offers single-page and vertical-scroll layouts, page fit controls, and fullscreen. Use the page picker or **← / →** in single-page mode, and press **F** for fullscreen. Afterframe remembers your layout and fit on this browser.
-
-**My Library → Reading** shows your reading list and your last page for each title. Guest activity stays in the browser, and signed-in progress belongs to the local account. Comics use MangaDex's public API without an API key. Chapter coverage varies by title and language.
-
-To supply publisher-authorized chapter text, set `AFTERFRAME_COMIC_TRANSCRIPTS_FILE` on the API to a JSON file. Use keys of the form `comic-id/chapter-edition-id` and values such as `{"pages":["Text for page 1","","Text for page 3"],"source":"https://publisher.example/transcript"}`. Page entries follow the exact edition's page order. Empty strings mark unavailable pages. The reader shows the transcript and labels editions whose text is unavailable. In Docker or Railway, mount the transcript file on the API and point the variable at its container path.
-
-
-Afterframe credits MangaDex and the scanlation groups listed on each chapter. Set `MANGADEX_BLOCKED_GROUPS` in `afterframe/.env` to the comma-separated group IDs to exclude from chapter lists and the reader in response to [MangaDex group removal requests](https://gitlab.com/mangadex-pub/mangadex-api-docs/-/blob/main/index.md).
+- Movie and TV metadata by [TMDB](https://www.themoviedb.org/) (this product uses the TMDB API but is not endorsed or certified by TMDB).
+- Regional streaming availability by [JustWatch](https://www.justwatch.com/).
+- Anime episode mappings by [AniBridge](https://github.com/anibridge/anibridge-mappings); skip segments by [AniSkip](https://aniskip.com/) and [TheIntroDB](https://theintrodb.org/).
+- Manga catalog and chapter artwork by [MangaDex](https://mangadex.org/) and credited scanlation groups.
+- Public-domain and Creative Commons editions via the [Internet Archive](https://archive.org/) and [Wikimedia Commons](https://commons.wikimedia.org/).
