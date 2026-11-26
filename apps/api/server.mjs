@@ -11,7 +11,7 @@ import { catalogAnimeRating, malRating } from './catalog/mal.mjs';
 import { comicCoverResponse, comicPageResponse, comicsApi } from './comics/comics.mjs';
 import { animeSource, enrichAnimeDetails } from './catalog/anime.mjs';
 import { cacheMetadata, cachedRatings, closeMetadataPool, imdbRating, refreshMetadataPeriodically, setOmdbKey, validateOmdbKey } from './catalog/metadata.mjs';
-import { basicTitle, catalogFacts, connectionStatus, discover, hasTmdbCredential, loadInitialCredentials, rawTitleMetadata, setTmdbCredential, titleMetadata, tmdb } from './catalog/tmdb.mjs';
+import { basicTitle, catalogFacts, connectionStatus, discover, hasTmdbCredential, loadInitialCredentials, rawTitleMetadata, setTmdbCredential, titleMetadata, tmdb, tvRatingsMap } from './catalog/tmdb.mjs';
 import { loadSegments } from './catalog/segments.mjs';
 import { relayArchive } from './archive-stream.mjs';
 import { checkRateLimit } from './rate-limit.mjs';
@@ -175,6 +175,11 @@ export async function handleApi(request, response, url) {
     const [, type, id] = related;
     const data = await cacheMetadata(`related:${type}:${id}`, 12 * 3600000, () => tmdb(`/${type}/${id}/recommendations`, { language: 'en-US', page: 1 }));
     return json(response, 200, { results: data.results.filter(item => !item.adult).slice(0, 8).map(item => ({ ...item, media_type: type })) });
+  }
+  const ratingsMapRoute = pathname.match(/^\/api\/tv\/([1-9]\d{0,9})\/ratings-map$/);
+  if (ratingsMapRoute) {
+    if (!hasTmdbCredential()) return json(response, 503, { error: 'Connect the catalog in Settings to use the full catalog.' });
+    return json(response, 200, await tvRatingsMap(ratingsMapRoute[1]));
   }
   if (pathname === '/api/segments') {
     const result = await loadSegments(searchParams);

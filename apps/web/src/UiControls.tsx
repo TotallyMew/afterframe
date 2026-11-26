@@ -84,7 +84,7 @@ export function AfSelect({
           </Select.Icon>
         </Select.Trigger>
         <Select.Portal>
-          <Select.Positioner className="af-select-positioner" sideOffset={6} align="start" alignItemWithTrigger={false}>
+          <Select.Positioner className="af-select-positioner" side="bottom" sideOffset={6} align="start" alignItemWithTrigger={false}>
             <Select.Popup className="af-select-popup">
               <Select.List className="af-select-list">
                 {options.map(opt => (

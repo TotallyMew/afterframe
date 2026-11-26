@@ -15,9 +15,16 @@ const groups = [
     title: 'Video player',
     items: [
       { keys: ['Space'], label: 'Play or pause' },
-      { keys: ['←', '→'], label: 'Seek backward or forward 10 seconds' },
-      { keys: ['F'], label: 'Toggle fullscreen' },
+      { keys: ['←', '→', 'J', 'L'], label: 'Seek backward or forward 10 seconds' },
+      { keys: ['↑', '↓'], label: 'Volume up or down 10%' },
+      { keys: ['M'], label: 'Mute or unmute audio' },
+      { keys: ['C'], label: 'Toggle subtitles' },
       { keys: ['S'], label: 'Skip active intro, recap, or credits' },
+      { keys: ['T'], label: 'Toggle theatre mode' },
+      { keys: ['E'], label: 'Toggle episodes drawer' },
+      { keys: ['F'], label: 'Toggle fullscreen' },
+      { keys: ['Shift P', 'Shift N'], label: 'Previous or next episode' },
+      { keys: ['0–9'], label: 'Jump to 0%–90% of video' },
     ],
   },
   {

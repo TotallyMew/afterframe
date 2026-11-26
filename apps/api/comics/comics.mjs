@@ -67,11 +67,14 @@ function comic({ id, attributes, relationships }) {
   const poster = /^[\w-]+\.(?:jpg|png|webp|jpeg)$/i.test(cover) ? `https://uploads.mangadex.org/covers/${id}/${cover}.512.jpg` : '';
   const author = [...new Set(relationships.filter(entry => ['author', 'artist'].includes(entry.type)).map(entry => entry.attributes?.name).filter(Boolean))];
   const tags = (attributes.tags || []).filter(tag => tag.attributes.name.en);
+  const rawLastChapter = typeof attributes.lastChapter === 'string' ? attributes.lastChapter.trim() : '';
+  const lastChapter = /^\d+(?:\.\d+)?$/.test(rawLastChapter) ? rawLastChapter : undefined;
   return {
     id, key: `comic-${id}`, type: 'comic', format, poster,
     malId: /^[1-9]\d{0,9}$/.test(attributes.links?.mal) ? Number(attributes.links.mal) : null,
     title: attributes.title.en || attributes.altTitles?.find(title => title.en)?.en || englishText(attributes.title, original),
     year: attributes.year, status: attributes.status, author,
+    ...(lastChapter ? { lastChapter } : {}),
     synopsis: englishText(attributes.description, original), longStrip: tags.some(tag => tag.attributes.name.en === 'Long Strip'),
     genres: tags.filter(tag => tag.attributes.group === 'genre').map(tag => ({ id: tag.id, name: tag.attributes.name.en })),
     languages: [...new Set((attributes.availableTranslatedLanguages || []).filter(language => languagePattern.test(language)))],

@@ -5,19 +5,22 @@ import {
   preferenceDefaults, samplePlayback, viewingSession, watchedSeconds, type PlaybackPosition, type SkipSegment, type ViewingSession,
 } from '@afterframe/shared/playback';
 import { findSubtitles, loadSubtitle, playbackLanguage, samePlaybackLanguage, type SubtitleCue, type SubtitleTrack } from '@afterframe/shared/subtitles';
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
-import { navigate, request, type EpisodePosition, type Title } from '../catalog';
-import { Icon } from '../components';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { imagePath, navigate, request, type EpisodePosition, type Title } from '../catalog';
+import { Artwork, Icon } from '../components';
 import type { LibraryControls } from '../library';
 import { EmbedNoticeBar } from './EmbedNoticeBar';
 import { PlayerControls } from './PlayerControls';
+import { PlayerGlyph } from './PlayerGlyph';
 import { formatClock, rememberCineServer } from './route';
+import { readCaptionStyle, writeCaptionStyle, type CaptionStyle } from './SubtitleMenu';
 import { animePlayers, cineSrcOrigin, cineSrcServers, segmentNames, type ActiveMedia, type AnimeProvider, type CineRestoreState, type VideoWithAudioTracks } from './types';
 
 export function VideoStage({
-  stageRef, media, displayItem, displayEpisode, backHref, adjacent, controls,
+  stageRef, media, displayItem, displayEpisode, backHref, adjacent, nextStillPath, controls,
   initialProvider, onProviderChange, providerControls, onProviderControlsChange,
   preferredQuality, onPreferredQualityChange, onNavigateEpisode,
+  theatreMode, onToggleTheatre, hasEpisodesDrawer, episodesOpen, onToggleEpisodes, episodesDrawer,
 }: {
   stageRef: RefObject<HTMLDivElement | null>;
   media: ActiveMedia;
@@ -25,6 +28,7 @@ export function VideoStage({
   displayEpisode?: EpisodePosition & { key?: string; duration?: number };
   backHref: string;
   adjacent: { previous?: EpisodePosition & { key?: string }; next?: EpisodePosition & { key?: string }; ready: boolean };
+  nextStillPath?: string | null;
   controls: LibraryControls;
   initialProvider: AnimeProvider | null;
   onProviderChange: (provider: AnimeProvider) => void;
@@ -33,6 +37,12 @@ export function VideoStage({
   preferredQuality: string | undefined;
   onPreferredQualityChange: (quality: string) => void;
   onNavigateEpisode: (target: EpisodePosition & { key?: string }) => void;
+  theatreMode?: boolean;
+  onToggleTheatre?: () => void;
+  hasEpisodesDrawer?: boolean;
+  episodesOpen?: boolean;
+  onToggleEpisodes?: () => void;
+  episodesDrawer?: ReactNode;
 }) {
   const animeEligible = media.embed && isAnime(media.item.originalLanguage, media.item.genreIds);
   const initialSelectedProvider: AnimeProvider = animeEligible ? (initialProvider ?? 'animeembed') : 'cinesrc';
@@ -109,6 +119,7 @@ export function VideoStage({
   const [direct, setDirect] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [dubFallback, setDubFallback] = useState(false);
+  const [sandboxRelaxed, setSandboxRelaxed] = useState(false);
   const [animeSourceData, setAnimeSourceData] = useState<{ id: number; episode: number } | null>(null);
   const [embedStatus, setEmbedStatus] = useState<{ message: string; canRetry: boolean }>({ message: media.embed ? 'Loading player…' : '', canRetry: false });
   const [pictureVisible, setPictureVisible] = useState(!media.embed);
@@ -123,7 +134,7 @@ export function VideoStage({
   const [volume, setVolume] = useState(() => pref('volume') ? (prefs.level ?? 1) : 1);
   const [muted, setMuted] = useState(() => pref('volume') ? Boolean(prefs.muted) : false);
   const [speed, setSpeed] = useState(1);
-  const [isFullscreen, setIsFullscreen] = useState(() => document.fullscreenElement === stageRef.current);
+  const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement && document.fullscreenElement === stageRef.current));
   const [segments, setSegments] = useState<SkipSegment[]>(() => media.nativeMedia?.segments ?? []);
   const [undoSkip, setUndoSkip] = useState<{ from: number; kind: SkipSegment['kind'] } | null>(null);
   const undoSkipTimerRef = useRef<number | undefined>(undefined);
@@ -136,9 +147,23 @@ export function VideoStage({
   const [subStatus, setSubStatus] = useState('');
   const [activeCues, setActiveCues] = useState<{ url: string; cues: SubtitleCue[] } | null>(null);
   const [nativeCaptionsOn, setNativeCaptionsOn] = useState(false);
+  const [captionStyle, setCaptionStyle] = useState<CaptionStyle>(() => readCaptionStyle());
+  const [actionFeedback, setActionFeedback] = useState<{ label: string; nonce: number } | null>(null);
+  const actionFeedbackTimerRef = useRef<number | undefined>(undefined);
   const [tapSeek, setTapSeek] = useState<{ side: 'left' | 'right'; seconds: number; nonce: number } | null>(null);
   const lastTapRef = useRef<{ time: number; side: 'left' | 'center' | 'right'; count: number } | null>(null);
   const tapSeekTimerRef = useRef<number | undefined>(undefined);
+
+  const showFeedback = useCallback((label: string) => {
+    clearTimeout(actionFeedbackTimerRef.current);
+    setActionFeedback(prev => ({ label, nonce: (prev?.nonce ?? 0) + 1 }));
+    actionFeedbackTimerRef.current = window.setTimeout(() => setActionFeedback(null), 900);
+  }, []);
+
+  const handleCaptionStyleChange = useCallback((next: CaptionStyle) => {
+    setCaptionStyle(next);
+    writeCaptionStyle(next);
+  }, []);
 
   const lastVolumeRef = useRef(volume > 0 ? volume : 0.5);
   if (volume > 0) lastVolumeRef.current = volume;
@@ -216,6 +241,7 @@ export function VideoStage({
     clearTimeout(clickTimerRef.current);
     clearTimeout(pendingAudioTimerRef.current);
     clearTimeout(undoSkipTimerRef.current);
+    clearTimeout(actionFeedbackTimerRef.current);
     subDownloadRef.current?.abort();
   }, []);
 
@@ -1045,7 +1071,7 @@ export function VideoStage({
   // Fullscreen listener
   useEffect(() => {
     const onFs = () => {
-      setIsFullscreen(document.fullscreenElement === stageRef.current);
+      setIsFullscreen(Boolean(document.fullscreenElement && document.fullscreenElement === stageRef.current));
       revealControls();
     };
     document.addEventListener('fullscreenchange', onFs);
@@ -1060,6 +1086,13 @@ export function VideoStage({
     else if (stage && document.fullscreenEnabled) void stage.requestFullscreen().catch(() => {});
     else video?.webkitEnterFullscreen?.();
   }, [stageRef]);
+
+  const togglePip = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || media.embed || !document.pictureInPictureEnabled) return;
+    if (document.pictureInPictureElement) void document.exitPictureInPicture().catch(() => {});
+    else void video.requestPictureInPicture?.().catch(() => {});
+  }, [media.embed]);
 
   // Close player popup menus on outside click or Escape
   useEffect(() => {
@@ -1150,55 +1183,11 @@ export function VideoStage({
     return () => clearInterval(timer);
   }, [adjacent.next, providerControls, ended, inCredits, countdownCancelled, pref]);
 
-  // Keyboard shortcuts (Space, Left/Right, F, S)
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
-      if (event.target instanceof HTMLElement && event.target.closest('button, a, input, select, summary, iframe, [contenteditable]')) return;
-      const key = event.key.toLowerCase();
-      if (key === 's' && activeSegment) {
-        event.preventDefault();
-        skipSegment(activeSegment);
-      } else if (key === 'f' && document.fullscreenEnabled) {
-        event.preventDefault();
-        toggleFullscreen();
-      } else if (key === ' ' && positionRef.current.duration > 0) {
-        event.preventDefault();
-        sendCommand(positionRef.current.paused || endedRef.current ? 'play' : 'pause');
-      } else if ((key === 'arrowleft' || key === 'arrowright') && positionRef.current.duration > 0) {
-        event.preventDefault();
-        jumpPlayback(key === 'arrowleft' ? -10 : 10);
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [activeSegment, skipSegment, toggleFullscreen, sendCommand, jumpPlayback]);
-
-  // Commit seek if pointer is released anywhere while dragging
-  useEffect(() => {
-    const finishScrub = () => {
-      if (!pointerScrubbingRef.current) return;
-      pointerScrubbingRef.current = false;
-      const target = scrubTimeRef.current;
-      scrubTimeRef.current = null;
-      setScrubTime(null);
-      setSeekPreview(null);
-      if (target !== null) sendCommand('seek', target);
-      revealControls();
-    };
-    window.addEventListener('pointerup', finishScrub);
-    window.addEventListener('pointercancel', finishScrub);
-    return () => {
-      window.removeEventListener('pointerup', finishScrub);
-      window.removeEventListener('pointercancel', finishScrub);
-    };
-  }, [sendCommand, revealControls]);
-
-  const updateAudio = (nextVol: number, nextMuted: boolean) => {
+  const updateAudio = useCallback((nextVol: number, nextMuted: boolean) => {
     if (nextVol > 0) lastVolumeRef.current = nextVol;
     setVolume(nextVol);
     setMuted(nextMuted);
-    if (media.embed && provider === 'cinesrc') {
+    if (media.embed && providerRef.current === 'cinesrc') {
       pendingAudioRef.current = { volume: nextVol, muted: nextMuted };
       clearTimeout(pendingAudioTimerRef.current);
       pendingAudioTimerRef.current = window.setTimeout(() => { pendingAudioRef.current = null; }, 600);
@@ -1206,7 +1195,7 @@ export function VideoStage({
     sendCommand('setVolume', nextVol);
     sendCommand('setMuted', nextMuted);
     rememberAudioPref(nextVol, nextMuted);
-  };
+  }, [media.embed, sendCommand, rememberAudioPref]);
 
   const chooseSubtitleTrack = useCallback(async (track: SubtitleTrack, remember = true) => {
     subDownloadRef.current?.abort();
@@ -1269,6 +1258,100 @@ export function VideoStage({
       subLoadingRef.current = false;
     }
   }, [media.episode, preferredSubtitleLang, chooseSubtitleTrack]);
+
+  // Keyboard shortcuts (Space, Left/Right, J/L, Up/Down, M, C, S, T, E, F, Shift+N/P, 0-9)
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.target instanceof HTMLElement && event.target.closest('button, a, input, select, summary, iframe, [contenteditable]')) return;
+      const key = event.key.toLowerCase();
+      if (key === 's' && activeSegment) {
+        event.preventDefault();
+        skipSegment(activeSegment);
+      } else if (key === 'f' && document.fullscreenEnabled) {
+        event.preventDefault();
+        toggleFullscreen();
+      } else if (key === 't' && onToggleTheatre && !document.fullscreenElement) {
+        event.preventDefault();
+        onToggleTheatre();
+      } else if (key === 'e' && hasEpisodesDrawer && onToggleEpisodes) {
+        event.preventDefault();
+        onToggleEpisodes();
+      } else if (key === 'm') {
+        event.preventDefault();
+        const nextMuted = !(mutedRef.current || volumeRef.current === 0);
+        const nextVol = nextMuted ? volumeRef.current : (volumeRef.current || lastVolumeRef.current);
+        updateAudio(nextVol, nextMuted);
+        showFeedback(nextMuted ? 'Muted' : `Volume ${Math.round(nextVol * 100)}%`);
+      } else if (key === 'c' && (media.embed || media.nativeMedia?.captions)) {
+        event.preventDefault();
+        if (activeCues || nativeCaptionsOn) {
+          subDownloadRef.current?.abort();
+          setActiveCues(null);
+          setNativeCaptionsOn(false);
+          if (videoRef.current?.textTracks[0]) videoRef.current.textTracks[0].mode = 'disabled';
+          showFeedback('Subtitles off');
+        } else if (!media.embed && videoRef.current?.textTracks[0]) {
+          videoRef.current.textTracks[0].mode = 'showing';
+          setNativeCaptionsOn(true);
+          showFeedback('Subtitles on');
+        } else {
+          void loadEmbedSubtitles(preferredSubtitleLang || 'English');
+          showFeedback('Subtitles on');
+        }
+      } else if (event.shiftKey && key === 'n' && adjacentRef.current.next) {
+        event.preventDefault();
+        onNavigateEpisodeRef.current(adjacentRef.current.next);
+      } else if (event.shiftKey && key === 'p' && adjacentRef.current.previous) {
+        event.preventDefault();
+        onNavigateEpisodeRef.current(adjacentRef.current.previous);
+      } else if (key === ' ' && positionRef.current.duration > 0) {
+        event.preventDefault();
+        const playing = !(positionRef.current.paused || endedRef.current);
+        sendCommand(playing ? 'pause' : 'play');
+        showFeedback(playing ? 'Paused' : 'Playing');
+      } else if ((key === 'arrowleft' || key === 'arrowright' || key === 'j' || key === 'l') && positionRef.current.duration > 0) {
+        event.preventDefault();
+        const delta = key === 'arrowleft' || key === 'j' ? -10 : 10;
+        jumpPlayback(delta);
+        showFeedback(delta < 0 ? '−10s' : '+10s');
+      } else if ((key === 'arrowup' || key === 'arrowdown') && positionRef.current.duration > 0) {
+        event.preventDefault();
+        const delta = key === 'arrowup' ? 0.1 : -0.1;
+        const base = mutedRef.current ? 0 : volumeRef.current;
+        const nextVol = Math.max(0, Math.min(1, Math.round((base + delta) * 20) / 20));
+        updateAudio(nextVol, nextVol === 0);
+        showFeedback(nextVol === 0 ? 'Muted' : `Volume ${Math.round(nextVol * 100)}%`);
+      } else if (/^[0-9]$/.test(key) && positionRef.current.duration > 0) {
+        event.preventDefault();
+        const target = (Number(key) / 10) * positionRef.current.duration;
+        sendCommand('seek', target);
+        showFeedback(`${Number(key) * 10}%`);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [activeSegment, skipSegment, toggleFullscreen, onToggleTheatre, hasEpisodesDrawer, onToggleEpisodes, updateAudio, sendCommand, jumpPlayback, showFeedback, activeCues, nativeCaptionsOn, media.embed, media.nativeMedia, loadEmbedSubtitles, preferredSubtitleLang]);
+
+  // Commit seek if pointer is released anywhere while dragging
+  useEffect(() => {
+    const finishScrub = () => {
+      if (!pointerScrubbingRef.current) return;
+      pointerScrubbingRef.current = false;
+      const target = scrubTimeRef.current;
+      scrubTimeRef.current = null;
+      setScrubTime(null);
+      setSeekPreview(null);
+      if (target !== null) sendCommand('seek', target);
+      revealControls();
+    };
+    window.addEventListener('pointerup', finishScrub);
+    window.addEventListener('pointercancel', finishScrub);
+    return () => {
+      window.removeEventListener('pointerup', finishScrub);
+      window.removeEventListener('pointercancel', finishScrub);
+    };
+  }, [sendCommand, revealControls]);
 
   // Auto-load preferred subtitles on CineSrc and when subtitle preference changes
   const showOverlay = !media.embed || (provider === 'cinesrc' && !providerControls);
@@ -1350,8 +1433,9 @@ export function VideoStage({
   };
 
   const displayTime = scrubTime !== null ? scrubTime : position.currentTime;
+  const captionLookupTime = position.currentTime - captionStyle.offset;
   const activeCaptionText = activeCues
-    ? activeCues.cues.filter(c => position.currentTime >= c.start && position.currentTime < c.end).map(c => c.text).join('\n')
+    ? activeCues.cues.filter(c => captionLookupTime >= c.start && captionLookupTime < c.end).map(c => c.text).join('\n')
     : '';
   const playedPct = position.duration > 0 ? `${(displayTime / position.duration) * 100}%` : '0%';
   const volumePct = `${Math.round(volume * 100)}%`;
@@ -1362,8 +1446,12 @@ export function VideoStage({
   const sourcePage = media.nativeMedia?.page || (media.nativeMedia?.archive ? `https://archive.org/details/${encodeURIComponent(media.nativeMedia.archive)}` : '');
 
   const showCineLoading = media.embed && provider === 'cinesrc' && !providerControls && Boolean(embedStatus.message) && !embedStatus.canRetry;
+  const showCineRecovery = media.embed && provider === 'cinesrc' && !providerControls && Boolean(embedStatus.message) && embedStatus.canRetry && !pictureVisible;
   const showPictureLayer = !media.embed || (provider === 'cinesrc' && pictureVisible);
   const showEmbedNotice = media.embed && (embedStatus.canRetry || providerControls || animeEligible || provider !== 'cinesrc');
+  const nextStillUrl = imagePath(nextStillPath, 'w300');
+  const blurNextStill = Boolean(nextStillUrl && controls.library.preferences.blur !== false);
+  const countdownRingDash = countdown !== null ? `${Math.round((countdown / 10) * 100)} 100` : '100 100';
 
   return <>
     <div
@@ -1489,7 +1577,7 @@ export function VideoStage({
       </video>}
 
       {media.embed && embedSrc && <iframe
-        key={`${provider}:${providerControls}:${quality}:${dubFallback}:${reloadNonce}`}
+        key={`${provider}:${providerControls}:${quality}:${dubFallback}:${sandboxRelaxed}:${reloadNonce}`}
         ref={frameRef}
         src={embedSrc}
         title={`${titleText} ${provider === 'cinesrc' ? 'video' : 'anime'} player`}
@@ -1497,8 +1585,8 @@ export function VideoStage({
           ? 'autoplay; fullscreen; picture-in-picture; encrypted-media'
           : 'autoplay; fullscreen; picture-in-picture; encrypted-media; screen-wake-lock'}
         allowFullScreen
-        sandbox={provider === 'cinesrc' ? 'allow-scripts allow-same-origin allow-presentation' : undefined}
-        referrerPolicy="strict-origin"
+        sandbox={provider === 'cinesrc' || !sandboxRelaxed ? 'allow-scripts allow-same-origin allow-presentation' : undefined}
+        referrerPolicy="no-referrer"
         onLoad={() => {
           if (provider === 'anipm') sendCommand('hello');
         }}
@@ -1506,7 +1594,38 @@ export function VideoStage({
 
       {showCineLoading && <div className="af-embed-loading">
         {displayItem.backdrop && <img src={displayItem.backdrop} alt="" />}
-        <span role="status">{embedStatus.message}</span>
+        <span className="af-embed-loading-pill" role="status">
+          <span className="af-spinner" aria-hidden="true" />
+          <span>{embedStatus.message}</span>
+        </span>
+      </div>}
+
+      {showCineRecovery && <div className="af-embed-recovery" role="alert">
+        {displayItem.backdrop && <img src={displayItem.backdrop} alt="" />}
+        <div className="af-embed-recovery-card">
+          <strong>Stream needs attention</strong>
+          <p>{embedStatus.message}</p>
+          <div className="af-actions">
+            <button type="button" className="af-button af-primary" onClick={() => reloadCineWithState(true, quality)}>
+              Try CineSrc controls
+            </button>
+            {animeEligible && <button type="button" className="af-button af-secondary" onClick={() => {
+              restoreStateRef.current = null;
+              setDubFallback(false);
+              setSandboxRelaxed(false);
+              setProvider(animePlayers[provider].next);
+            }}>
+              Switch to {animePlayers[animePlayers[provider].next].label}
+            </button>}
+            <button type="button" className="af-button af-secondary" onClick={() => {
+              cineSrcServers.delete(media.item.key);
+              restoreStateRef.current = null;
+              setReloadNonce(n => n + 1);
+            }}>
+              Reload player
+            </button>
+          </div>
+        </div>
       </div>}
 
       {showPictureLayer && <div
@@ -1540,14 +1659,38 @@ export function VideoStage({
         </div>
       </div>}
 
+      {actionFeedback && <div key={actionFeedback.nonce} className="af-action-feedback" aria-hidden="true">
+        <span>{actionFeedback.label}</span>
+      </div>}
+
       {showOverlay && <>
-        <div className="af-player-pause" aria-hidden="true">
-          <div className="af-player-pause-copy">
+        <div className="af-player-pause">
+          <div className="af-player-pause-copy" aria-hidden="true">
             <p className="af-player-pause-status">Paused</p>
             <p className="af-player-pause-title">{titleText}</p>
             {subTitleText && <p className="af-player-pause-desc">{subTitleText}</p>}
-            {position.duration > 0 && <p className="af-player-remaining">{formatClock(Math.max(0, position.duration - displayTime))} remaining</p>}
+            {position.duration > 0 && <p className="af-player-remaining af-tabular">{formatClock(Math.max(0, position.duration - displayTime))} remaining</p>}
           </div>
+          {(position.duration > 0 || !media.embed) && <button
+            type="button"
+            className="af-pause-center-play"
+            aria-label={ended ? 'Replay video' : 'Resume playback'}
+            onClick={() => sendCommand('play')}
+          >
+            {ended ? <PlayerGlyph name="replay" /> : <Icon name="play" />}
+          </button>}
+        </div>
+
+        <div className="af-mobile-transport" role="group" aria-label="Touch playback controls">
+          {adjacent.previous && <button type="button" className="af-mobile-touch-btn" aria-label="Previous episode" onClick={() => onNavigateEpisode(adjacent.previous!)}><PlayerGlyph name="prev" /></button>}
+          <button type="button" className="af-mobile-touch-btn" aria-label="Back 10 seconds" disabled={!(position.duration > 0)} onClick={() => jumpPlayback(-10)}><PlayerGlyph name="back10" /></button>
+          <button type="button" className="af-mobile-touch-btn af-mobile-touch-play"
+            aria-label={ended ? 'Replay' : position.paused ? 'Play' : 'Pause'}
+            onClick={() => sendCommand(ended || position.paused ? 'play' : 'pause')}>
+            {ended ? <PlayerGlyph name="replay" /> : position.paused ? <Icon name="play" /> : <PlayerGlyph name="pause" />}
+          </button>
+          <button type="button" className="af-mobile-touch-btn" aria-label="Forward 10 seconds" disabled={!(position.duration > 0)} onClick={() => jumpPlayback(10)}><PlayerGlyph name="fwd10" /></button>
+          {adjacent.next && <button type="button" className="af-mobile-touch-btn" aria-label="Next episode" onClick={() => onNavigateEpisode(adjacent.next!)}><PlayerGlyph name="next" /></button>}
         </div>
 
         <div className="af-player-header">
@@ -1560,20 +1703,33 @@ export function VideoStage({
           </div>
         </div>
 
-        {media.embed && activeCaptionText && <div className="af-player-caption" aria-hidden="true"><span>{activeCaptionText}</span></div>}
+        {media.embed && activeCaptionText && <div className="af-player-caption" data-size={captionStyle.size} data-bg={captionStyle.bg} aria-hidden="true"><span>{activeCaptionText}</span></div>}
 
         <div className="af-player-lower">
           {countdown !== null && adjacent.next && <div className="af-next-countdown" role="region" aria-label="Next episode">
-            <strong>{adjacent.next.title || `Episode ${adjacent.next.number}`}</strong>
-            <p>Next episode in {countdown} seconds</p>
+            <div className="af-next-countdown-top">
+              {nextStillUrl && <span className="af-next-countdown-thumb">
+                <Artwork src={nextStillUrl} className={blurNextStill ? 'af-blurred' : undefined} loading="lazy" fallback={<Icon name="film" />} />
+              </span>}
+              <div className="af-next-countdown-meta">
+                <span className="af-next-countdown-kicker">Up next · S{adjacent.next.season} E{adjacent.next.number}</span>
+                <strong>{adjacent.next.title || `Episode ${adjacent.next.number}`}</strong>
+                <p className="af-tabular">Starting in {countdown}s</p>
+              </div>
+              <svg className="af-countdown-ring" viewBox="0 0 36 36" width="32" height="32" aria-hidden="true">
+                <circle className="af-countdown-ring-track" cx="18" cy="18" r="15.9" />
+                <circle className="af-countdown-ring-fill" cx="18" cy="18" r="15.9" strokeDasharray={countdownRingDash} />
+              </svg>
+            </div>
             <div className="af-actions">
               <button type="button" className="af-button af-primary" onClick={() => onNavigateEpisode(adjacent.next!)}>Play now</button>
               <button type="button" className="af-button af-secondary" onClick={() => { setCountdownCancelled(true); setCountdown(null); }}>Cancel</button>
             </div>
           </div>}
 
-          {activeSegment && <button type="button" className="af-player-skip" onClick={() => skipSegment(activeSegment)}>
-            Skip {segmentNames[activeSegment.kind].toLowerCase()}
+          {activeSegment && <button type="button" className="af-player-skip" data-kind={activeSegment.kind} onClick={() => skipSegment(activeSegment)}>
+            <span>Skip {segmentNames[activeSegment.kind].toLowerCase()}</span>
+            <kbd className="af-kbd af-skip-kbd">S</kbd>
           </button>}
 
           {!activeSegment && undoSkip && <div className="af-player-undo-skip" role="status">
@@ -1598,6 +1754,9 @@ export function VideoStage({
             speed={speed}
             quality={quality}
             isFullscreen={isFullscreen}
+            theatreMode={theatreMode}
+            hasEpisodesDrawer={hasEpisodesDrawer}
+            episodesOpen={episodesOpen}
             adjacent={adjacent}
             nativeAudioTracks={nativeAudioTracks}
             activeCues={activeCues}
@@ -1606,6 +1765,8 @@ export function VideoStage({
             subLang={subLang}
             subStatus={subStatus}
             rememberSubtitles={pref('subtitles')}
+            preferredSubtitleLang={preferredSubtitleLang}
+            captionStyle={captionStyle}
             controlsBarRef={controlsBarRef}
             markersRef={markersRef}
             audioMenuRef={audioMenuRef}
@@ -1649,12 +1810,16 @@ export function VideoStage({
             onEnableNativeSubtitles={() => setNativeCaptionsOn(true)}
             onSelectSubLang={setSubLang}
             onChooseSubTrack={track => void chooseSubtitleTrack(track, true)}
-            onSpeedChange={val => { setSpeed(val); sendCommand('setPlaybackRate', val); }}
+            onChangeCaptionStyle={handleCaptionStyleChange}
+            onSpeedChange={val => { setSpeed(val); sendCommand('setPlaybackRate', val); showFeedback(`${val}×`); }}
             onQualityChange={val => { if (val !== quality) reloadCineWithState(providerControls, val); }}
             onOpenProviderSources={() => {
               if (settingsMenuRef.current) settingsMenuRef.current.open = false;
               reloadCineWithState(true, quality);
             }}
+            onTogglePip={togglePip}
+            onToggleTheatre={onToggleTheatre}
+            onToggleEpisodes={onToggleEpisodes}
             onToggleFullscreen={toggleFullscreen}
             onNavigateEpisode={onNavigateEpisode}
           />
@@ -1663,34 +1828,55 @@ export function VideoStage({
 
       {media.embed && !showOverlay && (activeSegment || undoSkip || countdown !== null) && <div className="af-player-lower af-anime-overlay">
         {countdown !== null && adjacent.next && <div className="af-next-countdown" role="region" aria-label="Next episode">
-          <strong>{adjacent.next.title || `Episode ${adjacent.next.number}`}</strong>
-          <p>Next episode in {countdown} seconds</p>
+          <div className="af-next-countdown-top">
+            {nextStillUrl && <span className="af-next-countdown-thumb">
+              <Artwork src={nextStillUrl} className={blurNextStill ? 'af-blurred' : undefined} loading="lazy" fallback={<Icon name="film" />} />
+            </span>}
+            <div className="af-next-countdown-meta">
+              <span className="af-next-countdown-kicker">Up next · S{adjacent.next.season} E{adjacent.next.number}</span>
+              <strong>{adjacent.next.title || `Episode ${adjacent.next.number}`}</strong>
+              <p className="af-tabular">Starting in {countdown}s</p>
+            </div>
+            <svg className="af-countdown-ring" viewBox="0 0 36 36" width="32" height="32" aria-hidden="true">
+              <circle className="af-countdown-ring-track" cx="18" cy="18" r="15.9" />
+              <circle className="af-countdown-ring-fill" cx="18" cy="18" r="15.9" strokeDasharray={countdownRingDash} />
+            </svg>
+          </div>
           <div className="af-actions">
             <button type="button" className="af-button af-primary" onClick={() => onNavigateEpisode(adjacent.next!)}>Play now</button>
             <button type="button" className="af-button af-secondary" onClick={() => { setCountdownCancelled(true); setCountdown(null); }}>Cancel</button>
           </div>
         </div>}
-        {activeSegment && <button type="button" className="af-player-skip" onClick={() => skipSegment(activeSegment)}>
-          Skip {segmentNames[activeSegment.kind].toLowerCase()}
+        {activeSegment && <button type="button" className="af-player-skip" data-kind={activeSegment.kind} onClick={() => skipSegment(activeSegment)}>
+          <span>Skip {segmentNames[activeSegment.kind].toLowerCase()}</span>
+          <kbd className="af-kbd af-skip-kbd">S</kbd>
         </button>}
         {!activeSegment && undoSkip && <div className="af-player-undo-skip" role="status">
           <span>Skipped {segmentNames[undoSkip.kind].toLowerCase()}</span>
           <button type="button" className="af-text-link" onClick={revertSkip}>Undo</button>
         </div>}
       </div>}
+
+      {episodesDrawer}
     </div>
 
     {showEmbedNotice && <EmbedNoticeBar
       provider={provider}
       providerControls={providerControls}
       animeEligible={animeEligible}
+      sandboxRelaxed={sandboxRelaxed}
       embedStatus={embedStatus}
       onSwitchProvider={next => {
         restoreStateRef.current = null;
         setDubFallback(false);
+        setSandboxRelaxed(false);
         setProvider(next);
       }}
       onToggleProviderControls={() => reloadCineWithState(!providerControls, quality)}
+      onRelaxSandbox={() => {
+        setSandboxRelaxed(true);
+        setReloadNonce(n => n + 1);
+      }}
       onReload={() => {
         cineSrcServers.delete(media.item.key);
         restoreStateRef.current = null;

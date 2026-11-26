@@ -274,6 +274,12 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
   const retryChapters = () => { setChapterError(''); setChapterAttempt(value => value + 1); };
   const saved = controls.library.saved[item.key];
   const listing = (lang: string) => routeWithParams(`comic/${id}`, new URLSearchParams({ lang, ...(params.has('back') ? { back: params.get('back')! } : {}) }));
+  const chapterTotal = chapters?.totalChapters ?? (groupedChapters.length > 0 ? groupedChapters.length : null);
+  const chapterFact = chapterTotal != null
+    ? `${chapterTotal} ${chapterTotal === 1 ? 'chapter' : 'chapters'}`
+    : item.lastChapter
+      ? `${item.lastChapter} ${item.lastChapter === '1' ? 'chapter' : 'chapters'}`
+      : '';
 
   return <>
     <section className={`af-hero af-details-hero af-comic-hero ${cover ? '' : 'af-no-backdrop'}`}>
@@ -286,6 +292,7 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
             <h1>{item.title}</h1>
             <div className="af-meta af-details-meta af-title-facts">
               <span>{comicFacts(item)}</span>
+              {chapterFact && <a href="#chapters" className="af-fact-link af-tabular">{chapterFact}</a>}
               {item.genres?.slice(0, 3).map(g => <span key={g.id}>{g.name}</span>)}
               <Score mal={mal.value} />
             </div>

@@ -57,6 +57,7 @@ export interface Comic {
   year?: number;
   poster?: string;
   status?: string;
+  lastChapter?: string;
   updated?: number;
   malId?: number | null;
   mal?: number;
@@ -71,6 +72,8 @@ export interface Episode {
   runtime?: number;
   overview?: string;
   still_path?: string | null;
+  vote_average?: number;
+  vote_count?: number;
 }
 
 export interface EpisodePosition {
@@ -84,6 +87,42 @@ export interface Season {
   name: string;
   episode_count: number;
   air_date?: string;
+  overview?: string;
+}
+
+export interface WatchProviderItem {
+  provider_id: number;
+  provider_name: string;
+  logo_path?: string | null;
+  display_priority?: number;
+}
+
+export interface WatchProviderRegion {
+  link?: string;
+  flatrate?: WatchProviderItem[];
+  rent?: WatchProviderItem[];
+  buy?: WatchProviderItem[];
+  free?: WatchProviderItem[];
+  ads?: WatchProviderItem[];
+}
+
+export interface DetailsImage {
+  file_path: string;
+  iso_639_1?: string | null;
+  width?: number;
+  height?: number;
+  aspect_ratio?: number;
+  vote_average?: number;
+}
+
+export interface DetailsVideo {
+  id: string;
+  key: string;
+  name: string;
+  site: string;
+  type: string;
+  official?: boolean;
+  published_at?: string;
 }
 
 export interface Details extends RawTitle {
@@ -97,6 +136,17 @@ export interface Details extends RawTitle {
   credits?: {
     cast?: { id: number; name: string; character?: string; profile_path?: string | null }[];
     crew?: { id: number; name: string; job: string }[];
+  };
+  images?: {
+    logos?: DetailsImage[];
+    backdrops?: DetailsImage[];
+    posters?: DetailsImage[];
+  };
+  videos?: {
+    results?: DetailsVideo[];
+  };
+  'watch/providers'?: {
+    results?: Record<string, WatchProviderRegion>;
   };
 }
 

@@ -281,4 +281,67 @@ describe('PlayerPage regressions', () => {
     // Same .af-watch-stage DOM node stays mounted so browser fullscreen is never exited
     expect(container.querySelector('.af-watch-stage')).toBe(stage1);
   });
+
+  it('initializes fullscreen as false, enforces strict sandbox on embeds, and supports Theatre mode & Episodes drawer', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/api/tv/95479/playback' || url === '/api/tv/95479') {
+        return new Response(JSON.stringify({
+          id: 95479, name: 'Jujutsu Kaisen', original_language: 'ja', genres: [{ id: 16, name: 'Animation' }],
+          seasons: [{ season_number: 1, name: 'Season 1', episode_count: 2 }],
+        }), { status: 200 });
+      }
+      if (url.startsWith('/api/anime/tv/95479')) {
+        return new Response(JSON.stringify({ source: { id: 113415, episode: 1 } }), { status: 200 });
+      }
+      if (url === '/api/tv/95479/season/1') {
+        return new Response(JSON.stringify({
+          episodes: [
+            { season_number: 1, episode_number: 1, name: 'Ryomen Sukuna', air_date: '2020-10-03' },
+            { season_number: 1, episode_number: 2, name: 'For Myself', air_date: '2020-10-10' },
+          ],
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ segments: [] }), { status: 200 });
+    });
+
+    const route = parsePlayerRoute('tv/95479/s1e1')!;
+    const { container } = render(<PlayerPage route={route} controls={makeControls()} />);
+
+    const animeFrame = await waitFor(() => {
+      const node = container.querySelector('iframe');
+      expect(node?.src).toContain('https://animeembed.com/embed/ani/113415/1');
+      return node!;
+    });
+    expect(animeFrame.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin allow-presentation');
+    expect(animeFrame.getAttribute('referrerpolicy')).toBe('no-referrer');
+
+    // Theatre mode toggle in persistent topbar
+    const theatreBtn = screen.getByRole('button', { name: /Theatre/i });
+    fireEvent.click(theatreBtn);
+    expect(container.querySelector('.af-player-page')?.classList.contains('is-theatre')).toBe(true);
+
+    // Slide-over Episodes drawer opens inside stage
+    const episodesBtn = screen.getByRole('button', { name: /Episodes/i });
+    fireEvent.click(episodesBtn);
+    expect(container.querySelector('.af-player-drawer')).not.toBeNull();
+  });
+
+  it('starts fullscreen button as Fullscreen (never Exit fullscreen) on mount', async () => {
+    Object.defineProperty(document, 'fullscreenEnabled', { value: true, configurable: true });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/api/movie/550/playback' || url === '/api/movie/550') {
+        return new Response(JSON.stringify({
+          id: 550, title: 'Fight Club', runtime: 139, original_language: 'en', genres: [{ id: 18, name: 'Drama' }],
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ segments: [] }), { status: 200 });
+    });
+
+    const route = parsePlayerRoute('movie/550/watch')!;
+    render(<PlayerPage route={route} controls={makeControls()} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Fullscreen' })).toBeTruthy());
+    expect(screen.queryByRole('button', { name: 'Exit fullscreen' })).toBeNull();
+  });
 });

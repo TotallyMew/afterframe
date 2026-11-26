@@ -4,25 +4,29 @@ export function EmbedNoticeBar({
   provider,
   providerControls,
   animeEligible,
+  sandboxRelaxed,
   embedStatus,
   onSwitchProvider,
   onToggleProviderControls,
+  onRelaxSandbox,
   onReload,
 }: {
   provider: AnimeProvider;
   providerControls: boolean;
   animeEligible: boolean;
+  sandboxRelaxed?: boolean;
   embedStatus: { message: string; canRetry: boolean };
   onSwitchProvider: (next: AnimeProvider) => void;
   onToggleProviderControls: () => void;
+  onRelaxSandbox?: () => void;
   onReload: () => void;
 }) {
   const isExternalControls = provider !== 'cinesrc' || providerControls;
   const modeLabel = isExternalControls ? 'External controls' : 'Afterframe controls';
   const detail = embedStatus.message || (
     isExternalControls
-      ? `${animePlayers[provider].label} handles audio and subtitle controls for this stream.`
-      : `Streaming via ${animePlayers[provider].label} with Afterframe playback controls.`
+      ? `${animePlayers[provider].label} handles playback controls for this stream.`
+      : `Streaming via ${animePlayers[provider].label}.`
   );
 
   return <div className="af-embed-notice" data-mode={isExternalControls ? 'external' : 'afterframe'}>
@@ -32,15 +36,20 @@ export function EmbedNoticeBar({
       </span>
       <span role="status" className="af-embed-notice-text">{detail}</span>
     </div>
-    <div className="af-actions">
-      {animeEligible && <button type="button" className="af-button af-secondary" onClick={() => onSwitchProvider(animePlayers[provider].next)}>
+    <div className="af-actions af-source-actions">
+      {animeEligible && <button type="button" className="af-button af-secondary af-source-btn" onClick={() => onSwitchProvider(animePlayers[provider].next)}>
         Use {animePlayers[animePlayers[provider].next].label}
       </button>}
-      {provider === 'cinesrc' && <button type="button" className="af-button af-secondary" onClick={onToggleProviderControls}>
+      {provider === 'cinesrc' && <button type="button" className="af-button af-secondary af-source-btn" onClick={onToggleProviderControls}>
         {providerControls ? 'Use Afterframe controls' : 'Use CineSrc controls'}
       </button>}
-      {(embedStatus.canRetry || provider === 'cinesrc') && <button type="button" className="af-button af-secondary" onClick={onReload}>
-        Reload player
+      {provider !== 'cinesrc' && !sandboxRelaxed && embedStatus.canRetry && onRelaxSandbox && (
+        <button type="button" className="af-button af-secondary af-source-btn" onClick={onRelaxSandbox}>
+          Open unsandboxed
+        </button>
+      )}
+      {(embedStatus.canRetry || provider === 'cinesrc') && <button type="button" className="af-button af-secondary af-source-btn" onClick={onReload}>
+        Reload
       </button>}
     </div>
   </div>;

@@ -3,11 +3,58 @@ const openSubtitlesOrigin = 'https://opensubtitles-v3.strem.io';
 const downloadOrigin = 'https://subs5.strem.io';
 const cueTiming = /^\s*((?:\d{1,3}:)?\d{2}:\d{2}[.,]\d{1,3})\s+-->\s+((?:\d{1,3}:)?\d{2}:\d{2}[.,]\d{1,3})(?:\s|$)/;
 const languageNames = new Intl.DisplayNames(['en'], { type: 'language', fallback: 'none' });
+const languageAliases = {
+  pob: 'Portuguese (Brazil)',
+  pb: 'Portuguese (Brazil)',
+  'pt-br': 'Portuguese (Brazil)',
+  'pt-pt': 'Portuguese (Portugal)',
+  scc: 'Serbian',
+  srp: 'Serbian',
+  rum: 'Romanian',
+  ron: 'Romanian',
+  cze: 'Czech',
+  ces: 'Czech',
+  dut: 'Dutch',
+  nld: 'Dutch',
+  fre: 'French',
+  fra: 'French',
+  ger: 'German',
+  deu: 'German',
+  gre: 'Greek',
+  ell: 'Greek',
+  chi: 'Chinese',
+  zho: 'Chinese',
+  ze: 'Chinese (Bilingual)',
+  'zh-cn': 'Chinese (Simplified)',
+  'zh-hans': 'Chinese (Simplified)',
+  'zh-tw': 'Chinese (Traditional)',
+  'zh-hant': 'Chinese (Traditional)',
+  'es-419': 'Spanish (Latin America)',
+  'es-la': 'Spanish (Latin America)',
+  baq: 'Basque',
+  bur: 'Burmese',
+  geo: 'Georgian',
+  ice: 'Icelandic',
+  mac: 'Macedonian',
+  mao: 'Maori',
+  may: 'Malay',
+  per: 'Persian',
+  slo: 'Slovak',
+  tib: 'Tibetan',
+  wel: 'Welsh',
+  alb: 'Albanian',
+  arm: 'Armenian',
+  mne: 'Montenegrin',
+  spl: 'Spanish (Latin America)',
+};
 
 export function playbackLanguage(value) {
   const name = value?.trim() || '';
-  if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(name)) return name;
-  return languageNames.of(name.split('-')[0]) || name;
+  if (!name) return '';
+  const lower = name.toLowerCase().replace(/_/g, '-');
+  if (Object.hasOwn(languageAliases, lower)) return languageAliases[lower];
+  if (!/^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(lower)) return name;
+  return languageNames.of(lower.split('-')[0]) || name;
 }
 
 export function samePlaybackLanguage(first, second) {
@@ -34,12 +81,14 @@ async function openSubtitles(item, episode, signal) {
   const id = episode ? `${imdb}:${episode.season}:${episode.number}` : imdb;
   const response = await subtitleRequest(`${openSubtitlesOrigin}/subtitles/${episode ? 'series' : 'movie'}/${id}.json`, signal);
   const { subtitles } = await response.json();
+  const seen = new Set();
   return (Array.isArray(subtitles) ? subtitles : []).flatMap(entry => {
     const url = typeof entry?.url === 'string' ? URL.parse(entry.url) : null;
     const language = typeof entry?.lang === 'string' ? playbackLanguage(entry.lang) : '';
-    if (!language || url?.origin !== downloadOrigin || url.username || url.password || !/^\/[a-z-]+\/download\//i.test(url.pathname)) return [];
+    if (!language || url?.origin !== downloadOrigin || url.username || url.password || !/^\/[a-z-]+\/download\//i.test(url.pathname) || seen.has(url.href)) return [];
+    seen.add(url.href);
     return [{ url: url.href, language, release: typeof entry.label === 'string' ? entry.label.slice(0, 100) : '' }];
-  });
+  }).sort((a, b) => a.language.localeCompare(b.language));
 }
 
 export async function findSubtitles(item, episode, signal) {

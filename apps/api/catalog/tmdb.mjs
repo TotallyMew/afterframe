@@ -50,7 +50,44 @@ export function rawTitleMetadata(type, id, season, refresh = false) {
   const hasSeason = season !== undefined && season !== null && season !== '';
   return cacheMetadata(`title:${type}:${id}:${season ?? ''}`, 12 * 3600000, () => hasSeason && type === 'tv'
     ? tmdb(`${path}/season/${season}`, { language: 'en-US' })
-    : tmdb(path, { language: 'en-US', append_to_response: 'watch/providers,external_ids,credits' }), refresh);
+    : tmdb(path, {
+      language: 'en-US',
+      append_to_response: 'watch/providers,external_ids,credits,images,videos',
+      include_image_language: 'en,null',
+    }), refresh);
+}
+
+export async function tvRatingsMap(id) {
+  return cacheMetadata(`ratings-map:tv:${id}`, 12 * 3600000, async () => {
+    const details = await rawTitleMetadata('tv', id);
+    const regular = (details?.seasons ?? [])
+      .filter(entry => entry.season_number > 0 && entry.episode_count > 0)
+      .sort((a, b) => a.season_number - b.season_number)
+      .slice(0, 30);
+    const seasons = new Array(regular.length);
+    let cursor = 0;
+    async function worker() {
+      while (cursor < regular.length) {
+        const idx = cursor++;
+        const entry = regular[idx];
+        try {
+          const data = await rawTitleMetadata('tv', id, String(entry.season_number));
+          const episodes = (data?.episodes ?? []).map(ep => ({
+            episode_number: ep.episode_number,
+            name: ep.name || `Episode ${ep.episode_number}`,
+            vote_average: typeof ep.vote_average === 'number' && ep.vote_average > 0 ? Math.round(ep.vote_average * 10) / 10 : null,
+            vote_count: typeof ep.vote_count === 'number' ? ep.vote_count : 0,
+            air_date: ep.air_date || undefined,
+          }));
+          seasons[idx] = { season_number: entry.season_number, name: entry.name || `Season ${entry.season_number}`, episodes };
+        } catch {
+          seasons[idx] = { season_number: entry.season_number, name: entry.name || `Season ${entry.season_number}`, episodes: [] };
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(4, regular.length) }, worker));
+    return { seasons: seasons.filter(Boolean) };
+  });
 }
 
 export async function titleMetadata(type, id, season, refresh = false) {

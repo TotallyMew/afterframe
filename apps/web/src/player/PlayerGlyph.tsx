@@ -3,7 +3,8 @@ import type { ReactNode } from 'react';
 export type PlayerGlyphName =
   | 'pause' | 'replay' | 'back10' | 'fwd10'
   | 'speaker' | 'muted' | 'cc' | 'tune'
-  | 'prev' | 'next' | 'full' | 'exitFull';
+  | 'prev' | 'next' | 'full' | 'exitFull'
+  | 'theatre' | 'episodes' | 'pip';
 
 const paths: Record<PlayerGlyphName, ReactNode> = {
   pause: <path d="M9 5v14m6-14v14" strokeWidth="2.6" />,
@@ -18,6 +19,9 @@ const paths: Record<PlayerGlyphName, ReactNode> = {
   next: <path d="M19 5v14M5 5l11 7-11 7z" />,
   full: <path d="M8 4H4v4m12-4h4v4M4 16v4h4m12-4v4h-4" />,
   exitFull: <path d="M4 8h4V4m12 4h-4V4M8 20v-4H4m12 4v-4h4" />,
+  theatre: <rect x="2.5" y="5.5" width="19" height="13" rx="2" />,
+  episodes: <><rect x="3" y="5" width="7" height="5" rx="1" /><path d="M13 6.5h8M13 9.5h5" /><rect x="3" y="14" width="7" height="5" rx="1" /><path d="M13 15.5h8M13 18.5h5" /></>,
+  pip: <><rect x="3" y="5" width="18" height="14" rx="2" /><rect x="11.5" y="11" width="7" height="5" rx="1" fill="currentColor" stroke="none" /></>,
 };
 
 export function PlayerGlyph({ name }: { name: PlayerGlyphName }) {

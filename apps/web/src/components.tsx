@@ -28,6 +28,8 @@ const glyphs = {
   grid: <><rect x="3.5" y="3.5" width="7" height="7" rx="1.2" /><rect x="13.5" y="3.5" width="7" height="7" rx="1.2" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.2" /><rect x="13.5" y="13.5" width="7" height="7" rx="1.2" /></>,
   list: <><path d="M8 6h12M8 12h12M8 18h12" /><circle cx="4" cy="6" r="1" fill="currentColor" stroke="none" /><circle cx="4" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="4" cy="18" r="1" fill="currentColor" stroke="none" /></>,
   more: <><circle cx="6" cy="12" r="1.5" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" /><circle cx="18" cy="12" r="1.5" fill="currentColor" stroke="none" /></>,
+  shuffle: <><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5" /></>,
+  trailer: <><rect x="2.5" y="4.5" width="19" height="15" rx="2.5" /><path d="m10 9 5 3-5 3z" fill="currentColor" stroke="none" /></>,
 } satisfies Record<string, ReactNode>;
 
 export function Icon({ name }: { name: keyof typeof glyphs }) {
@@ -473,14 +475,14 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
               className="af-search-result af-search-command"
             >
               <span className="af-result-art af-command-icon"><Icon name={item.icon} /></span>
-              <span><strong>{item.title}</strong><small className="af-search-result-meta">{item.subtitle}</small></span>
+              <span className="af-search-result-copy"><strong>{item.title}</strong><small className="af-search-result-meta">{item.subtitle}</small></span>
               <Icon name="right" />
             </button>
           ) : (
             <a role="option" aria-selected={index === selected} tabIndex={-1} id={`af-search-${index}`}
               key={item.key} href={item.href} onClick={() => { if (trimmed) saveRecentSearch(trimmed); close(); }} className="af-search-result">
-              <span className="af-result-art"><Artwork src={item.art} fallback={<Icon name={item.kind === 'comic' || (item.kind === 'library' && item.isComic) ? 'book' : 'film'} />} /></span>
-              <span><strong>{item.title}</strong><small className="af-search-result-meta">{item.subtitle}{item.kind !== 'library' && <Score rating={item.kind === 'video' ? item.rating : undefined} mal={item.mal} />}</small></span>
+              <span className="af-result-art"><Artwork src={item.art} fallback={<span className="af-result-art-fallback" aria-hidden="true"><Icon name={item.kind === 'comic' || (item.kind === 'library' && item.isComic) ? 'book' : 'film'} /></span>} /></span>
+              <span className="af-search-result-copy"><strong>{item.title}</strong><small className="af-search-result-meta">{item.subtitle}{item.kind !== 'library' && <Score rating={item.kind === 'video' ? item.rating : undefined} mal={item.mal} />}</small></span>
               <Icon name="right" />
             </a>
           ))}
@@ -490,6 +492,11 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
           <a href={searchHref(trimmed, { type: 'comic' })} onClick={() => { saveRecentSearch(trimmed); close(); }} className="af-text-link">Manga only</a>
           {error && <button type="button" className="af-text-link" onClick={() => { setError(''); setPending(true); setAttempt(value => value + 1); }}>Retry suggestions</button>}
         </div>}
+        <footer className="af-search-footer" aria-hidden="true">
+          <span><kbd className="af-kbd">↑</kbd><kbd className="af-kbd">↓</kbd> Navigate</span>
+          <span><kbd className="af-kbd">↵</kbd> Open</span>
+          <span><kbd className="af-kbd">Esc</kbd> Close</span>
+        </footer>
       </form>
     </Dialog.Popup>
   </Dialog.Portal>;

@@ -1,24 +1,33 @@
 import { archiveCatalog, type ArchiveEpisode, type ArchiveTitle } from '@afterframe/shared/catalog';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  episodeKey, episodePosition, isAired, navigate, normalizeTitle,
-  playHref, playerHref, previousBrowse, request, timeCode, titleHref, webHref,
+  episodeKey, episodeLabel, episodePosition, formatDate, imagePath, isAired, navigate, normalizeTitle,
+  playerHref, previousBrowse, request, timeCode, titleHref, webHref,
   type Details, type Episode, type EpisodePosition, type Title,
 } from './catalog';
-import { ActionLink, Icon, Loading } from './components';
-import { getSeason, progressPercent, resumeFor, savedRating, type LibraryControls } from './library';
+import { ActionLink, Artwork, Icon, Loading, SaveButton } from './components';
+import { orderSeasons } from './Details';
+import { effectiveWatchStatus, getSeason, progressPercent, resumeFor, savedRating, watchStatuses, type LibraryControls, type WatchStatus } from './library';
+import { FolderPickerPopover } from './library/FolderPickerPopover';
 import { ArchiveEditionView } from './player/ArchiveEditionView';
 import { PlayerEpisodeRow } from './player/PlayerEpisodeRow';
+import { PlayerGlyph } from './player/PlayerGlyph';
 import { archiveMap, archiveToTitle, parsePlayerRoute, playerTitleKey } from './player/route';
-import { animePlayers, cineSrcOrigin, episodeRangeSize, type ActiveMedia, type AnimeProvider, type PlayerRoute } from './player/types';
+import { animePlayers, cineSrcOrigin, type ActiveMedia, type AnimeProvider, type PlayerRoute } from './player/types';
 import { VideoStage } from './player/VideoStage';
 import { AfSelect } from './UiControls';
 import './player.css';
 
+const playerEpisodeRangeSize = 24;
 const playerRatingOptions = [
   { value: '0', label: 'Choose 1–10' },
   ...Array.from({ length: 10 }, (_, index) => ({ value: String(index + 1), label: `${index + 1} / 10` })),
 ];
+const watchStatusOptions = Object.entries(watchStatuses).map(([value, label]) => ({ value, label }));
+
+function isPlayerUrl(href: string): boolean {
+  return /^\/(?:movie\/\d+\/watch|tv\/\d+\/s\d+e\d+|edition\/[^/]+\/watch)(?:$|\?)/.test(href);
+}
 
 export { parsePlayerRoute, playerTitleKey, type PlayerRoute };
 
@@ -29,6 +38,8 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
   const [attempt, setAttempt] = useState(0);
   const [details, setDetails] = useState<Details>();
   const [episodeTitle, setEpisodeTitle] = useState<string>('');
+  const [currentEpisodeData, setCurrentEpisodeData] = useState<Episode | null>(null);
+  const [nextEpisodeStill, setNextEpisodeStill] = useState<string | null>(null);
   const [seasonNumber, setSeasonNumber] = useState<number>(route.kind === 'catalog' && route.season !== undefined ? route.season : 1);
   const [seasonEpisodes, setSeasonEpisodes] = useState<Episode[]>([]);
   const [seasonRange, setSeasonRange] = useState(0);
@@ -38,6 +49,9 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
   const [activeProvider, setActiveProvider] = useState<AnimeProvider | null>(null);
   const [providerControls, setProviderControls] = useState(false);
   const [preferredQuality, setPreferredQuality] = useState<string | undefined>(undefined);
+  const [theatreMode, setTheatreMode] = useState(false);
+  const [episodesOpen, setEpisodesOpen] = useState(false);
+  const [synopsisExpanded, setSynopsisExpanded] = useState(false);
 
   const stageRef = useRef<HTMLDivElement>(null);
   const seasonCacheRef = useRef(new Map<number, Promise<Episode[]>>());
@@ -48,9 +62,17 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
 
   const libraryResolved = controls.state !== 'loading';
 
-  const backHref = useMemo(() => {
+  // Preserve a clean, non-recursive back origin across episode-to-episode navigation
+  const originBack = useMemo(() => {
     const fallback = route.kind === 'catalog' ? `${route.type}/${route.id}` : 'home';
-    return previousBrowse(fallback);
+    const candidate = previousBrowse(fallback);
+    if (isPlayerUrl(candidate)) return webHref(fallback);
+    return candidate;
+  }, [route]);
+
+  const detailsHref = useMemo(() => {
+    if (route.kind === 'catalog') return titleHref({ type: route.type, id: route.id });
+    return webHref(`edition/${encodeURIComponent(route.key)}`);
   }, [route]);
 
   const routeKind = route.kind;
@@ -77,6 +99,9 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
     const { signal } = controller;
     setError('');
     setEpisodeTitle('');
+    setCurrentEpisodeData(null);
+    setNextEpisodeStill(null);
+    setSynopsisExpanded(false);
 
     async function resolve() {
       if (routeKind === 'catalog' && routeCatalogType && routeCatalogId !== undefined) {
@@ -177,10 +202,11 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
         setSeasonEpisodes(episodes);
         if (loadedEpisodeSeason === seasonNumber && loadedEpisodeNumber !== undefined) {
           const idx = episodes.findIndex(ep => ep.episode_number === loadedEpisodeNumber);
-          setSeasonRange(idx >= 0 ? Math.floor(idx / episodeRangeSize) : 0);
+          setSeasonRange(idx >= 0 ? Math.floor(idx / playerEpisodeRangeSize) : 0);
           const currentEp = idx >= 0 ? episodes[idx] : undefined;
           if (currentEp) {
             setEpisodeTitle(currentEp.name);
+            setCurrentEpisodeData(currentEp);
             document.title = `${currentEp.name} · ${loadedItemTitle} · Afterframe`;
           }
         } else {
@@ -219,6 +245,7 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
       const currentEp = episodes.find(ep => ep.episode_number === loadedEpisodeNumber);
       if (currentEp) {
         setEpisodeTitle(currentEp.name);
+        setCurrentEpisodeData(currentEp);
         document.title = `${currentEp.name} · ${loadedItemTitle} · Afterframe`;
       }
       const aired = episodes.filter(isAired);
@@ -228,7 +255,9 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
         return;
       }
       let prev: (EpisodePosition & { key?: string }) | undefined = idx > 0 ? episodePosition(aired[idx - 1]) : undefined;
-      let next: (EpisodePosition & { key?: string }) | undefined = idx + 1 < aired.length ? episodePosition(aired[idx + 1]) : undefined;
+      let nextEpObj: Episode | undefined = idx + 1 < aired.length ? aired[idx + 1] : undefined;
+      let next: (EpisodePosition & { key?: string }) | undefined = nextEpObj ? episodePosition(nextEpObj) : undefined;
+      if (nextEpObj?.still_path) setNextEpisodeStill(nextEpObj.still_path);
       setAdjacent({ previous: prev, next, ready: false });
 
       if (loadedEpisodeSeason! > 0 && (!prev || !next) && details?.seasons?.length) {
@@ -237,21 +266,25 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
           .sort((a, b) => a.season_number - b.season_number);
         const seasonIdx = regularSeasons.findIndex(s => s.season_number === loadedEpisodeSeason);
         if (seasonIdx >= 0) {
-          const findEdge = async (step: number, edge: number) => {
+          const findEdge = async (step: number, edge: number): Promise<Episode | undefined> => {
             for (let cursor = seasonIdx + step; regularSeasons[cursor]; cursor += step) {
               const eps = (await readSeason(loadedItemId!, regularSeasons[cursor].season_number)).filter(isAired);
               const candidate = eps.at(edge);
-              if (candidate) return episodePosition(candidate);
+              if (candidate) return candidate;
             }
             return undefined;
           };
-          const [crossPrev, crossNext] = await Promise.all([
-            prev ? Promise.resolve(prev) : findEdge(-1, -1).catch(() => undefined),
-            next ? Promise.resolve(next) : findEdge(1, 0).catch(() => undefined),
+          const [crossPrevEp, crossNextEp] = await Promise.all([
+            prev ? Promise.resolve(undefined) : findEdge(-1, -1).catch(() => undefined),
+            next ? Promise.resolve(undefined) : findEdge(1, 0).catch(() => undefined),
           ]);
           if (!active) return;
-          prev = crossPrev;
-          next = crossNext;
+          if (!prev && crossPrevEp) prev = episodePosition(crossPrevEp);
+          if (!next && crossNextEp) {
+            nextEpObj = crossNextEp;
+            next = episodePosition(crossNextEp);
+            if (crossNextEp.still_path) setNextEpisodeStill(crossNextEp.still_path);
+          }
         }
       }
       if (active) setAdjacent({ previous: prev, next, ready: true });
@@ -266,11 +299,24 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
   const navigateEpisode = useCallback((target: EpisodePosition & { key?: string }) => {
     const current = loadedRef.current;
     if (!current) return;
+    setEpisodesOpen(false);
     const nextHref = target.key
-      ? playerHref(`edition/${encodeURIComponent(current.item.key)}/watch/${encodeURIComponent(target.key)}`, backHref)
-      : playHref(current.item, target);
+      ? playerHref(`edition/${encodeURIComponent(current.item.key)}/watch/${encodeURIComponent(target.key)}`, originBack)
+      : playerHref(`${current.item.type}/${current.item.id}/s${target.season}e${target.number}`, originBack);
     navigate(nextHref);
-  }, [backHref]);
+  }, [originBack]);
+
+  useEffect(() => {
+    if (!episodesOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setEpisodesOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [episodesOpen]);
 
   if (error) {
     const alternate = route.kind === 'catalog' && route.type === 'movie'
@@ -281,19 +327,19 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
       <p className="af-state" role="alert">{error}</p>
       <div className="af-actions">
         <button type="button" className="af-button af-secondary" onClick={() => setAttempt(v => v + 1)}>Retry</button>
-        <ActionLink href={backHref}>Back</ActionLink>
-        {alternate && <ActionLink primary href={playerHref(`edition/${encodeURIComponent(alternate.key)}/watch`, backHref)}>Play licensed Archive edition</ActionLink>}
+        <ActionLink href={originBack}>Back</ActionLink>
+        {alternate && <ActionLink primary href={playerHref(`edition/${encodeURIComponent(alternate.key)}/watch`, originBack)}>Play licensed Archive edition</ActionLink>}
       </div>
     </section>;
   }
 
   if (editionDetails) {
-    return <ArchiveEditionView entry={editionDetails} backHref={backHref} controls={controls} />;
+    return <ArchiveEditionView entry={editionDetails} backHref={originBack} controls={controls} />;
   }
 
   if (!loaded) {
     return <section className="af-wrap af-directory">
-      <a className="af-text-link" href={backHref}><Icon name="left" /> Back</a>
+      <a className="af-text-link" href={originBack}><Icon name="left" /> Back</a>
       <Loading label="Loading playback…" shape="hero" />
     </section>;
   }
@@ -305,17 +351,129 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
     ? { ...loaded.episode, title: episodeTitle || loaded.episode.title }
     : undefined;
 
-  const seasons = (details?.seasons ?? []).filter(season => season.season_number >= 0 && season.episode_count > 0);
+  const orderedSeasons = orderSeasons(details?.seasons);
   const watchTitle = hydratedEpisode?.title || hydratedItem.title;
   const sourcePage = loaded.nativeMedia?.page || (loaded.nativeMedia?.archive ? `https://archive.org/details/${encodeURIComponent(loaded.nativeMedia.archive)}` : '');
   const airedInSeason = seasonEpisodes.filter(isAired);
   const watchedInSeason = airedInSeason.filter(ep => controls.library.watched[episodeKey(hydratedItem, ep)]).length;
-  const rangeCount = Math.ceil(seasonEpisodes.length / episodeRangeSize);
+  const rangeCount = Math.ceil(seasonEpisodes.length / playerEpisodeRangeSize);
   const clampedRange = Math.min(seasonRange, Math.max(0, rangeCount - 1));
-  const rangeStart = clampedRange * episodeRangeSize;
+  const rangeStart = clampedRange * playerEpisodeRangeSize;
+  const currentSeasonObj = orderedSeasons.find(s => s.season_number === seasonNumber);
 
-  return <div className="af-wrap af-player-page">
+  const hasSeriesEpisodes = Boolean((!loaded.archive && hydratedItem.type === 'tv' && orderedSeasons.length > 0) || loaded.archive?.episodes?.length);
+  const watchedKey = hydratedEpisode ? loaded.progressKey : hydratedItem.key;
+  const isCurrentWatched = Boolean(controls.library.watched[watchedKey]);
+  const saved = controls.library.saved[hydratedItem.key];
+  const currentSynopsis = hydratedEpisode ? currentEpisodeData?.overview : hydratedItem.description;
+  const protectSynopsis = Boolean(hydratedEpisode && !isCurrentWatched && controls.library.preferences.hideSynopsis !== false);
+  const currentMeta = hydratedEpisode
+    ? [
+      `S${hydratedEpisode.season} E${hydratedEpisode.number}`,
+      currentEpisodeData?.runtime ? `${currentEpisodeData.runtime} min` : hydratedEpisode.duration ? `${hydratedEpisode.duration} min` : '',
+      currentEpisodeData?.air_date ? formatDate(currentEpisodeData.air_date) : '',
+    ].filter(Boolean).join(' · ')
+    : [hydratedItem.year, hydratedItem.duration ? `${hydratedItem.duration} min` : '', hydratedItem.genre].filter(Boolean).join(' · ');
+
+  const episodesDrawerNode = hasSeriesEpisodes && episodesOpen ? (
+    <aside className="af-player-drawer" aria-label="Episodes drawer">
+      <header className="af-player-drawer-head">
+        <div>
+          <strong>Episodes</strong>
+          <p className="af-meta af-tabular">{currentSeasonObj?.name || (loaded.archive ? hydratedItem.title : `Season ${seasonNumber}`)}</p>
+        </div>
+        <button type="button" className="af-icon-button" aria-label="Close episodes drawer" onClick={() => setEpisodesOpen(false)}>
+          <Icon name="close" />
+        </button>
+      </header>
+      {!loaded.archive && orderedSeasons.length > 1 && (
+        <div className="af-season-tabs af-drawer-tabs" role="tablist" aria-label="Drawer seasons">
+          {orderedSeasons.map(s => (
+            <button key={s.season_number} type="button" role="tab" aria-selected={seasonNumber === s.season_number}
+              className="af-season-tab" onClick={() => { setSeasonNumber(s.season_number); setSeasonRange(0); }}>
+              {s.season_number === 0 ? 'Specials' : `S${s.season_number}`}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="af-drawer-list">
+        {loaded.archive?.episodes ? loaded.archive.episodes.map(ep => {
+          const active = loaded.episode?.key === ep.key;
+          return <button key={ep.key} type="button" className={`af-drawer-ep ${active ? 'is-current' : ''}`}
+            onClick={() => navigateEpisode({ key: ep.key, season: ep.season ?? 1, number: ep.number ?? 1, title: ep.title })}>
+            <span className="af-drawer-ep-num af-tabular">{ep.number ?? '•'}</span>
+            <span className="af-drawer-ep-copy">
+              <strong>{ep.title}</strong>
+              {ep.duration && <small className="af-meta af-tabular">{ep.duration} min</small>}
+            </span>
+            {active && <span className="af-ep-state-tag">Playing</span>}
+          </button>;
+        }) : seasonEpisodes.map(ep => {
+          const active = loaded.episode?.season === ep.season_number && loaded.episode?.number === ep.episode_number;
+          const aired = isAired(ep);
+          const epKey = episodeKey(hydratedItem, ep);
+          const marked = Boolean(controls.library.watched[epKey]);
+          const still = imagePath(ep.still_path, 'w300');
+          const blur = !marked && controls.library.preferences.blur !== false;
+          return <button key={epKey} type="button" className={`af-drawer-ep ${active ? 'is-current' : ''}`} disabled={!aired}
+            onClick={() => navigateEpisode(episodePosition(ep))}>
+            <span className="af-drawer-ep-thumb">
+              <Artwork src={still} className={blur ? 'af-blurred' : undefined} loading="lazy" fallback={<Icon name="film" />} />
+              <span className="af-ep-code af-tabular">E{ep.episode_number}</span>
+            </span>
+            <span className="af-drawer-ep-copy">
+              <strong>{ep.name}</strong>
+              <small className="af-meta af-tabular">{[ep.runtime ? `${ep.runtime} min` : '', active ? 'Now playing' : marked ? 'Watched' : !aired ? 'Upcoming' : ''].filter(Boolean).join(' · ')}</small>
+            </span>
+          </button>;
+        })}
+      </div>
+    </aside>
+  ) : null;
+
+  return <div className={`af-wrap af-player-page ${theatreMode ? 'is-theatre' : ''}`}>
     <h1 className="sr-only" tabIndex={-1}>{watchTitle}</h1>
+
+    <div className="af-player-topbar">
+      <div className="af-player-topbar-left">
+        <a className="af-player-topbar-back" href={detailsHref}>
+          <Icon name="left" />
+          <span>{hydratedItem.title}</span>
+        </a>
+        {hydratedEpisode && <>
+          <span className="af-player-topbar-sep" aria-hidden="true">/</span>
+          <span className="af-player-topbar-code af-tabular">{episodeLabel({ season_number: hydratedEpisode.season, episode_number: hydratedEpisode.number, name: '' })}</span>
+          <span className="af-player-topbar-ep">{hydratedEpisode.title}</span>
+        </>}
+      </div>
+      <div className="af-player-topbar-actions">
+        {hasSeriesEpisodes && (
+          <button type="button" className="af-button af-secondary af-topbar-btn" aria-pressed={episodesOpen} onClick={() => setEpisodesOpen(v => !v)}>
+            <PlayerGlyph name="episodes" />
+            <span>Episodes</span>
+            <kbd className="af-kbd af-topbar-kbd">E</kbd>
+          </button>
+        )}
+        {adjacent.previous && (
+          <button type="button" className="af-button af-secondary af-topbar-btn" aria-label="Previous episode" onClick={() => navigateEpisode(adjacent.previous!)}>
+            <PlayerGlyph name="prev" />
+            <span className="af-topbar-btn-label">Prev</span>
+          </button>
+        )}
+        {adjacent.next && (
+          <button type="button" className="af-button af-secondary af-topbar-btn" aria-label="Next episode" onClick={() => navigateEpisode(adjacent.next!)}>
+            <span className="af-topbar-btn-label">Next</span>
+            <PlayerGlyph name="next" />
+          </button>
+        )}
+        <button type="button" className="af-button af-secondary af-topbar-btn af-topbar-theatre" aria-pressed={theatreMode} onClick={() => setTheatreMode(v => !v)}>
+          <PlayerGlyph name="theatre" />
+          <span>{theatreMode ? 'Default' : 'Theatre'}</span>
+          <kbd className="af-kbd af-topbar-kbd">T</kbd>
+        </button>
+      </div>
+    </div>
+
     <div className="af-watch-stage" ref={stageRef}>
       <VideoStage
         key={loaded.progressKey}
@@ -323,8 +481,9 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
         media={loaded}
         displayItem={hydratedItem}
         displayEpisode={hydratedEpisode}
-        backHref={route.kind === 'catalog' ? titleHref(hydratedItem) : webHref(`edition/${encodeURIComponent(loaded.item.key)}`)}
+        backHref={detailsHref}
         adjacent={adjacent}
+        nextStillPath={nextEpisodeStill}
         controls={controls}
         initialProvider={activeProvider}
         onProviderChange={setActiveProvider}
@@ -333,22 +492,59 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
         preferredQuality={preferredQuality}
         onPreferredQualityChange={setPreferredQuality}
         onNavigateEpisode={navigateEpisode}
+        theatreMode={theatreMode}
+        onToggleTheatre={() => setTheatreMode(v => !v)}
+        hasEpisodesDrawer={hasSeriesEpisodes}
+        episodesOpen={episodesOpen}
+        onToggleEpisodes={() => setEpisodesOpen(v => !v)}
+        episodesDrawer={episodesDrawerNode}
       />
     </div>
+
     <div className="af-watch-body">
-      {!hydratedEpisode && <div className="af-watch-overview">
-        {hydratedItem.description && <p className="af-overview">{hydratedItem.description}</p>}
-        <div className="af-rating">
-          <span>Your rating</span>
-          <AfSelect
-            ariaLabel="Your rating"
-            value={String(savedRating(controls.library.ratings[hydratedItem.key]))}
-            disabled={!controls.ready || controls.isPending(hydratedItem.key)}
-            options={playerRatingOptions}
-            onChange={value => void controls.rate(hydratedItem, Number(value))}
-          />
+      <section className="af-now-playing-card" aria-label="Now playing details">
+        <div className="af-now-playing-copy">
+          <div className="af-now-playing-head">
+            <h2>{watchTitle}</h2>
+            {currentMeta && <p className="af-meta af-tabular">{currentMeta}</p>}
+          </div>
+          {currentSynopsis && (
+            protectSynopsis && !synopsisExpanded ? (
+              <button type="button" className="af-text-link af-synopsis-reveal" onClick={() => setSynopsisExpanded(true)}>
+                Show episode description
+              </button>
+            ) : (
+              <p className="af-overview af-now-playing-synopsis">{currentSynopsis}</p>
+            )
+          )}
         </div>
-      </div>}
+        <div className="af-now-playing-actions">
+          <button type="button" className="af-button af-secondary" aria-pressed={isCurrentWatched}
+            disabled={!controls.ready || controls.isPending(watchedKey)}
+            onClick={() => void controls.toggleWatched(hydratedItem, hydratedEpisode ? watchedKey : undefined)}>
+            {isCurrentWatched ? <><Icon name="check" />Watched</> : 'Mark watched'}
+          </button>
+          <SaveButton item={hydratedItem} controls={controls} />
+          {saved && details && <AfSelect
+            ariaLabel="Watch status"
+            value={effectiveWatchStatus(saved, controls.library)}
+            disabled={!controls.ready || controls.isPending(hydratedItem.key)}
+            options={watchStatusOptions}
+            onChange={value => void controls.setStatus(hydratedItem, value as WatchStatus, details)}
+          />}
+          <FolderPickerPopover itemKey={hydratedItem.key} itemTitle={hydratedItem.title} controls={controls} />
+          <div className="af-rating af-rating-inline">
+            <span>Your rating</span>
+            <AfSelect
+              ariaLabel="Your rating"
+              value={String(savedRating(controls.library.ratings[hydratedItem.key]))}
+              disabled={!controls.ready || controls.isPending(hydratedItem.key)}
+              options={playerRatingOptions}
+              onChange={value => void controls.rate(hydratedItem, Number(value))}
+            />
+          </div>
+        </div>
+      </section>
 
       {loaded.archive?.episodes && <section className="af-section" aria-label="Episodes">
         <header className="af-section-head"><h2>Episodes</h2></header>
@@ -358,12 +554,15 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
             const current = loaded.episode?.key === ep.key;
             const marked = Boolean(controls.library.watched[epKey]);
             const epProgress = !marked ? controls.library.progress[epKey] : undefined;
-            return <article className="af-episode af-episode-archive" key={ep.key} aria-current={current ? 'true' : undefined}>
+            return <article className={`af-episode af-episode-archive ${current ? 'is-current' : ''}`} key={ep.key} aria-current={current ? 'true' : undefined}>
               <div className="af-episode-copy">
-                <a className="af-episode-title" href={playerHref(`edition/${encodeURIComponent(loaded.item.key)}/watch/${encodeURIComponent(ep.key)}`, backHref)}>
-                  {ep.title} {current && <span className="af-meta">(Playing)</span>}
+                <div className="af-episode-meta-row">
+                  {current && <span className="af-ep-state-tag">Now playing</span>}
+                  {ep.duration && <span className="af-meta af-tabular">{ep.duration} min</span>}
+                </div>
+                <a className="af-episode-title" href={playerHref(`edition/${encodeURIComponent(loaded.item.key)}/watch/${encodeURIComponent(ep.key)}`, originBack)}>
+                  {ep.title}
                 </a>
-                {ep.duration && <p className="af-meta">{ep.duration} min</p>}
                 {epProgress && epProgress.time > 5 && epProgress.time < epProgress.duration && <div className="af-episode-progress">
                   <span>{controls.library.preferences.resume !== false ? 'Resume at' : 'Last position'} {timeCode(epProgress.time)}</span>
                   <progress className="af-progress" value={progressPercent(epProgress)} max={100} aria-label={`${ep.title} watched progress`} />
@@ -380,40 +579,49 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
         </div>
       </section>}
 
-      {!loaded.archive && hydratedItem.type === 'tv' && seasons.length > 0 && <section className="af-section" aria-label="Episodes">
+      {!loaded.archive && hydratedItem.type === 'tv' && orderedSeasons.length > 0 && <section className="af-section" aria-label="Episodes">
         <header className="af-section-head">
           <div>
             <h2>Episodes</h2>
-            {airedInSeason.length > 0 && <p className="af-meta">{watchedInSeason} of {airedInSeason.length} aired episodes watched</p>}
+            {airedInSeason.length > 0 && <p className="af-meta af-tabular">{currentSeasonObj?.name ? `${currentSeasonObj.name} · ` : ''}{watchedInSeason} of {airedInSeason.length} watched</p>}
           </div>
-          <div className="af-episode-pickers">
+          {rangeCount > 1 && <div className="af-episode-pickers">
             <AfSelect
-              ariaLabel="Select season"
-              value={String(seasonNumber)}
-              options={seasons.map(season => ({ value: String(season.season_number), label: season.name }))}
-              onChange={value => { setSeasonNumber(Number(value)); setSeasonRange(0); }}
-            />
-            {rangeCount > 1 && <AfSelect
               ariaLabel="Episode range"
               value={String(clampedRange)}
               options={Array.from({ length: rangeCount }, (_, index) => {
-                const first = seasonEpisodes[index * episodeRangeSize].episode_number;
-                const last = seasonEpisodes[Math.min(seasonEpisodes.length, (index + 1) * episodeRangeSize) - 1].episode_number;
+                const first = seasonEpisodes[index * playerEpisodeRangeSize].episode_number;
+                const last = seasonEpisodes[Math.min(seasonEpisodes.length, (index + 1) * playerEpisodeRangeSize) - 1].episode_number;
                 return { value: String(index), label: `Episodes ${first}${first === last ? '' : `–${last}`}` };
               })}
               onChange={value => setSeasonRange(Number(value))}
-            />}
-          </div>
+            />
+          </div>}
         </header>
+        {orderedSeasons.length > 1 && <div className="af-season-tabs" role="tablist" aria-label="Seasons">
+          {orderedSeasons.map(season => (
+            <button
+              key={season.season_number}
+              type="button"
+              role="tab"
+              aria-selected={seasonNumber === season.season_number}
+              className="af-season-tab"
+              onClick={() => { setSeasonNumber(season.season_number); setSeasonRange(0); }}
+            >
+              {season.name}
+            </button>
+          ))}
+        </div>}
         {seasonError
           ? <p className="af-state" role="alert">{seasonError} <button type="button" className="af-text-link" onClick={() => setSeasonAttempt(v => v + 1)}>Retry</button></p>
           : <div className={`af-episode-grid ${controls.library.preferences.compact ? 'af-compact' : ''}`}>
-            {seasonEpisodes.slice(rangeStart, rangeStart + episodeRangeSize).map(ep => (
+            {seasonEpisodes.slice(rangeStart, rangeStart + playerEpisodeRangeSize).map(ep => (
               <PlayerEpisodeRow
                 key={episodeKey(hydratedItem, ep)}
                 item={hydratedItem}
                 episode={ep}
                 current={loaded.episode?.season === ep.season_number && loaded.episode?.number === ep.episode_number}
+                backHref={originBack}
                 controls={controls}
               />
             ))}
