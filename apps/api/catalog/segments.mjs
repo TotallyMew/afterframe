@@ -1,6 +1,5 @@
 import { animeSource } from './anime.mjs';
 import { cacheMetadata } from './metadata.mjs';
-import { basicTitle, hasTmdbCredential } from './tmdb.mjs';
 
 const verifiedCuts = {
   // Slow Horses S5E2, checked against the 47:55 CineSrc cut.
@@ -148,6 +147,7 @@ async function resolveMalId(anilistId) {
  * @returns {Promise<string | null>}
  */
 async function resolveImdbId(type, id) {
+  const { basicTitle, hasTmdbCredential } = await import('./tmdb.mjs');
   if (!hasTmdbCredential()) return null;
   const details = await basicTitle(type, id).catch(() => null);
   const raw = details?.imdb_id || details?.external_ids?.imdb_id || '';
@@ -173,7 +173,7 @@ export function parseAniSkipPayload(payload, durationSec) {
     if (!kind || !Number.isFinite(start) || !Number.isFinite(rawEnd)) continue;
     const end = Math.min(durationSec, rawEnd);
     const isMixed = skipType.startsWith('mixed-');
-    let score = isMixed ? 86 : 98;
+    let score = isMixed ? 88 : 105;
     let autoSkip = !isMixed;
     if (Number.isFinite(reportedLen) && reportedLen > 0) {
       const diff = Math.abs(reportedLen - durationSec);
