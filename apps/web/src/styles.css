@@ -1236,8 +1236,12 @@ h3:focus:not(:focus-visible) {
   outline: none;
 }
 
+.af-popover-positioner {
+  z-index: 55;
+}
 .af-popover-popup {
-  background: var(--af-panel);
+  background-color: var(--af-panel);
+  backdrop-filter: none;
   isolation: isolate;
 }
 
@@ -1325,8 +1329,11 @@ h3:focus:not(:focus-visible) {
   animation: af-settings-panel-in 190ms var(--af-ease-out);
 }
 
+.af-settings-modal {
+  block-size: min(44rem, calc(100dvh - 2 * clamp(.5rem, 5dvh, 3rem)));
+}
 .af-settings-content {
-  min-block-size: min(26rem, 54dvh);
+  min-block-size: 0;
   scrollbar-width: thin;
   scrollbar-color: var(--af-control-edge) transparent;
 }

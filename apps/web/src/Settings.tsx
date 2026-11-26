@@ -186,7 +186,7 @@ function Credits() {
   </div>;
 }
 
-function GeneralSettings({ controls }: { controls: LibraryControls }) {
+function GeneralSettings({ controls, onSectionChange }: { controls: LibraryControls; onSectionChange?: () => void }) {
   const [section, setSection] = useState<Section>('Playback');
   const heading = useRef<HTMLHeadingElement>(null);
   return <>
@@ -197,6 +197,7 @@ function GeneralSettings({ controls }: { controls: LibraryControls }) {
       options={sections.map(name => [name, name] as const)}
       onChange={name => {
         setSection(name);
+        onSectionChange?.();
         requestAnimationFrame(() => heading.current?.focus({ preventScroll: true }));
       }}
     />
@@ -318,8 +319,10 @@ export function SettingsProvider({ controls, children }: { controls: LibraryCont
   const [opening, setOpening] = useState(0);
   const invoker = useRef<HTMLElement | null>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const entry = useRef<SettingsTab>('general');
   const afterCatalogSaved = useRef<(() => void) | undefined>(undefined);
+  const resetScroll = () => { contentRef.current?.scrollTo({ top: 0 }); };
   const openSettings: OpenSettings = (next, source, onSaved) => {
     invoker.current = source;
     entry.current = next;
@@ -339,11 +342,11 @@ export function SettingsProvider({ controls, children }: { controls: LibraryCont
             <Dialog.Close ref={closeButton} className="af-icon-button" aria-label="Close settings"><Icon name="close" /></Dialog.Close>
           </header>
           <div className="af-settings-tabs">
-            <SegmentedTabs label="Settings sections" value={tab} options={settingsTabs} onChange={setTab} />
+            <SegmentedTabs label="Settings sections" value={tab} options={settingsTabs} onChange={next => { setTab(next); resetScroll(); }} />
           </div>
-          <div className="af-settings-content" key={opening}>
+          <div ref={contentRef} className="af-settings-content" key={opening}>
             <div key={tab} className="af-settings-panel-enter">
-              {tab === 'general' ? <GeneralSettings controls={controls} />
+              {tab === 'general' ? <GeneralSettings controls={controls} onSectionChange={resetScroll} />
                 : <Integrations expandCatalog={entry.current === 'integrations'} afterCatalogSaved={afterCatalogSaved.current} />}
             </div>
           </div>
