@@ -1,6 +1,6 @@
 import { isAnime } from '@afterframe/shared/discover';
 import { withGuestLibraryLock, writeGuestRecords } from '@afterframe/shared/guest-storage';
-import type { preferenceDefaults } from '@afterframe/shared/playback';
+import { watchedSeconds, type preferenceDefaults } from '@afterframe/shared/playback';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { canMarkCompleted, episodeKey, isAired, post, request, RequestError, type Comic, type Details, type Episode, type EpisodePosition, type Title } from './catalog';
 import type { ConfirmFn } from './ConfirmDialog';
@@ -674,7 +674,7 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
     });
   }
 
-  function recordPlaybackEntry<K extends 'progress' | 'history'>(kind: K, key: string, value: Library[K][string] | null, at = Date.now()) {
+  function recordPlaybackEntry<K extends 'progress' | 'history' | 'saved'>(kind: K, key: string, value: Library[K][string] | null, at = Date.now()) {
     if (!readyRef.current || replayingRef.current) return;
     const owner = sessionRef.current.account;
     const ownerId = owner?.id ?? null;
@@ -714,8 +714,27 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
     });
   }
 
+  function maybeAutoAddWatching(item: Title, at = Date.now()) {
+    if (sessionRef.current.library.preferences.autoAddWatching === false) return;
+    if (item.type !== 'tv' && item.type !== 'movie') return;
+    const currentSaved = sessionRef.current.library.saved[item.key];
+    if (!currentSaved) {
+      recordPlaybackEntry('saved', item.key, { ...item, added: at, watchStatus: 'watching' as const }, at);
+    } else if (currentSaved.type !== 'comic' && (!currentSaved.watchStatus || currentSaved.watchStatus === 'planned')) {
+      recordPlaybackEntry('saved', item.key, { ...currentSaved, watchStatus: 'watching' as const }, at);
+    }
+  }
+
   function recordProgress(key: string, value: Progress | null) {
-    recordPlaybackEntry('progress', key, value, value?.updated ?? Date.now());
+    const at = value?.updated ?? Date.now();
+    recordPlaybackEntry('progress', key, value, at);
+    if (value && Number.isFinite(value.duration) && value.duration > 0) {
+      const covered = value.ranges?.length ? watchedSeconds(value.ranges, value.duration) : value.time;
+      const meaningful = value.item.type === 'tv'
+        ? (covered >= 180 || covered / value.duration >= 0.25)
+        : (covered >= 300 || covered / value.duration >= 0.2);
+      if (meaningful) maybeAutoAddWatching(value.item, at);
+    }
   }
 
   function recordHistory(id: string, value: History) {
@@ -905,8 +924,11 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
       } else if (currentSaved && currentSaved.type !== 'comic' && currentSaved.watchStatus === 'completed') {
         await edit('saved', item.key, { ...currentSaved, watchStatus: 'planned' }, `Moved “${item.title}” to Plan to Watch`);
       }
-    } else if (item.type === 'tv' && key !== item.key && nextMarked && currentSaved && currentSaved.type !== 'comic') {
-      if (!currentSaved.watchStatus || currentSaved.watchStatus === 'planned') {
+    } else if (item.type === 'tv' && key !== item.key && nextMarked) {
+      const autoAdd = sessionRef.current.library.preferences.autoAddWatching !== false;
+      if (!currentSaved && autoAdd) {
+        await edit('saved', item.key, { ...item, added: Date.now(), watchStatus: 'watching' as const }, `Added “${item.title}” · Watching`);
+      } else if (currentSaved && currentSaved.type !== 'comic' && (!currentSaved.watchStatus || currentSaved.watchStatus === 'planned')) {
         await edit('saved', item.key, { ...currentSaved, watchStatus: 'watching' }, `${item.title} · Watching`);
       }
     }

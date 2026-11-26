@@ -107,6 +107,7 @@ function PlaybackSettings({ controls }: { controls: LibraryControls }) {
     <Toggle controls={controls} name="credits" label="Automatically skip credits" description="When matched timings are available and there is no next episode." />
     <Toggle controls={controls} name="autoplay" label="Automatically play next episode" />
     <Toggle controls={controls} name="resume" label="Resume where I left off" />
+    <Toggle controls={controls} name="autoAddWatching" label="Auto-add to Library as Watching" description="Automatically add series and movies to your Library as Watching after an episode or meaningful playback progress." />
     <Toggle controls={controls} name="volume" label="Remember volume" />
     <Toggle controls={controls} name="subtitles" label="Remember subtitles" description="For captions controlled by Afterframe." />
     <div className="af-settings-row">
