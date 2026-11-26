@@ -5,7 +5,7 @@ import {
   episodeKey, episodeLabel, episodePosition, formatDate, imagePath, isAired, navigate, normalizeTitle,
   normalizeTitles, playHref, previousBrowse, request, timeCode, today,
   type CatalogRating, type Details as TitleDetails, type DetailsImage, type DetailsVideo,
-  type Episode, type MediaType, type Season, type Title, type TitleResults, type WatchProviderRegion,
+  type Episode, type MediaType, type Season, type Title, type TitleResults,
 } from './catalog';
 import { Artwork, HeroBackdrop, Icon, Loading, MediaCard, MutationStatus, RatingProblem, SaveButton, Score, Shelf, useOptionalRating } from './components';
 import { effectiveWatchStatus, getSeason, progressPercent, resumeFor, savedRating, watchStatuses, type Library, type LibraryControls, type WatchStatus } from './library';
@@ -59,14 +59,6 @@ function pickTrailer(videos?: DetailsVideo[]): DetailsVideo | undefined {
   return [...yt].sort((a, b) => score(b) - score(a))[0];
 }
 
-function configuredRegion(): string {
-  try {
-    const saved = JSON.parse(localStorage.getItem('afterframe.region') || 'null');
-    if (typeof saved === 'string' && /^[A-Z]{2}$/.test(saved)) return saved;
-  } catch { /* ignore */ }
-  return 'LT';
-}
-
 function upcoming(details: TitleDetails) {
   const next = details.next_episode_to_air;
   const episode = next?.air_date && next.air_date >= today() ? `${episodeLabel(next)} airs ${formatDate(next.air_date)}` : '';
@@ -105,51 +97,6 @@ function TrailerModal({ video, title, open, onOpenChange }: {
       </Dialog.Popup>
     </Dialog.Portal>
   </Dialog.Root>;
-}
-
-function WhereToWatch({ providers }: { providers: Record<string, WatchProviderRegion> | undefined }) {
-  const region = configuredRegion();
-  const entry = providers?.[region];
-  if (!entry) return null;
-  const groups = [
-    { label: 'Stream', items: [...(entry.flatrate ?? []), ...(entry.free ?? []), ...(entry.ads ?? [])] },
-    { label: 'Rent', items: entry.rent ?? [] },
-    { label: 'Buy', items: entry.buy ?? [] },
-  ].map(group => ({
-    label: group.label,
-    items: [...new Map(group.items.map(item => [item.provider_id, item])).values()].slice(0, 8),
-  })).filter(group => group.items.length > 0);
-  if (!groups.length) return null;
-  const regionLabel = (() => {
-    try { return new Intl.DisplayNames(['en'], { type: 'region' }).of(region) ?? region; }
-    catch { return region; }
-  })();
-
-  return <section className="af-section af-watch-providers" id="availability" aria-labelledby="availability-heading">
-    <header className="af-section-head">
-      <div>
-        <h2 id="availability-heading">Where to watch</h2>
-        <p className="af-meta">Availability in {regionLabel} via JustWatch</p>
-      </div>
-      {entry.link && <a className="af-text-link" href={entry.link} target="_blank" rel="noopener noreferrer">View listings</a>}
-    </header>
-    <div className="af-provider-groups">
-      {groups.map(group => (
-        <div className="af-provider-group" key={group.label}>
-          <span className="af-provider-group-label">{group.label}</span>
-          <div className="af-provider-list">
-            {group.items.map(provider => {
-              const logo = imagePath(provider.logo_path, 'w92');
-              return <span className="af-provider-chip" key={provider.provider_id}>
-                {logo && <img src={logo} alt="" width="20" height="20" loading="lazy" />}
-                <span>{provider.provider_name}</span>
-              </span>;
-            })}
-          </div>
-        </div>
-      ))}
-    </div>
-  </section>;
 }
 
 type RatingsMapSeason = {
@@ -722,8 +669,6 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
       />}
 
       {type === 'tv' && orderedSeasons.some(s => s.season_number > 0) && <EpisodeRatingsHeatmap item={item} />}
-
-      <WhereToWatch providers={details['watch/providers']?.results} />
 
       {Boolean(cast.length || crew.length) && <section className="af-section" id="cast" tabIndex={-1}>
         <header className="af-section-head"><h2>Cast &amp; crew</h2></header>

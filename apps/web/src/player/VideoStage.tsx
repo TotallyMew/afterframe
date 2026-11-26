@@ -120,7 +120,6 @@ export function VideoStage({
   const [direct, setDirect] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [dubFallback, setDubFallback] = useState(false);
-  const [sandboxRelaxed, setSandboxRelaxed] = useState(false);
   const [animeSourceData, setAnimeSourceData] = useState<{ id: number; episode: number } | null>(null);
   const [embedStatus, setEmbedStatus] = useState<{ message: string; canRetry: boolean }>({ message: media.embed ? 'Loading player…' : '', canRetry: false });
   const [pictureVisible, setPictureVisible] = useState(!media.embed);
@@ -1134,7 +1133,8 @@ export function VideoStage({
   // Auto-skip segments & auto-next 10s countdown
   const activeSegment = !providerControls ? activeSkipSegment(segments, position) : undefined;
   const skipSegment = useCallback((segment: SkipSegment) => {
-    if (segment.kind === 'credits' && adjacentRef.current.next) {
+    const reachesEnd = positionRef.current.duration > 0 && segment.end >= positionRef.current.duration - 6;
+    if ((segment.kind === 'credits' || segment.kind === 'preview') && reachesEnd && adjacentRef.current.next) {
       checkForCompletion(positionRef.current);
       onNavigateEpisodeRef.current(adjacentRef.current.next);
       return;
@@ -1160,12 +1160,15 @@ export function VideoStage({
   useEffect(() => {
     if (!activeSegment || position.paused || position.seeking || autoSkippedRef.current.has(activeSegment)) return;
     if (activeSegment.autoSkip === false) return;
-    const creditsWithNext = activeSegment.kind === 'credits' && (Boolean(adjacent.next) || (Boolean(media.episode) && !adjacent.ready));
-    if (!creditsWithNext && pref(activeSegment.kind)) {
+    const isEndKind = activeSegment.kind === 'credits' || activeSegment.kind === 'preview';
+    const reachesEnd = position.duration > 0 && activeSegment.end >= position.duration - 6;
+    const endWithNext = isEndKind && reachesEnd && (Boolean(adjacent.next) || (Boolean(media.episode) && !adjacent.ready));
+    const prefKind = activeSegment.kind === 'preview' ? 'credits' : activeSegment.kind;
+    if (!endWithNext && pref(prefKind)) {
       skipSegment(activeSegment);
-      if (activeSegment.kind === 'credits') checkForCompletion(positionRef.current);
+      if (isEndKind && reachesEnd) checkForCompletion(positionRef.current);
     }
-  }, [activeSegment, position.paused, position.seeking, adjacent.next, adjacent.ready, media.episode, pref, skipSegment, checkForCompletion]);
+  }, [activeSegment, position.paused, position.seeking, position.duration, adjacent.next, adjacent.ready, media.episode, pref, skipSegment, checkForCompletion]);
 
   const inCredits = activeSegment?.kind === 'credits' && !position.paused && !position.seeking && !unidentifiedEpisodeRef.current;
   useEffect(() => {
@@ -1580,7 +1583,7 @@ export function VideoStage({
       </video>}
 
       {media.embed && embedSrc && <iframe
-        key={`${provider}:${providerControls}:${quality}:${dubFallback}:${sandboxRelaxed}:${reloadNonce}`}
+        key={`${provider}:${providerControls}:${quality}:${dubFallback}:${reloadNonce}`}
         ref={frameRef}
         src={embedSrc}
         title={`${titleText} ${provider === 'cinesrc' ? 'video' : 'anime'} player`}
@@ -1588,7 +1591,7 @@ export function VideoStage({
           ? 'autoplay; fullscreen; picture-in-picture; encrypted-media'
           : 'autoplay; fullscreen; picture-in-picture; encrypted-media; screen-wake-lock'}
         allowFullScreen
-        sandbox={provider === 'cinesrc' || !sandboxRelaxed ? 'allow-scripts allow-same-origin allow-presentation' : undefined}
+        sandbox={provider === 'cinesrc' ? 'allow-scripts allow-same-origin allow-presentation' : undefined}
         referrerPolicy="no-referrer"
         onLoad={() => {
           if (provider === 'anipm') sendCommand('hello');
@@ -1615,7 +1618,6 @@ export function VideoStage({
             {animeEligible && <button type="button" className="af-button af-secondary" onClick={() => {
               restoreStateRef.current = null;
               setDubFallback(false);
-              setSandboxRelaxed(false);
               setProvider(animePlayers[provider].next);
             }}>
               Switch to {animePlayers[animePlayers[provider].next].label}
@@ -1868,19 +1870,13 @@ export function VideoStage({
       provider={provider}
       providerControls={providerControls}
       animeEligible={animeEligible}
-      sandboxRelaxed={sandboxRelaxed}
       embedStatus={embedStatus}
       onSwitchProvider={next => {
         restoreStateRef.current = null;
         setDubFallback(false);
-        setSandboxRelaxed(false);
         setProvider(next);
       }}
       onToggleProviderControls={() => reloadCineWithState(!providerControls, quality)}
-      onRelaxSandbox={() => {
-        setSandboxRelaxed(true);
-        setReloadNonce(n => n + 1);
-      }}
       onReload={() => {
         cineSrcServers.delete(media.item.key);
         restoreStateRef.current = null;

@@ -1,5 +1,5 @@
 export interface SkipSegment {
-  kind: 'intro' | 'recap' | 'credits';
+  kind: 'intro' | 'recap' | 'credits' | 'preview';
   start: number;
   end: number;
   autoSkip?: boolean;

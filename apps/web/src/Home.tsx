@@ -45,6 +45,7 @@ export function Home({ controls }: { controls: LibraryControls }) {
   const [trendingByType, setTrendingByType] = useState<Partial<Record<MediaType, Title[]>>>({});
   const [featuredKey, setFeaturedKey] = useState('');
   const [featureDir, setFeatureDir] = useState<1 | -1>(1);
+  const [expandedOverviewKey, setExpandedOverviewKey] = useState('');
   const [ratings, setRatings] = useState<Record<string, CatalogRating>>({});
   const [featuredDetails, setFeaturedDetails] = useState<Title>();
   const [recentComics, setRecentComics] = useState<Comic[]>([]);
@@ -194,7 +195,10 @@ export function Home({ controls }: { controls: LibraryControls }) {
     setFeaturedKey(item.key);
   }
 
-  const heroDescription = trimOverview(featured?.description);
+  const fullDescription = (featured?.description ?? '').replace(/\s+/g, ' ').trim();
+  const shortDescription = trimOverview(fullDescription);
+  const canExpandDescription = Boolean(featured && fullDescription && shortDescription !== fullDescription);
+  const isDescriptionExpanded = Boolean(featured && expandedOverviewKey === featured.key);
 
   return <>
     {featured ? <section className="af-wrap af-hero af-home-hero" aria-label="Featured film">
@@ -207,7 +211,20 @@ export function Home({ controls }: { controls: LibraryControls }) {
           {[featured.year, featured.genre, featureDuration ? `${featureDuration} min` : ''].filter(Boolean).map(fact => <span key={fact}>{fact}</span>)}
           <Score rating={featured.rating} />
         </div>
-        {heroDescription && <p className="af-overview af-home-overview">{heroDescription}</p>}
+        {shortDescription && <p className={`af-overview af-home-overview ${isDescriptionExpanded ? 'is-expanded' : ''}`}>
+          {isDescriptionExpanded ? fullDescription : shortDescription}
+          {canExpandDescription && <>
+            {' '}
+            <button
+              type="button"
+              className="af-overview-toggle"
+              aria-expanded={isDescriptionExpanded}
+              onClick={() => setExpandedOverviewKey(isDescriptionExpanded ? '' : featured.key)}
+            >
+              {isDescriptionExpanded ? 'less' : 'more'}
+            </button>
+          </>}
+        </p>}
         <div className="af-actions">
           <ActionLink href={playHref(featured)} primary><Icon name="play" />{featuredResume ? 'Resume' : 'Play'}</ActionLink>
           <SaveButton item={featured} controls={controls} />

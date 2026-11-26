@@ -2159,6 +2159,30 @@ a.af-heatmap-cell:active { transform: scale(.96); }
    Mobile-Native Ergonomics: Bottom Sheets, Collapsible Filters & 44px Targets
    ========================================================================== */
 
+/* Expandable Home Hero Description */
+.af-home-overview.is-expanded {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+.af-overview-toggle {
+  display: inline;
+  padding: 1px 4px;
+  border-radius: var(--af-radius-sm);
+  color: var(--af-selection);
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--af-selection) 42%, transparent);
+  text-underline-offset: 2px;
+  background: color-mix(in srgb, var(--af-selection) 10%, transparent);
+  transition: color var(--af-duration-fast) var(--af-ease-out), background-color var(--af-duration-fast) var(--af-ease-out), text-decoration-color var(--af-duration-fast) var(--af-ease-out);
+}
+.af-overview-toggle:hover {
+  color: var(--af-ink);
+  background: color-mix(in srgb, var(--af-selection) 18%, transparent);
+  text-decoration-color: var(--af-selection);
+}
+
 .af-search-field input:focus,
 .af-search-field input:focus-visible { outline: none; box-shadow: none; }
 .af-search-result-meta { gap: 4px 6px; }

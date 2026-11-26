@@ -8,7 +8,7 @@ import { readingStatuses, savedRating, type LibraryControls, type WatchStatus } 
 import { FolderPickerPopover } from './library/FolderPickerPopover';
 import { AfSelect, MobileFilterSheet, useMediaQuery } from './UiControls';
 
-const formats = [['', 'All'], ['manga', 'Manga'], ['manhwa', 'Manhwa'], ['manhua', 'Manhua'], ['comic', 'Comics']] as const;
+const formats = [['', 'All'], ['manga', 'Manga'], ['manhwa', 'Manhwa'], ['manhua', 'Manhua']] as const;
 const statuses = [['ongoing', 'Ongoing'], ['completed', 'Completed'], ['hiatus', 'On hiatus'], ['cancelled', 'Cancelled']] as const;
 const sorts = [['popular', 'Popularity'], ['updated', 'Recently updated'], ['newest', 'Publication year'], ['title', 'Title A–Z']] as const;
 const readingStatusOptions = Object.entries(readingStatuses).map(([value, label]) => ({ value, label }));

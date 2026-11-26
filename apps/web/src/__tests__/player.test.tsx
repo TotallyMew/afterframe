@@ -313,7 +313,7 @@ describe('PlayerPage regressions', () => {
       expect(node?.src).toContain('https://animeembed.com/embed/ani/113415/1');
       return node!;
     });
-    expect(animeFrame.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin allow-presentation');
+    expect(animeFrame.getAttribute('sandbox')).toBeNull();
     expect(animeFrame.getAttribute('referrerpolicy')).toBe('no-referrer');
 
     // Theatre mode toggle in persistent topbar

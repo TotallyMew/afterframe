@@ -12,7 +12,7 @@ export const animePlayers = {
 export type AnimeProvider = keyof typeof animePlayers;
 
 export const cineSrcServers = new Map<string, string>();
-export const segmentNames = { intro: 'Intro', recap: 'Recap', credits: 'Credits' } as const;
+export const segmentNames = { intro: 'Intro', recap: 'Recap', credits: 'Credits', preview: 'Preview' } as const;
 export const speedOptions = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 export const qualityOptions = [['', 'Auto'], ['480', '480p'], ['720', '720p'], ['1080', '1080p']] as const;
 export const episodeRangeSize = 15;

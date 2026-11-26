@@ -21,12 +21,12 @@ const aniSkipKind = {
   recap: 'recap',
 };
 
-/** @type {readonly ('intro' | 'recap' | 'credits')[]} */
-const segmentKinds = ['intro', 'recap', 'credits'];
+/** @type {readonly ('intro' | 'recap' | 'credits' | 'preview')[]} */
+const segmentKinds = ['intro', 'recap', 'credits', 'preview'];
 const imdbIdPattern = /^tt\d{6,10}$/;
 
 /**
- * @typedef {'intro' | 'recap' | 'credits'} SegmentKind
+ * @typedef {'intro' | 'recap' | 'credits' | 'preview'} SegmentKind
  * @typedef {'verified' | 'aniskip' | 'skipdb' | 'theintrodb' | 'introdb'} SegmentSource
  * @typedef {{ kind: SegmentKind, start: number, end: number, autoSkip: boolean, source: SegmentSource, score: number }} SegmentCandidate
  * @typedef {{ kind: SegmentKind, start: number, end: number, autoSkip: boolean, source: SegmentSource }} SkipSegmentOut
@@ -52,6 +52,9 @@ export function isReasonableSegment(kind, start, end, durationSec) {
   }
   if (kind === 'credits') {
     return start >= durationSec * 0.65 && length <= durationSec * 0.35;
+  }
+  if (kind === 'preview') {
+    return start >= durationSec * 0.65 && length <= 180;
   }
   return false;
 }
@@ -233,7 +236,7 @@ export function parseSkipDbPayload(data, durationSec) {
   const segs = data?.segments;
   if (!segs || typeof segs !== 'object') return [];
   /** @type {readonly [string, SegmentKind][]} */
-  const mapping = [['intro', 'intro'], ['recap', 'recap'], ['outro', 'credits']];
+  const mapping = [['intro', 'intro'], ['recap', 'recap'], ['outro', 'credits'], ['preview', 'preview']];
   /** @type {SegmentCandidate[]} */
   const found = [];
   for (const [key, kind] of mapping) {
@@ -245,7 +248,8 @@ export function parseSkipDbPayload(data, durationSec) {
     const match = String(entry.match || '');
     const confidence = Number(entry.confidence ?? 0.7);
     const offsetMs = Number(entry.offset_ms ?? 0);
-    if (match === 'out-of-range' && Math.abs(offsetMs) > 20000) continue;
+    const maxOutOfRangeMs = (kind === 'intro' || kind === 'recap') ? 60000 : 20000;
+    if (match === 'out-of-range' && Math.abs(offsetMs) > maxOutOfRangeMs) continue;
     const start = startMs / 1000;
     const end = Math.min(durationSec, endMs / 1000);
     if (!isReasonableSegment(kind, start, end, durationSec)) continue;
@@ -319,7 +323,7 @@ export function parseTheIntroDbPayload(data, type, durationMs) {
   /** @type {SegmentCandidate[]} */
   const found = [];
   for (const kind of segmentKinds) {
-    if (kind === 'credits' && deltaMs > 10000) continue;
+    if ((kind === 'credits' || kind === 'preview') && deltaMs > 10000) continue;
     const entries = Array.isArray(data[kind]) ? data[kind] : [];
     const filtered = entries.filter(entry => {
       if (!Number.isFinite(entry?.confidence)) return false;
@@ -331,7 +335,7 @@ export function parseTheIntroDbPayload(data, type, durationMs) {
     }
     for (const entry of filtered) {
       if (entry.start_ms != null && !Number.isFinite(entry.start_ms)) continue;
-      if (!Number.isFinite(entry.end_ms) && (kind !== 'credits' || entry.end_ms !== null)) continue;
+      if (!Number.isFinite(entry.end_ms) && ((kind !== 'credits' && kind !== 'preview') || entry.end_ms !== null)) continue;
       const start = (entry.start_ms ?? 0) / 1000;
       const end = (entry.end_ms === null ? durationMs : Math.min(entry.end_ms, durationMs)) / 1000;
       if (!isReasonableSegment(kind, start, end, durationSec)) continue;
@@ -388,16 +392,23 @@ export function parseIntroDbPayload(data, durationSec) {
   if (!data || typeof data !== 'object') return [];
   /** @type {readonly [string, SegmentKind][]} */
   const mapping = [['intro', 'intro'], ['recap', 'recap'], ['outro', 'credits']];
+  const postCreditsStartMs = Number(
+    data.post_credits?.start_ms ?? (Number.isFinite(data.post_credits?.start_sec) ? data.post_credits.start_sec * 1000 : NaN),
+  );
   /** @type {SegmentCandidate[]} */
   const found = [];
   for (const [key, kind] of mapping) {
     const entry = data[key];
     if (!entry || typeof entry !== 'object') continue;
     const startMs = Number(entry.start_ms ?? (Number.isFinite(entry.start_sec) ? entry.start_sec * 1000 : NaN));
-    const endMs = Number(entry.end_ms ?? (Number.isFinite(entry.end_sec) ? entry.end_sec * 1000 : NaN));
+    let endMs = Number(entry.end_ms ?? (Number.isFinite(entry.end_sec) ? entry.end_sec * 1000 : NaN));
     if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue;
-    // Reject wildly mismatched episode lengths (> 15s past stream end).
-    if (endMs > durationSec * 1000 + 15000) continue;
+    // Reject wildly mismatched episode lengths (> 30s past stream end).
+    if (endMs > durationSec * 1000 + 30000) continue;
+    // If IntroDB also tags a post_credits scene inside the outro, stop the outro skip right where post_credits starts.
+    if (kind === 'credits' && Number.isFinite(postCreditsStartMs) && postCreditsStartMs > startMs + 5000 && postCreditsStartMs < endMs) {
+      endMs = postCreditsStartMs;
+    }
     const start = startMs / 1000;
     const end = Math.min(durationSec, endMs / 1000);
     if (!isReasonableSegment(kind, start, end, durationSec)) continue;

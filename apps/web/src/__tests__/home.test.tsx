@@ -93,6 +93,41 @@ describe('Home cached IMDb rating hydration', () => {
     await waitFor(() => expect(screen.getByText('Chainsaw Man')).toBeTruthy());
   });
 
+  it('allows expanding and collapsing long featured hero descriptions via the inline more/less button', async () => {
+    const longOverview = 'Return to the world of Panem 24 years before Katniss Everdeen volunteers in her sister\'s place, commencing on the morning of the reaping of the 50th Hunger Games, also known as the Second Quarter Quell, where twice as many tributes are taken from every district across Panem.';
+    const movie = {
+      id: 999,
+      media_type: 'movie',
+      title: 'Sunrise on the Reaping',
+      release_date: '2025-11-20',
+      poster_path: '/poster.jpg',
+      backdrop_path: '/backdrop.jpg',
+      overview: longOverview,
+    };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/api/trending') return new Response(JSON.stringify({ results: [movie] }), { status: 200 });
+      if (url.startsWith('/api/home?section=')) return new Response(JSON.stringify({ results: [] }), { status: 200 });
+      if (url.startsWith('/api/comics')) return new Response(JSON.stringify({ results: [] }), { status: 200 });
+      if (url.startsWith('/api/imdb')) return new Response(JSON.stringify({ ratings: {} }), { status: 200 });
+      if (url === '/api/movie/999') return new Response(JSON.stringify(movie), { status: 200 });
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+
+    render(<Home controls={makeControls()} />);
+    const moreBtn = await screen.findByRole('button', { name: 'more' });
+    expect(moreBtn.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText(/twice as many tributes/)).toBeNull();
+
+    fireEvent.click(moreBtn);
+    const lessBtn = await screen.findByRole('button', { name: 'less' });
+    expect(lessBtn.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText(/twice as many tributes/)).toBeTruthy();
+
+    fireEvent.click(lessBtn);
+    expect(await screen.findByRole('button', { name: 'more' })).toBeTruthy();
+  });
+
   it('fetches /api/trending?type=tv when filtering Trending this week to TV Shows', async () => {
     const movie = { id: 550, media_type: 'movie', title: 'Fight Club', release_date: '1999-10-15', backdrop_path: '/m.jpg' };
     const tvShow = { id: 1396, media_type: 'tv', name: 'Severance', first_air_date: '2022-02-18', backdrop_path: '/tv.jpg' };

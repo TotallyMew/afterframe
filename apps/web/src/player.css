@@ -433,6 +433,7 @@
 .af-player-skip[data-kind="intro"] { border-color: color-mix(in srgb, var(--af-segment-intro) 55%, var(--af-hairline)); }
 .af-player-skip[data-kind="recap"] { border-color: color-mix(in srgb, var(--af-segment-recap) 55%, var(--af-hairline)); }
 .af-player-skip[data-kind="credits"] { border-color: color-mix(in srgb, var(--af-segment-credits) 55%, var(--af-hairline)); }
+.af-player-skip[data-kind="preview"] { border-color: color-mix(in srgb, var(--af-success) 55%, var(--af-hairline)); }
 .af-player-skip:hover {
   background: var(--af-ink);
   color: var(--af-canvas);
@@ -499,6 +500,7 @@
 .af-player-marker[data-kind="intro"] { background: var(--af-segment-intro); }
 .af-player-marker[data-kind="recap"] { background: var(--af-segment-recap); }
 .af-player-marker[data-kind="credits"] { background: var(--af-segment-credits); }
+.af-player-marker[data-kind="preview"] { background: var(--af-success); }
 
 .af-player-seek-preview {
   position: absolute;

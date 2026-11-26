@@ -193,4 +193,20 @@ test('multi-source skip parser & merger combines SkipDB, IntroDB, TheIntroDB, an
   assert.equal(hannibal.length, 1);
   assert.equal(hannibal[0].kind, 'intro');
   assert.equal(hannibal[0].autoSkip, false);
+
+  // Preview segments from SkipDB/TheIntroDB & IntroDB post_credits outro clamping
+  const withPreview = parseSkipDbPayload({
+    segments: {
+      outro: { start_ms: 1330000, end_ms: 1420000, match: 'exact', confidence: 0.9 },
+      preview: { start_ms: 1420000, end_ms: 1435000, match: 'exact', confidence: 0.9 },
+    },
+  }, 1435);
+  assert.deepEqual(withPreview.map(s => s.kind), ['credits', 'preview']);
+
+  const clampedOutro = parseIntroDbPayload({
+    outro: { start_ms: 1350000, end_ms: 1435000, confidence: 1, submission_count: 2 },
+    post_credits: { start_ms: 1425000, end_ms: 1435000 },
+  }, 1435);
+  assert.equal(clampedOutro[0].kind, 'credits');
+  assert.equal(clampedOutro[0].end, 1425);
 });

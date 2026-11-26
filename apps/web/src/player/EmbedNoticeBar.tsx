@@ -4,21 +4,17 @@ export function EmbedNoticeBar({
   provider,
   providerControls,
   animeEligible,
-  sandboxRelaxed,
   embedStatus,
   onSwitchProvider,
   onToggleProviderControls,
-  onRelaxSandbox,
   onReload,
 }: {
   provider: AnimeProvider;
   providerControls: boolean;
   animeEligible: boolean;
-  sandboxRelaxed?: boolean;
   embedStatus: { message: string; canRetry: boolean };
   onSwitchProvider: (next: AnimeProvider) => void;
   onToggleProviderControls: () => void;
-  onRelaxSandbox?: () => void;
   onReload: () => void;
 }) {
   const isExternalControls = provider !== 'cinesrc' || providerControls;
@@ -43,11 +39,6 @@ export function EmbedNoticeBar({
       {provider === 'cinesrc' && <button type="button" className="af-button af-secondary af-source-btn" onClick={onToggleProviderControls}>
         {providerControls ? 'Use Afterframe controls' : 'Use CineSrc controls'}
       </button>}
-      {provider !== 'cinesrc' && !sandboxRelaxed && embedStatus.canRetry && onRelaxSandbox && (
-        <button type="button" className="af-button af-secondary af-source-btn" onClick={onRelaxSandbox}>
-          Open unsandboxed
-        </button>
-      )}
       {(embedStatus.canRetry || provider === 'cinesrc') && <button type="button" className="af-button af-secondary af-source-btn" onClick={onReload}>
         Reload
       </button>}
