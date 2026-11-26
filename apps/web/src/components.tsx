@@ -720,7 +720,24 @@ export function MobileNav({ route }: { route: string }) {
   const isBrowse = ['movies', 'tv', 'anime', 'new', 'recommendations'].includes(path) || path.startsWith('movie/') || path.startsWith('tv/');
   const isComics = path === 'comics' || path === 'manga' || path.startsWith('comic/');
   const isLibrary = ['watchlist', 'watched', 'ratings', 'reading', 'history', 'notifications'].includes(path);
-  return <nav className="af-mobile-nav" aria-label="Mobile navigation">
+  const [hidden, setHidden] = useState(false);
+
+  useEffect(() => {
+    setHidden(false);
+    let lastY = window.scrollY;
+    const onScroll = () => {
+      const y = window.scrollY;
+      const delta = y - lastY;
+      if (y <= 32) setHidden(false);
+      else if (delta > 10 && y > 64) setHidden(true);
+      else if (delta < -8) setHidden(false);
+      lastY = y;
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, [path]);
+
+  return <nav className={`af-mobile-nav ${hidden ? 'is-scroll-hidden' : ''}`} aria-label="Mobile navigation">
     <a href={webHref('home')} aria-current={isHome ? 'page' : undefined}>
       <Icon name="home" /><span>Home</span>
     </a>

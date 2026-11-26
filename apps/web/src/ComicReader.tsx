@@ -306,10 +306,10 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
     return () => { preload.length = 0; };
   }, [page, pages, layout, total, neighbors?.next?.entry, item.id]);
 
-  // Reset zoom/pan when changing page or layout
+  // Reset zoom/pan when changing page or layout (without unnecessary re-renders during scroll)
   useEffect(() => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
+    setZoom(prev => prev === 1 ? prev : 1);
+    setPan(prev => prev.x === 0 && prev.y === 0 ? prev : { x: 0, y: 0 });
   }, [page, layout]);
 
   const adjustZoom = (next: number) => {
@@ -319,7 +319,7 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
   };
 
   useEffect(() => {
-    const onFs = () => setNativeFullscreen(document.fullscreenElement === shellRef.current);
+    const onFs = () => setNativeFullscreen(Boolean(document.fullscreenElement));
     document.addEventListener('fullscreenchange', onFs);
     return () => document.removeEventListener('fullscreenchange', onFs);
   }, []);
@@ -435,9 +435,13 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
   };
 
   const toggleFullscreen = async () => {
-    if (nativeFullscreen) { await document.exitFullscreen().catch(() => {}); return; }
-    if (shellRef.current && document.fullscreenEnabled) {
-      await shellRef.current.requestFullscreen().catch(() => {});
+    if (nativeFullscreen || document.fullscreenElement) {
+      await document.exitFullscreen().catch(() => {});
+      return;
+    }
+    const target = document.documentElement ?? shellRef.current;
+    if (target && document.fullscreenEnabled) {
+      await target.requestFullscreen().catch(() => {});
     }
   };
 
@@ -512,8 +516,8 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
 
   const activeSet = useMemo(() => new Set(visiblePages), [visiblePages]);
 
-  return <section className="af-comic-reader" data-oled={oledMode || undefined} onKeyDown={shortcuts}>
-    <div className={`af-reader-shell ${hudShown ? '' : 'is-hud-hidden'}`} ref={shellRef} tabIndex={0} aria-label="Chapter reader">
+  return <section className="af-comic-reader" data-layout={layout} data-oled={oledMode || undefined} onKeyDown={shortcuts}>
+    <div className={`af-reader-shell ${hudShown ? '' : 'is-hud-hidden'}`} data-layout={layout} ref={shellRef} tabIndex={0} aria-label="Chapter reader">
 
       {/* Subtle Floating Top-Left Back Pill */}
       <div className="af-reader-float af-reader-float-back" aria-hidden={!hudShown || undefined}>
@@ -687,10 +691,10 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
         </div>}
       </div>
 
-      {/* Subtle Floating Bottom Scrubber Pill (vanishes completely when HUD is hidden) */}
-      <div className="af-reader-float af-reader-float-bottom" role="region" aria-label="Reading progress" aria-hidden={!hudShown || undefined}>
+      {/* Subtle Floating Bottom Scrubber Pill (unmounted when hidden so mobile browsers have zero bottom-fixed blockers on scroll) */}
+      {hudShown && <div className="af-reader-float af-reader-float-bottom" role="region" aria-label="Reading progress">
         <div className="af-reader-bottom-pill">
-          <button type="button" className="af-reader-cap-arrow" aria-label="Previous page" disabled={page <= 1 && !neighbors?.previous} tabIndex={hudShown ? 0 : -1} onClick={stepBackward}>
+          <button type="button" className="af-reader-cap-arrow" aria-label="Previous page" disabled={page <= 1 && !neighbors?.previous} onClick={stepBackward}>
             <Icon name="left" />
           </button>
           <input
@@ -702,24 +706,23 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
             value={page}
             aria-label="Page progress"
             aria-valuetext={`Page ${page} of ${total}`}
-            tabIndex={hudShown ? 0 : -1}
             style={{ '--pct': pct } as CSSProperties}
             onChange={event => jump(Number(event.currentTarget.value))}
           />
           <span className="af-reader-page-badge">{pageIndicator}</span>
-          <button type="button" className="af-reader-cap-arrow" aria-label="Next page" disabled={page >= total && !neighbors?.next} tabIndex={hudShown ? 0 : -1} onClick={stepForward}>
+          <button type="button" className="af-reader-cap-arrow" aria-label="Next page" disabled={page >= total && !neighbors?.next} onClick={stepForward}>
             <Icon name="right" />
           </button>
         </div>
 
         {layout !== 'scroll' && (
           <div className="af-reader-zoom-pill" aria-label="Zoom controls">
-            <button type="button" className="af-reader-cap-arrow" aria-label="Zoom out" disabled={zoom <= 1} tabIndex={hudShown ? 0 : -1} onClick={() => adjustZoom(zoom - 0.25)}>−</button>
-            <button type="button" className="af-reader-zoom-val" aria-label="Reset zoom" tabIndex={hudShown ? 0 : -1} onClick={() => adjustZoom(1)}>{zoom.toFixed(1)}×</button>
-            <button type="button" className="af-reader-cap-arrow" aria-label="Zoom in" disabled={zoom >= 3} tabIndex={hudShown ? 0 : -1} onClick={() => adjustZoom(zoom + 0.25)}>+</button>
+            <button type="button" className="af-reader-cap-arrow" aria-label="Zoom out" disabled={zoom <= 1} onClick={() => adjustZoom(zoom - 0.25)}>−</button>
+            <button type="button" className="af-reader-zoom-val" aria-label="Reset zoom" onClick={() => adjustZoom(1)}>{zoom.toFixed(1)}×</button>
+            <button type="button" className="af-reader-cap-arrow" aria-label="Zoom in" disabled={zoom >= 3} onClick={() => adjustZoom(zoom + 0.25)}>+</button>
           </div>
         )}
-      </div>
+      </div>}
 
       {/* Centered Translucent Settings & Chapters Modal (MangaFire-style) */}
       {drawerTab && <>

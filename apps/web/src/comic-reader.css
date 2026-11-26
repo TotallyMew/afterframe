@@ -4,9 +4,13 @@
   --reader-glass-hover: color-mix(in srgb, #1b1e22 88%, transparent);
   --reader-edge: color-mix(in srgb, var(--af-ink) 12%, transparent);
   position: relative;
-  min-block-size: 100svh;
+  min-block-size: 100dvh;
   padding-block: 0 var(--af-space-6);
   background: var(--reader-bg);
+}
+
+.af-comic-reader[data-layout='scroll'] {
+  min-block-size: auto;
 }
 
 .af-comic-reader[data-oled='true'] {
@@ -19,7 +23,12 @@
   position: relative;
   display: grid;
   grid-template-rows: 1fr;
-  min-block-size: 100svh;
+  min-block-size: 100dvh;
+}
+
+.af-reader-shell[data-layout='scroll'] {
+  display: block;
+  min-block-size: auto;
 }
 
 .af-reader-shell:focus-visible { outline: 2px solid var(--af-focus); outline-offset: -2px; }
@@ -311,7 +320,8 @@
 
 .af-reader-edge-rail.is-left,
 .af-reader-edge-rail.is-right {
-  inset-block: 0;
+  inset-block-start: 0;
+  block-size: 100dvh;
   flex-direction: column;
   inline-size: 3px;
 }
@@ -375,13 +385,14 @@
   display: grid;
   align-items: center;
   justify-items: center;
-  min-block-size: 100svh;
+  min-block-size: 100dvh;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
 
 .af-reader-stage[data-layout='scroll'] {
-  align-items: start;
+  display: block;
+  min-block-size: auto;
   padding-block: 0;
 }
 

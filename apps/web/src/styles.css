@@ -676,8 +676,8 @@ a.af-episode-title:hover { color: var(--af-selection); }
 .af-next-up-title { font-weight: 650; color: var(--af-ink); overflow-wrap: anywhere; }
 
 /* Footer & Keyboard Shortcuts */
-.af-app { display: flex; flex-direction: column; min-block-size: 100svh; }
-.af-app[data-page=reader] { --header: 0px; }
+.af-app { display: flex; flex-direction: column; min-block-size: 100dvh; }
+.af-app[data-page=reader] { display: block; min-block-size: auto; --header: 0px; }
 .af-app > main { flex: 1 0 auto; }
 .af-footer {
   margin-top: auto;
@@ -750,6 +750,12 @@ a.af-episode-title:hover { color: var(--af-selection); }
     border-top: 1px solid var(--af-divider);
     background: color-mix(in srgb, var(--af-panel) 96%, transparent);
     backdrop-filter: blur(12px);
+    transition: transform 220ms var(--af-ease-out), opacity 180ms ease;
+  }
+  .af-mobile-nav.is-scroll-hidden {
+    transform: translateY(100%);
+    opacity: 0;
+    pointer-events: none;
   }
   .af-mobile-nav :is(a, button) {
     display: grid;

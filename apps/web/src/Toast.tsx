@@ -137,7 +137,7 @@ export function ToastProvider({
 
   return <ToastContext.Provider value={{ notify, dismiss }}>
     {children}
-    <div
+    {toasts.length > 0 && <div
       className="af-toast-region"
       role="region"
       aria-label="Notifications"
@@ -179,6 +179,6 @@ export function ToastProvider({
           </div>
         </div>
       ))}
-    </div>
+    </div>}
   </ToastContext.Provider>;
 }
