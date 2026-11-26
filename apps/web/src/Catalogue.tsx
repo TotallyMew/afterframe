@@ -6,7 +6,7 @@ import {
 import { Artwork, CatalogProblem, Icon, Loading, MediaCard, SaveButton, Score, Shelf } from './components';
 import { ComicCard } from './Comics';
 import type { LibraryControls } from './library';
-import { AfSelect, FilterPopover } from './UiControls';
+import { AfSelect, FilterPopover, MobileFilterSheet, useMediaQuery } from './UiControls';
 
 const sortOptions = [['popular', 'Popular'], ['newest', 'Newest'], ['oldest', 'Oldest']] as const;
 const runtimeOptions = [['short', 'Under 90 min'], ['standard', '90–119 min'], ['long', '120–149 min'], ['epic', '150 min and up']] as const;
@@ -333,6 +333,14 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
     ? [[imdbValue, `${imdbValue}+`] as const, ...imdbPresetOptions]
     : imdbPresetOptions;
   const moreFilterCount = ['from', 'to', 'runtime'].filter(key => Boolean(params.get(key))).length;
+  const totalFilterCount = ['category', 'genre', 'decade', 'imdb', 'from', 'to', 'runtime'].filter(key => Boolean(params.get(key))).length;
+  const isCompactBrowse = useMediaQuery('(max-width: 640px)');
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+
+  function submitMobile(event: FormEvent<HTMLFormElement>) {
+    submit(event);
+    setMobileFiltersOpen(false);
+  }
 
   return <div className="af-wrap af-directory">
     <PageHeading title={heading} />
@@ -344,18 +352,51 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
         ...(search ? [[setType('anime'), 'Anime'], [setType('comic'), 'Manga']] as const : []),
       ]} />
     </div>}
-    {!comicSearch && <form className="af-field-bar" ref={form} onSubmit={submit}>
-      <SelectField label="Genre" name="category" empty="All genres" value={params.get('category') || params.get('genre') || ''} options={catalogGenres.map(genre => [genre, genre])} />
-      {!releases && <SelectField label="Decade" name="decade" empty="Any decade" value={params.get('decade') || ''} options={decadeOptions} />}
-      {!search && <SelectField label="Minimum IMDb rating" name="imdb" empty="Any rating" value={imdbValue} options={imdbOptions} />}
-      {!search && !releases && <SelectField label="Sort by" name="sort" value={params.get('sort') || 'popular'} options={sortOptions} />}
-      <FilterPopover activeCount={moreFilterCount}>
-        {!releases && <><InputField label="From year" aria-describedby={formError ? "year-error" : undefined} aria-invalid={Boolean(formError)} name="from" type="number" min="1870" max="2099" defaultValue={params.get('from') || ''} />
-          <InputField label="Through year" name="to" type="number" min="1870" max="2099" defaultValue={params.get('to') || ''} /></>}
-        {!search && <SelectField label={type === 'tv' ? 'Episode runtime' : 'Runtime'} name="runtime" empty="Any length" value={params.get('runtime') || ''} options={runtimeOptions} />}
-      </FilterPopover>
-      <button type="submit" className="af-button af-primary">Apply filters</button>
-    </form>}
+    {!comicSearch && (isCompactBrowse ? (
+      <div className="af-mobile-browse-bar">
+        {!search && !releases && (
+          <AfSelect
+            ariaLabel="Sort by"
+            className="af-mobile-quick-sort"
+            value={params.get('sort') || 'popular'}
+            options={sortOptions.map(([val, label]) => ({ value: val, label }))}
+            onChange={value => {
+              const nextParams = new URLSearchParams(params);
+              nextParams.set('sort', value);
+              nextParams.delete('page');
+              navigate(routeWithParams(path, nextParams));
+            }}
+          />
+        )}
+        <MobileFilterSheet open={mobileFiltersOpen} onOpenChange={setMobileFiltersOpen} title="Filters" activeCount={totalFilterCount}>
+          <form className="af-mobile-filter-form" ref={form} onSubmit={submitMobile}>
+            <SelectField label="Genre" name="category" empty="All genres" value={params.get('category') || params.get('genre') || ''} options={catalogGenres.map(genre => [genre, genre])} />
+            {!releases && <SelectField label="Decade" name="decade" empty="Any decade" value={params.get('decade') || ''} options={decadeOptions} />}
+            {!search && <SelectField label="Minimum IMDb rating" name="imdb" empty="Any rating" value={imdbValue} options={imdbOptions} />}
+            {!search && !releases && <SelectField label="Sort by" name="sort" value={params.get('sort') || 'popular'} options={sortOptions} />}
+            {!releases && <div className="af-mobile-year-pair">
+              <InputField label="From year" aria-describedby={formError ? 'year-error' : undefined} aria-invalid={Boolean(formError)} name="from" type="number" min="1870" max="2099" defaultValue={params.get('from') || ''} />
+              <InputField label="Through year" name="to" type="number" min="1870" max="2099" defaultValue={params.get('to') || ''} />
+            </div>}
+            {!search && <SelectField label={type === 'tv' ? 'Episode runtime' : 'Runtime'} name="runtime" empty="Any length" value={params.get('runtime') || ''} options={runtimeOptions} />}
+            <button type="submit" className="af-button af-primary af-sheet-submit">Apply filters</button>
+          </form>
+        </MobileFilterSheet>
+      </div>
+    ) : (
+      <form className="af-field-bar" ref={form} onSubmit={submit}>
+        <SelectField label="Genre" name="category" empty="All genres" value={params.get('category') || params.get('genre') || ''} options={catalogGenres.map(genre => [genre, genre])} />
+        {!releases && <SelectField label="Decade" name="decade" empty="Any decade" value={params.get('decade') || ''} options={decadeOptions} />}
+        {!search && <SelectField label="Minimum IMDb rating" name="imdb" empty="Any rating" value={imdbValue} options={imdbOptions} />}
+        {!search && !releases && <SelectField label="Sort by" name="sort" value={params.get('sort') || 'popular'} options={sortOptions} />}
+        <FilterPopover activeCount={moreFilterCount}>
+          {!releases && <><InputField label="From year" aria-describedby={formError ? "year-error" : undefined} aria-invalid={Boolean(formError)} name="from" type="number" min="1870" max="2099" defaultValue={params.get('from') || ''} />
+            <InputField label="Through year" name="to" type="number" min="1870" max="2099" defaultValue={params.get('to') || ''} /></>}
+          {!search && <SelectField label={type === 'tv' ? 'Episode runtime' : 'Runtime'} name="runtime" empty="Any length" value={params.get('runtime') || ''} options={runtimeOptions} />}
+        </FilterPopover>
+        <button type="submit" className="af-button af-primary">Apply filters</button>
+      </form>
+    ))}
     {formError && <p className="af-state" id="year-error" role="alert">{formError}</p>}
     <ResultsSummary count={comicSearch ? (!loading && !error ? comicItems.length : null) : (total ?? (!loading && !error ? items.length : null))} loading={loading && page === 1 && !(comicSearch ? comicItems.length : items.length)} route={path} filters={params} clear={clear} labels={{ sort: sortLabel }} />
     {comicSearch ? (comicItems.length > 0 && <div className="af-poster-grid">{comicItems.map((item, index) => <ComicCard item={item} controls={controls} key={item.key} eager={index < 6} />)}</div>)

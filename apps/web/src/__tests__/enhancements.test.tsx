@@ -1,10 +1,13 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Catalogue } from '../Catalogue';
 import { Header } from '../components';
 import { buildLibraryExport, parseLibraryImport, type LibraryControls } from '../library';
 import { LibraryPage } from '../LibraryPage';
 import { normalizeRouteString, searchHref, webHref } from '../router';
+import { SettingsProvider } from '../Settings';
+import { useSettings } from '../settings-context';
 import { ShortcutsDialog } from '../ShortcutsDialog';
 import { ToastProvider, useToast } from '../Toast';
 
@@ -157,5 +160,67 @@ describe('Afterframe web enhancements', () => {
       expect(window.location.pathname).toBe('/watchlist');
       expect(window.location.search).toBe('?type=tv');
     });
+  });
+
+  it('portals AfSelect options inside the Settings modal portal host and updates playback preference', async () => {
+    const setPreference = vi.fn(async () => {});
+    const controls = makeControls({ setPreference });
+    function SettingsOpener() {
+      const openSettings = useSettings();
+      return <button type="button" onClick={e => openSettings('general', e.currentTarget)}>Open Settings</button>;
+    }
+    render(
+      <SettingsProvider controls={controls}>
+        <SettingsOpener />
+      </SettingsProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Open Settings' }));
+    const trigger = await screen.findByRole('combobox', { name: 'Preferred subtitles' });
+    fireEvent.click(trigger);
+
+    const option = await screen.findByRole('option', { name: 'Japanese' });
+    const portalHost = document.querySelector('.af-modal-portal-host');
+    expect(portalHost).not.toBeNull();
+    expect(portalHost!.contains(option)).toBe(true);
+
+    fireEvent.pointerDown(option);
+    fireEvent.mouseUp(option);
+    fireEvent.click(option);
+    await waitFor(() => {
+      expect(setPreference).toHaveBeenCalledWith('subtitleLanguage', 'Japanese', 'Preferred subtitles');
+    });
+  });
+
+  it('collapses Browse filters into a compact mobile bar and opens the Filters bottom sheet on narrow viewports', async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      writable: true,
+      value: vi.fn((query: string) => ({
+        matches: query.includes('max-width: 640px'),
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+    try {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+        results: [{ id: 550, media_type: 'movie', title: 'Fight Club', release_date: '1999-10-15', vote_average: 8.4 }],
+        nextPage: null,
+        totalResults: 1,
+      }), { status: 200 }));
+
+      const { container } = render(<Catalogue route="movies" controls={makeControls()} />);
+      await waitFor(() => expect(container.querySelector('.af-mobile-browse-bar')).not.toBeNull());
+      fireEvent.click(screen.getByRole('button', { name: /Filters/i }));
+      await waitFor(() => expect(document.querySelector('.af-filter-sheet.af-mobile-sheet')).not.toBeNull());
+      expect(screen.getByRole('button', { name: 'Apply filters' })).toBeTruthy();
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, writable: true, value: originalMatchMedia });
+    }
   });
 });

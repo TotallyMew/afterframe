@@ -1,3 +1,4 @@
+import { Dialog } from '@base-ui/react/dialog';
 import { archiveCatalog, type ArchiveEpisode, type ArchiveTitle } from '@afterframe/shared/catalog';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -15,7 +16,7 @@ import { PlayerGlyph } from './player/PlayerGlyph';
 import { archiveMap, archiveToTitle, parsePlayerRoute, playerTitleKey } from './player/route';
 import { animePlayers, cineSrcOrigin, type ActiveMedia, type AnimeProvider, type PlayerRoute } from './player/types';
 import { VideoStage } from './player/VideoStage';
-import { AfSelect } from './UiControls';
+import { AfSelect, useMediaQuery } from './UiControls';
 import './player.css';
 
 const playerEpisodeRangeSize = 24;
@@ -52,6 +53,7 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
   const [theatreMode, setTheatreMode] = useState(false);
   const [episodesOpen, setEpisodesOpen] = useState(false);
   const [synopsisExpanded, setSynopsisExpanded] = useState(false);
+  const isMobileViewport = useMediaQuery('(max-width: 720px)');
 
   const stageRef = useRef<HTMLDivElement>(null);
   const seasonCacheRef = useRef(new Map<number, Promise<Episode[]>>());
@@ -375,7 +377,53 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
     ].filter(Boolean).join(' · ')
     : [hydratedItem.year, hydratedItem.duration ? `${hydratedItem.duration} min` : '', hydratedItem.genre].filter(Boolean).join(' · ');
 
-  const episodesDrawerNode = hasSeriesEpisodes && episodesOpen ? (
+  const episodesDrawerBody = <>
+    {!loaded.archive && orderedSeasons.length > 1 && (
+      <div className="af-season-tabs af-drawer-tabs" role="tablist" aria-label="Drawer seasons">
+        {orderedSeasons.map(s => (
+          <button key={s.season_number} type="button" role="tab" aria-selected={seasonNumber === s.season_number}
+            className="af-season-tab" onClick={() => { setSeasonNumber(s.season_number); setSeasonRange(0); }}>
+            {s.season_number === 0 ? 'Specials' : `S${s.season_number}`}
+          </button>
+        ))}
+      </div>
+    )}
+    <div className="af-drawer-list">
+      {loaded.archive?.episodes ? loaded.archive.episodes.map(ep => {
+        const active = loaded.episode?.key === ep.key;
+        return <button key={ep.key} type="button" className={`af-drawer-ep ${active ? 'is-current' : ''}`}
+          onClick={() => navigateEpisode({ key: ep.key, season: ep.season ?? 1, number: ep.number ?? 1, title: ep.title })}>
+          <span className="af-drawer-ep-num af-tabular">{ep.number ?? '•'}</span>
+          <span className="af-drawer-ep-copy">
+            <strong>{ep.title}</strong>
+            {ep.duration && <small className="af-meta af-tabular">{ep.duration} min</small>}
+          </span>
+          {active && <span className="af-ep-state-tag">Playing</span>}
+        </button>;
+      }) : seasonEpisodes.map(ep => {
+        const active = loaded.episode?.season === ep.season_number && loaded.episode?.number === ep.episode_number;
+        const aired = isAired(ep);
+        const epKey = episodeKey(hydratedItem, ep);
+        const marked = Boolean(controls.library.watched[epKey]);
+        const still = imagePath(ep.still_path, 'w300');
+        const blur = !marked && controls.library.preferences.blur !== false;
+        return <button key={epKey} type="button" className={`af-drawer-ep ${active ? 'is-current' : ''}`} disabled={!aired}
+          onClick={() => navigateEpisode(episodePosition(ep))}>
+          <span className="af-drawer-ep-thumb">
+            <Artwork src={still} className={blur ? 'af-blurred' : undefined} loading="lazy" fallback={<Icon name="film" />} />
+            <span className="af-ep-code af-tabular">E{ep.episode_number}</span>
+          </span>
+          <span className="af-drawer-ep-copy">
+            <strong>{ep.name}</strong>
+            <small className="af-meta af-tabular">{[ep.runtime ? `${ep.runtime} min` : '', active ? 'Now playing' : marked ? 'Watched' : !aired ? 'Upcoming' : ''].filter(Boolean).join(' · ')}</small>
+          </span>
+        </button>;
+      })}
+    </div>
+  </>;
+
+  const useMobileEpisodesSheet = isMobileViewport && !document.fullscreenElement;
+  const episodesDrawerNode = hasSeriesEpisodes && episodesOpen && !useMobileEpisodesSheet ? (
     <aside className="af-player-drawer" aria-label="Episodes drawer">
       <header className="af-player-drawer-head">
         <div>
@@ -386,48 +434,7 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
           <Icon name="close" />
         </button>
       </header>
-      {!loaded.archive && orderedSeasons.length > 1 && (
-        <div className="af-season-tabs af-drawer-tabs" role="tablist" aria-label="Drawer seasons">
-          {orderedSeasons.map(s => (
-            <button key={s.season_number} type="button" role="tab" aria-selected={seasonNumber === s.season_number}
-              className="af-season-tab" onClick={() => { setSeasonNumber(s.season_number); setSeasonRange(0); }}>
-              {s.season_number === 0 ? 'Specials' : `S${s.season_number}`}
-            </button>
-          ))}
-        </div>
-      )}
-      <div className="af-drawer-list">
-        {loaded.archive?.episodes ? loaded.archive.episodes.map(ep => {
-          const active = loaded.episode?.key === ep.key;
-          return <button key={ep.key} type="button" className={`af-drawer-ep ${active ? 'is-current' : ''}`}
-            onClick={() => navigateEpisode({ key: ep.key, season: ep.season ?? 1, number: ep.number ?? 1, title: ep.title })}>
-            <span className="af-drawer-ep-num af-tabular">{ep.number ?? '•'}</span>
-            <span className="af-drawer-ep-copy">
-              <strong>{ep.title}</strong>
-              {ep.duration && <small className="af-meta af-tabular">{ep.duration} min</small>}
-            </span>
-            {active && <span className="af-ep-state-tag">Playing</span>}
-          </button>;
-        }) : seasonEpisodes.map(ep => {
-          const active = loaded.episode?.season === ep.season_number && loaded.episode?.number === ep.episode_number;
-          const aired = isAired(ep);
-          const epKey = episodeKey(hydratedItem, ep);
-          const marked = Boolean(controls.library.watched[epKey]);
-          const still = imagePath(ep.still_path, 'w300');
-          const blur = !marked && controls.library.preferences.blur !== false;
-          return <button key={epKey} type="button" className={`af-drawer-ep ${active ? 'is-current' : ''}`} disabled={!aired}
-            onClick={() => navigateEpisode(episodePosition(ep))}>
-            <span className="af-drawer-ep-thumb">
-              <Artwork src={still} className={blur ? 'af-blurred' : undefined} loading="lazy" fallback={<Icon name="film" />} />
-              <span className="af-ep-code af-tabular">E{ep.episode_number}</span>
-            </span>
-            <span className="af-drawer-ep-copy">
-              <strong>{ep.name}</strong>
-              <small className="af-meta af-tabular">{[ep.runtime ? `${ep.runtime} min` : '', active ? 'Now playing' : marked ? 'Watched' : !aired ? 'Upcoming' : ''].filter(Boolean).join(' · ')}</small>
-            </span>
-          </button>;
-        })}
-      </div>
+      {episodesDrawerBody}
     </aside>
   ) : null;
 
@@ -637,5 +644,26 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
         <span>Playback by {animePlayers[activeProvider ?? 'cinesrc'].label}</span>
       </div>}
     </div>
+
+    {hasSeriesEpisodes && useMobileEpisodesSheet && (
+      <Dialog.Root open={episodesOpen} onOpenChange={setEpisodesOpen}>
+        <Dialog.Portal>
+          <Dialog.Backdrop className="af-scrim af-sheet-scrim" />
+          <Dialog.Popup className="af-mobile-sheet af-player-sheet af-episodes-sheet" aria-label="Episodes">
+            <div className="af-sheet-handle" aria-hidden="true" />
+            <header className="af-player-drawer-head">
+              <div>
+                <Dialog.Title>Episodes</Dialog.Title>
+                <p className="af-meta af-tabular">{currentSeasonObj?.name || (loaded.archive ? hydratedItem.title : `Season ${seasonNumber}`)}</p>
+              </div>
+              <Dialog.Close className="af-icon-button" aria-label="Close episodes">
+                <Icon name="close" />
+              </Dialog.Close>
+            </header>
+            {episodesDrawerBody}
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
+    )}
   </div>;
 }

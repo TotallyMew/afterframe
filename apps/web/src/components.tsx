@@ -482,7 +482,7 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
             <a role="option" aria-selected={index === selected} tabIndex={-1} id={`af-search-${index}`}
               key={item.key} href={item.href} onClick={() => { if (trimmed) saveRecentSearch(trimmed); close(); }} className="af-search-result">
               <span className="af-result-art"><Artwork src={item.art} fallback={<span className="af-result-art-fallback" aria-hidden="true"><Icon name={item.kind === 'comic' || (item.kind === 'library' && item.isComic) ? 'book' : 'film'} /></span>} /></span>
-              <span className="af-search-result-copy"><strong>{item.title}</strong><small className="af-search-result-meta">{item.subtitle}{item.kind !== 'library' && <Score rating={item.kind === 'video' ? item.rating : undefined} mal={item.mal} />}</small></span>
+              <span className="af-search-result-copy"><strong>{item.title}</strong><small className="af-search-result-meta"><span>{item.subtitle}</span>{item.kind !== 'library' && ((item.kind === 'video' && item.rating && item.rating.score > 0) || (item.mal != null && item.mal > 0)) && <><span aria-hidden="true">·</span><Score rating={item.kind === 'video' ? item.rating : undefined} mal={item.mal} /></>}</small></span>
               <Icon name="right" />
             </a>
           ))}

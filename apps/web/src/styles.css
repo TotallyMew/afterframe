@@ -242,7 +242,7 @@ a.af-episode-title:hover { color: var(--af-selection); }
   width: min(46rem, calc(100% - 1rem));
   max-height: calc(100dvh - 2 * clamp(.5rem, 5dvh, 3rem));
   padding: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 .af-settings-header, .af-settings-tabs { padding-inline: clamp(1rem, 3vw, 1.75rem); }
 .af-settings-header { display: flex; justify-content: space-between; align-items: center; gap: var(--af-space-4); padding-block: var(--af-space-3); }
@@ -885,7 +885,9 @@ a.af-episode-title:hover { color: var(--af-selection); }
   transform: rotate(180deg);
   color: var(--af-selection);
 }
-.af-select-positioner { z-index: 60; outline: 0; }
+.af-select-positioner { z-index: 90; outline: 0; }
+.af-modal-portal-host { position: fixed; inset: 0; pointer-events: none; z-index: 90; }
+.af-modal-portal-host .af-select-positioner { pointer-events: auto; }
 .af-select-popup {
   min-inline-size: max(var(--anchor-width, 11rem), 11rem);
   max-inline-size: min(22rem, calc(100vw - 24px));
@@ -2100,7 +2102,7 @@ a.af-heatmap-cell:active { transform: scale(.96); }
 
 /* Responsive Details & Mobile Adjustments */
 @media (max-width: 54rem) {
-  .af-hero-split {
+  .af-details-main.af-hero-split {
     grid-template-columns: minmax(0, 1fr);
     gap: var(--af-space-4);
   }
@@ -2121,6 +2123,7 @@ a.af-heatmap-cell:active { transform: scale(.96); }
   }
   .af-details-hero .af-back {
     margin-top: var(--af-space-2);
+    min-height: var(--af-touch-control);
   }
   .af-title-logo {
     max-height: 4rem;
@@ -2151,4 +2154,292 @@ a.af-heatmap-cell:active { transform: scale(.96); }
     gap: var(--af-space-2);
   }
 }
+
+/* ==========================================================================
+   Mobile-Native Ergonomics: Bottom Sheets, Collapsible Filters & 44px Targets
+   ========================================================================== */
+
+.af-search-field input:focus-visible { outline: none; }
+.af-search-result-meta { gap: 4px 6px; }
+
+@media (pointer: coarse) {
+  .af-search-footer { display: none; }
+}
+
+/* Shared Mobile Bottom Sheet (Player Controls, Episodes, Browse Filters) */
+.af-sheet-scrim { z-index: 65; }
+@keyframes af-sheet-in {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.af-mobile-sheet {
+  position: fixed;
+  z-index: 70;
+  inset: auto 0 0;
+  width: 100%;
+  max-height: 78dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+  padding: 10px 16px max(20px, env(safe-area-inset-bottom));
+  border-top: 1px solid var(--af-hairline-strong);
+  border-radius: 16px 16px 0 0;
+  background: var(--af-panel);
+  box-shadow: 0 -12px 40px color-mix(in srgb, var(--af-oled) 65%, transparent), var(--af-surface-highlight);
+  color: var(--af-ink);
+  animation: af-sheet-in 210ms var(--af-ease-out);
+}
+.af-sheet-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.af-sheet-handle {
+  width: 36px;
+  height: 4px;
+  margin: 0 auto 10px;
+  border-radius: 999px;
+  background: var(--af-divider);
+}
+.af-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--af-space-3);
+  padding-bottom: var(--af-space-3);
+  margin-bottom: var(--af-space-3);
+  border-bottom: 1px solid var(--af-hairline);
+}
+.af-sheet-head h2 {
+  font-family: var(--af-display);
+  font-size: 1.125rem;
+  font-weight: 500;
+}
+.af-sheet-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--af-space-2);
+}
+.af-sheet-body {
+  display: grid;
+  gap: var(--af-space-3);
+}
+.af-sheet-submit {
+  width: 100%;
+  min-height: var(--af-touch-control);
+  margin-top: var(--af-space-2);
+}
+
+/* Collapsible Mobile Browse & Manga Filter Bar */
+.af-mobile-browse-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--af-space-2);
+  margin-block: var(--af-space-3);
+}
+.af-mobile-comic-bar {
+  margin: 0;
+  padding: var(--af-space-3);
+}
+.af-mobile-search-inline {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.af-mobile-search-inline .af-input {
+  width: 100%;
+}
+.af-mobile-quick-sort {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.af-mobile-quick-sort .af-select-trigger {
+  width: 100%;
+}
+.af-mobile-filter-trigger {
+  flex: none;
+  min-height: var(--af-touch-control);
+  padding-inline: 14px;
+  gap: 7px;
+  border-radius: var(--af-radius-control);
+}
+.af-mobile-filter-trigger.has-active {
+  border-color: var(--af-selection);
+  color: var(--af-selection);
+  background: var(--af-selection-fill);
+}
+.af-mobile-filter-form {
+  display: grid;
+  gap: var(--af-space-3);
+}
+.af-mobile-filter-form .af-select-wrap,
+.af-mobile-filter-form .af-select-trigger,
+.af-mobile-filter-form .af-input {
+  width: 100%;
+}
+.af-mobile-year-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--af-space-3);
+}
+.af-mobile-year-pair label {
+  display: grid;
+  gap: 4px;
+  font-size: var(--af-type-supplemental);
+  color: var(--af-secondary-ink);
+}
+
+@media (max-width: 45rem) {
+  /* Prevent iOS Safari automatic zoom on focused form controls */
+  input, select, textarea {
+    font-size: 1rem;
+  }
+
+  /* Single-row horizontally scrollable route tabs (Browse, Manga formats, Library) */
+  .af-route-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    gap: 4px 18px;
+  }
+  .af-route-tabs::-webkit-scrollbar { display: none; }
+  .af-route-tabs a {
+    flex: none;
+    white-space: nowrap;
+    min-height: var(--af-touch-control);
+    display: inline-flex;
+    align-items: center;
+  }
+
+  /* Header & Popover >= 44x44px touch targets */
+  .af-tools { gap: 4px; }
+  .af-tools .af-icon-button {
+    min-width: var(--af-touch-control);
+    min-height: var(--af-touch-control);
+  }
+  .af-tools .af-search-trigger {
+    padding-inline: 0;
+    justify-content: center;
+  }
+  .af-account {
+    min-height: var(--af-touch-control);
+    padding-inline: 10px;
+  }
+  .af-tools-divider { display: none; }
+  .af-popover-done,
+  .af-notif-mark {
+    min-height: var(--af-touch-control);
+    padding-inline: 8px;
+  }
+
+  /* Settings Modal as Mobile Bottom Sheet + Scrollable Subnav Tabs */
+  .af-settings-modal {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    transform: none;
+    width: 100%;
+    max-height: 92dvh;
+    border-radius: 16px 16px 0 0;
+    border-bottom: 0;
+    animation: af-sheet-in 210ms var(--af-ease-out);
+  }
+  .af-settings-content {
+    padding-bottom: max(var(--af-space-5), env(safe-area-inset-bottom));
+  }
+  .af-settings-subnav {
+    display: flex;
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    scroll-snap-type: x proximity;
+  }
+  .af-settings-subnav::-webkit-scrollbar { display: none; }
+  .af-settings-subnav button {
+    flex: none;
+    white-space: nowrap;
+    min-height: var(--af-touch-control);
+    padding-inline: 14px;
+    scroll-snap-align: start;
+  }
+
+  /* Search Modal mobile ergonomics */
+  .af-modal:not(.af-settings-modal):not(.af-trailer-modal) {
+    top: 12px;
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 24px);
+    padding: var(--af-space-4);
+  }
+  .af-all-results .af-text-link,
+  .af-all-results .af-button {
+    min-height: var(--af-touch-control);
+  }
+
+  /* Details & Manga Touch Targets + Chapter Controls Alignment */
+  .af-episode-tools {
+    width: 100%;
+  }
+  .af-tool-btn {
+    min-block-size: var(--af-touch-control);
+    flex: 1 1 auto;
+  }
+  .af-season-tab {
+    min-block-size: var(--af-touch-control);
+  }
+  .af-watched.af-watched-inline {
+    min-width: var(--af-touch-control);
+    min-height: var(--af-touch-control);
+  }
+  .af-heatmap-cell,
+  .af-heatmap-unrated {
+    min-width: var(--af-touch-control);
+    height: 2.375rem;
+  }
+
+  /* Manga Details chapter controls full-width + native page scroll */
+  .af-chapter-controls {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--af-space-2);
+  }
+  .af-chapter-search {
+    grid-column: 1 / -1;
+    width: 100%;
+    min-width: 0;
+  }
+  .af-chapter-controls .af-select-wrap,
+  .af-chapter-controls .af-select-trigger,
+  .af-chapter-controls .af-button {
+    width: 100%;
+    min-height: var(--af-touch-control);
+  }
+  .af-chapter-list {
+    max-height: none;
+    overflow: visible;
+    padding-inline-end: 0;
+  }
+}
+
+@media (max-width: 380px) {
+  .af-tools .af-icon-button {
+    min-width: 40px;
+    min-height: 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .af-mobile-sheet,
+  .af-settings-modal {
+    animation: none;
+  }
+}
+:root.reduce-motion .af-mobile-sheet,
+:root.reduce-motion .af-settings-modal {
+  animation: none;
+}
+
 

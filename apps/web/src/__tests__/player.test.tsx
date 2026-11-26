@@ -344,4 +344,71 @@ describe('PlayerPage regressions', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Fullscreen' })).toBeTruthy());
     expect(screen.queryByRole('button', { name: 'Exit fullscreen' })).toBeNull();
   });
+
+  it('portals mobile player settings and episodes as bottom sheets outside .af-video-box on narrow viewports', async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      writable: true,
+      value: vi.fn((query: string) => ({
+        matches: query.includes('max-width: 720px'),
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+
+    try {
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+        const url = String(input);
+        if (url === '/api/tv/1396/playback' || url === '/api/tv/1396') {
+          return new Response(JSON.stringify({
+            id: 1396, name: 'Breaking Bad', original_language: 'en', genres: [{ id: 18, name: 'Drama' }],
+            seasons: [{ season_number: 1, name: 'Season 1', episode_count: 2 }],
+          }), { status: 200 });
+        }
+        if (url === '/api/tv/1396/season/1') {
+          return new Response(JSON.stringify({
+            episodes: [
+              { season_number: 1, episode_number: 1, name: 'Pilot', air_date: '2008-01-20' },
+              { season_number: 1, episode_number: 2, name: 'Cat\'s in the Bag', air_date: '2008-01-27' },
+            ],
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ segments: [] }), { status: 200 });
+      });
+
+      const route = parsePlayerRoute('tv/1396/s1e1')!;
+      const { container } = render(<PlayerPage route={route} controls={makeControls()} />);
+      await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull());
+      const videoBox = container.querySelector('.af-video-box')!;
+
+      // Episodes drawer opens as a portaled bottom sheet outside .af-video-box
+      const topbarEpisodesBtn = container.querySelector<HTMLButtonElement>('.af-player-topbar .af-topbar-btn')!;
+      fireEvent.click(topbarEpisodesBtn);
+      const episodesSheet = await waitFor(() => {
+        const node = document.querySelector('.af-episodes-sheet.af-mobile-sheet');
+        expect(node).not.toBeNull();
+        return node!;
+      });
+      expect(videoBox.contains(episodesSheet)).toBe(false);
+      fireEvent.click(screen.getByRole('button', { name: 'Close episodes' }));
+
+      // Playback settings opens as a portaled bottom sheet outside .af-video-box
+      fireEvent.click(screen.getByRole('button', { name: 'Playback settings' }));
+      const settingsSheet = await waitFor(() => {
+        const node = document.querySelector('.af-player-sheet.af-mobile-sheet');
+        expect(node).not.toBeNull();
+        return node!;
+      });
+      expect(videoBox.contains(settingsSheet)).toBe(false);
+      expect(screen.getByText('Speed')).toBeTruthy();
+    } finally {
+      Object.defineProperty(window, 'matchMedia', { configurable: true, writable: true, value: originalMatchMedia });
+    }
+  });
 });

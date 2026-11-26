@@ -756,3 +756,52 @@ button.af-poster-status:hover {
   .af-history-row { grid-template-columns: 4.5rem minmax(0, 1fr); }
   .af-history-actions { grid-column: 1 / -1; justify-content: flex-end; }
 }
+
+@media (max-width: 640px) {
+  /* Full-width Library filter grid & >=44px mobile touch targets */
+  .af-lib-filter-bar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--af-space-3);
+    padding: var(--af-space-3);
+  }
+  .af-lib-filter-bar > label:first-child,
+  .af-lib-filter-bar .af-lib-search,
+  .af-lib-filter-bar .af-more-filters-wrap {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+  .af-lib-filter-bar .af-input,
+  .af-lib-filter-bar .af-select-wrap,
+  .af-lib-filter-bar .af-select-trigger,
+  .af-lib-filter-bar .af-more-filters-trigger {
+    width: 100%;
+    min-height: var(--af-touch-control);
+  }
+  .af-stats-scope-btn,
+  .af-folder-chip,
+  .af-status-pill {
+    min-block-size: var(--af-touch-control);
+  }
+  .af-lib-legend-btn {
+    min-block-size: 2.5rem;
+  }
+  .af-view-toggle .af-icon-button {
+    min-inline-size: var(--af-touch-control);
+    min-block-size: var(--af-touch-control);
+  }
+  .af-card-more {
+    min-inline-size: 2.5rem;
+    min-block-size: 2.5rem;
+  }
+}
+
+@media (max-width: 520px) {
+  /* Move status pill to bottom-left on narrow 2-column Library posters so top badges never crowd */
+  .af-poster-status {
+    top: auto;
+    bottom: var(--af-space-2);
+    left: var(--af-space-2);
+    max-inline-size: calc(100% - 1rem);
+  }
+}

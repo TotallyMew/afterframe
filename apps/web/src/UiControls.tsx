@@ -1,8 +1,28 @@
+import { Dialog } from '@base-ui/react/dialog';
 import { Popover } from '@base-ui/react/popover';
 import { Select } from '@base-ui/react/select';
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 
 const EMPTY_SENTINEL = '__af_empty__';
+
+export const ModalPortalContext = createContext<RefObject<HTMLDivElement | null> | null>(null);
+
+export function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => (
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia(query).matches
+      : false
+  ));
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, [query]);
+  return matches;
+}
 
 export interface SelectOption {
   value: string;
@@ -34,6 +54,7 @@ export function AfSelect({
   className?: string;
   placeholder?: string;
 }) {
+  const modalPortal = useContext(ModalPortalContext);
   const controlled = value !== undefined;
   const [internal, setInternal] = useState(defaultValue ?? options[0]?.value ?? '');
   useEffect(() => {
@@ -83,7 +104,7 @@ export function AfSelect({
             </svg>
           </Select.Icon>
         </Select.Trigger>
-        <Select.Portal>
+        <Select.Portal container={modalPortal ?? undefined}>
           <Select.Positioner className="af-select-positioner" side="bottom" sideOffset={6} align="start" alignItemWithTrigger={false}>
             <Select.Popup className="af-select-popup">
               <Select.List className="af-select-list">
@@ -145,5 +166,50 @@ export function FilterPopover({
         </Popover.Portal>
       </Popover.Root>
     </span>
+  );
+}
+
+export function MobileFilterSheet({
+  open,
+  onOpenChange,
+  title = 'Filters',
+  activeCount = 0,
+  children,
+}: {
+  open: boolean;
+  onOpenChange: (next: boolean) => void;
+  title?: string;
+  activeCount?: number;
+  children: ReactNode;
+}) {
+  const portalHostRef = useRef<HTMLDivElement>(null);
+  return (
+    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+      <Dialog.Trigger className={`af-button af-secondary af-mobile-filter-trigger ${activeCount > 0 ? 'has-active' : ''}`}>
+        <svg className="af-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M4 6h16M7 12h10M10 18h4" />
+        </svg>
+        <span>{title}</span>
+        {activeCount > 0 && <span className="af-filter-badge" aria-label={`${activeCount} active`}>{activeCount}</span>}
+      </Dialog.Trigger>
+      <Dialog.Portal>
+        <Dialog.Backdrop className="af-scrim af-sheet-scrim" />
+        <Dialog.Popup className="af-mobile-sheet af-filter-sheet">
+          <ModalPortalContext.Provider value={portalHostRef}>
+            <div className="af-sheet-handle" aria-hidden="true" />
+            <header className="af-sheet-head">
+              <Dialog.Title>{title}</Dialog.Title>
+              <Dialog.Close className="af-icon-button" aria-label={`Close ${title.toLowerCase()}`}>
+                <svg className="af-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="m6 6 12 12M6 18 18 6" />
+                </svg>
+              </Dialog.Close>
+            </header>
+            <div className="af-sheet-body">{children}</div>
+            <div ref={portalHostRef} className="af-modal-portal-host" />
+          </ModalPortalContext.Provider>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

@@ -15,6 +15,7 @@ import { PlayerGlyph } from './PlayerGlyph';
 import { formatClock, rememberCineServer } from './route';
 import { readCaptionStyle, writeCaptionStyle, type CaptionStyle } from './SubtitleMenu';
 import { animePlayers, cineSrcOrigin, cineSrcServers, segmentNames, type ActiveMedia, type AnimeProvider, type CineRestoreState, type VideoWithAudioTracks } from './types';
+import { useMediaQuery } from '../UiControls';
 
 export function VideoStage({
   stageRef, media, displayItem, displayEpisode, backHref, adjacent, nextStillPath, controls,
@@ -135,6 +136,8 @@ export function VideoStage({
   const [muted, setMuted] = useState(() => pref('volume') ? Boolean(prefs.muted) : false);
   const [speed, setSpeed] = useState(1);
   const [isFullscreen, setIsFullscreen] = useState(() => Boolean(document.fullscreenElement && document.fullscreenElement === stageRef.current));
+  const isMobileViewport = useMediaQuery('(max-width: 720px)');
+  const useMobileSheets = isMobileViewport && !isFullscreen;
   const [segments, setSegments] = useState<SkipSegment[]>(() => media.nativeMedia?.segments ?? []);
   const [undoSkip, setUndoSkip] = useState<{ from: number; kind: SkipSegment['kind'] } | null>(null);
   const undoSkipTimerRef = useRef<number | undefined>(undefined);
@@ -1754,6 +1757,7 @@ export function VideoStage({
             speed={speed}
             quality={quality}
             isFullscreen={isFullscreen}
+            useMobileSheets={useMobileSheets}
             theatreMode={theatreMode}
             hasEpisodesDrawer={hasEpisodesDrawer}
             episodesOpen={episodesOpen}
@@ -1798,7 +1802,7 @@ export function VideoStage({
             onUpdateAudio={updateAudio}
             onCloseOtherMenus={closeOtherMenus}
             onOpenSubtitles={target => {
-              closeOtherMenus(target);
+              if (target) closeOtherMenus(target);
               if (media.embed) void loadEmbedSubtitles();
             }}
             onTurnOffSubtitles={() => {

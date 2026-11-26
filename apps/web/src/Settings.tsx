@@ -6,7 +6,7 @@ import { post, request } from './catalog';
 import { Icon, MutationStatus } from './components';
 import type { BooleanPreference, LibraryControls } from './library';
 import { SettingsContext, type OpenSettings, type SettingsTab } from './settings-context';
-import { AfSelect, type SelectOption } from './UiControls';
+import { AfSelect, ModalPortalContext, type SelectOption } from './UiControls';
 
 function SegmentedTabs<T extends string>({
   options,
@@ -321,6 +321,7 @@ export function SettingsProvider({ controls, children }: { controls: LibraryCont
   const invoker = useRef<HTMLElement | null>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const portalHostRef = useRef<HTMLDivElement>(null);
   const entry = useRef<SettingsTab>('general');
   const afterCatalogSaved = useRef<(() => void) | undefined>(undefined);
   const resetScroll = () => { contentRef.current?.scrollTo({ top: 0 }); };
@@ -339,18 +340,21 @@ export function SettingsProvider({ controls, children }: { controls: LibraryCont
         <Dialog.Backdrop className="af-scrim" />
         <Dialog.Popup className="af-modal af-settings-modal" initialFocus={closeButton}
           finalFocus={() => invoker.current?.isConnected ? invoker.current : document.getElementById('main')}>
-          <header className="af-settings-header"><Dialog.Title>Settings</Dialog.Title>
-            <Dialog.Close ref={closeButton} className="af-icon-button" aria-label="Close settings"><Icon name="close" /></Dialog.Close>
-          </header>
-          <div className="af-settings-tabs">
-            <SegmentedTabs label="Settings sections" value={tab} options={settingsTabs} onChange={next => { setTab(next); resetScroll(); }} />
-          </div>
-          <div ref={contentRef} className="af-settings-content" key={opening}>
-            <div key={tab} className="af-settings-panel-enter">
-              {tab === 'general' ? <GeneralSettings controls={controls} onSectionChange={resetScroll} />
-                : <Integrations expandCatalog={entry.current === 'integrations'} afterCatalogSaved={afterCatalogSaved.current} />}
+          <ModalPortalContext.Provider value={portalHostRef}>
+            <header className="af-settings-header"><Dialog.Title>Settings</Dialog.Title>
+              <Dialog.Close ref={closeButton} className="af-icon-button" aria-label="Close settings"><Icon name="close" /></Dialog.Close>
+            </header>
+            <div className="af-settings-tabs">
+              <SegmentedTabs label="Settings sections" value={tab} options={settingsTabs} onChange={next => { setTab(next); resetScroll(); }} />
             </div>
-          </div>
+            <div ref={contentRef} className="af-settings-content" key={opening}>
+              <div key={tab} className="af-settings-panel-enter">
+                {tab === 'general' ? <GeneralSettings controls={controls} onSectionChange={resetScroll} />
+                  : <Integrations expandCatalog={entry.current === 'integrations'} afterCatalogSaved={afterCatalogSaved.current} />}
+              </div>
+            </div>
+            <div ref={portalHostRef} className="af-modal-portal-host" />
+          </ModalPortalContext.Provider>
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>

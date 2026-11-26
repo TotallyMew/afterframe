@@ -6,7 +6,7 @@ import { InputField, PageHeading, ResultsSummary, RouteTabs, SelectField } from 
 import { ActionLink, Artwork, Icon, Loading, RatingProblem, SaveButton, Score, Shelf, useOptionalRating } from './components';
 import { readingStatuses, savedRating, type LibraryControls, type WatchStatus } from './library';
 import { FolderPickerPopover } from './library/FolderPickerPopover';
-import { AfSelect } from './UiControls';
+import { AfSelect, MobileFilterSheet, useMediaQuery } from './UiControls';
 
 const formats = [['', 'All'], ['manga', 'Manga'], ['manhwa', 'Manhwa'], ['manhua', 'Manhua'], ['comic', 'Comics']] as const;
 const statuses = [['ongoing', 'Ongoing'], ['completed', 'Completed'], ['hiatus', 'On hiatus'], ['cancelled', 'Cancelled']] as const;
@@ -68,11 +68,14 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
   const [auxError, setAuxError] = useState({ genres: false, updates: false });
   const [genreAttempt, setGenreAttempt] = useState(0);
   const [updateAttempt, setUpdateAttempt] = useState(0);
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const isCompactBrowse = useMediaQuery('(max-width: 640px)');
   const type = params.get('type') || '';
   const text = params.get('q') || '';
   const selectedGenre = params.get('genre') || '';
   const genreOptions = genres.map(genre => [genre.id, genre.name] as const);
   if (selectedGenre && !genreOptions.some(([id]) => id === selectedGenre)) genreOptions.unshift([selectedGenre, 'Selected genre']);
+  const comicFilterCount = ['genre', 'status', 'sort'].filter(key => Boolean(params.get(key))).length;
 
   useEffect(() => {
     const task = new AbortController();
@@ -129,22 +132,56 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
     <PageHeading title="Manga" />
     <div className="af-catalog-tools">
       <RouteTabs tabs={formats.map(([key, label]) => [withParam('type', key), label])} active={withParam('type', type)} label="Manga formats" />
-      <form className="af-field-bar" onSubmit={event => {
-        event.preventDefault();
-        const update = new URLSearchParams();
-        if (type) update.set('type', type);
-        for (const [key, value] of new FormData(event.currentTarget)) if (typeof value === 'string' && value.trim()) update.set(key, value.trim());
-        navigate(routeWithParams('comics', update));
-      }}>
-        <div className="af-catalog-search"><InputField name="q" label="Find manga" type="search" placeholder="Search manga…" maxLength={180} defaultValue={text} /></div>
-        <div className="af-facet-with-status">
-          <SelectField label="Genre" name="genre" empty="All genres" value={selectedGenre} options={genreOptions} />
-          {auxError.genres && <p className="af-meta" role="status">Genres are unavailable. <button type="button" className="af-text-link" onClick={() => setGenreAttempt(value => value + 1)}>Retry genres</button></p>}
+      {isCompactBrowse ? (
+        <div className="af-mobile-browse-bar af-mobile-comic-bar">
+          <form className="af-mobile-search-inline" onSubmit={event => {
+            event.preventDefault();
+            const update = new URLSearchParams(params);
+            update.delete('page');
+            const val = String(new FormData(event.currentTarget).get('q') || '').trim();
+            if (val) update.set('q', val); else update.delete('q');
+            navigate(routeWithParams('comics', update));
+          }}>
+            <input name="q" className="af-select af-input" type="search" placeholder="Search manga…" aria-label="Find manga" maxLength={180} defaultValue={text} />
+          </form>
+          <MobileFilterSheet open={mobileFiltersOpen} onOpenChange={setMobileFiltersOpen} title="Filters" activeCount={comicFilterCount}>
+            <form className="af-mobile-filter-form" onSubmit={event => {
+              event.preventDefault();
+              const update = new URLSearchParams();
+              if (type) update.set('type', type);
+              if (text) update.set('q', text);
+              for (const [key, value] of new FormData(event.currentTarget)) if (typeof value === 'string' && value.trim()) update.set(key, value.trim());
+              setMobileFiltersOpen(false);
+              navigate(routeWithParams('comics', update));
+            }}>
+              <div className="af-facet-with-status">
+                <SelectField label="Genre" name="genre" empty="All genres" value={selectedGenre} options={genreOptions} />
+                {auxError.genres && <p className="af-meta" role="status">Genres are unavailable. <button type="button" className="af-text-link" onClick={() => setGenreAttempt(value => value + 1)}>Retry genres</button></p>}
+              </div>
+              <SelectField label="Status" name="status" empty="Any status" value={params.get('status') || ''} options={statuses} />
+              <SelectField label="Sort by" name="sort" empty={text ? 'Relevance' : 'Default order'} value={params.get('sort') || ''} options={sorts} />
+              <button className="af-button af-primary af-sheet-submit" type="submit">Apply filters</button>
+            </form>
+          </MobileFilterSheet>
         </div>
-        <SelectField label="Status" name="status" empty="Any status" value={params.get('status') || ''} options={statuses} />
-        <SelectField label="Sort by" name="sort" empty={text ? 'Relevance' : 'Default order'} value={params.get('sort') || ''} options={sorts} />
-        <button className="af-button af-primary" type="submit">Apply filters</button>
-      </form>
+      ) : (
+        <form className="af-field-bar" onSubmit={event => {
+          event.preventDefault();
+          const update = new URLSearchParams();
+          if (type) update.set('type', type);
+          for (const [key, value] of new FormData(event.currentTarget)) if (typeof value === 'string' && value.trim()) update.set(key, value.trim());
+          navigate(routeWithParams('comics', update));
+        }}>
+          <div className="af-catalog-search"><InputField name="q" label="Find manga" type="search" placeholder="Search manga…" maxLength={180} defaultValue={text} /></div>
+          <div className="af-facet-with-status">
+            <SelectField label="Genre" name="genre" empty="All genres" value={selectedGenre} options={genreOptions} />
+            {auxError.genres && <p className="af-meta" role="status">Genres are unavailable. <button type="button" className="af-text-link" onClick={() => setGenreAttempt(value => value + 1)}>Retry genres</button></p>}
+          </div>
+          <SelectField label="Status" name="status" empty="Any status" value={params.get('status') || ''} options={statuses} />
+          <SelectField label="Sort by" name="sort" empty={text ? 'Relevance' : 'Default order'} value={params.get('sort') || ''} options={sorts} />
+          <button className="af-button af-primary" type="submit">Apply filters</button>
+        </form>
+      )}
     </div>
     {auxError.updates && <p className="af-state" role="alert">Recently updated manga could not load. <button type="button" className="af-text-link" onClick={() => setUpdateAttempt(value => value + 1)}>Retry updates</button></p>}
     {recent.length > 0 && <Shelf title="Recently updated">

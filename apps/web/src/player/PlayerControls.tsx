@@ -1,6 +1,7 @@
+import { Dialog } from '@base-ui/react/dialog';
 import { preferenceDefaults, type PlaybackPosition, type SkipSegment } from '@afterframe/shared/playback';
 import type { SubtitleCue, SubtitleTrack } from '@afterframe/shared/subtitles';
-import type { CSSProperties, RefObject } from 'react';
+import { useState, type CSSProperties, type RefObject } from 'react';
 import type { EpisodePosition } from '../catalog';
 import { Icon } from '../components';
 import type { LibraryControls } from '../library';
@@ -26,6 +27,7 @@ export function PlayerControls({
   speed,
   quality,
   isFullscreen,
+  useMobileSheets,
   theatreMode,
   hasEpisodesDrawer,
   episodesOpen,
@@ -86,6 +88,7 @@ export function PlayerControls({
   speed: number;
   quality: string;
   isFullscreen: boolean;
+  useMobileSheets?: boolean;
   theatreMode?: boolean;
   hasEpisodesDrawer?: boolean;
   episodesOpen?: boolean;
@@ -115,7 +118,7 @@ export function PlayerControls({
   onJumpPlayback: (delta: number) => void;
   onUpdateAudio: (level: number, isMuted: boolean) => void;
   onCloseOtherMenus: (target: HTMLDetailsElement) => void;
-  onOpenSubtitles: (target: HTMLDetailsElement) => void;
+  onOpenSubtitles: (target?: HTMLDetailsElement) => void;
   onTurnOffSubtitles: () => void;
   onEnableNativeSubtitles: () => void;
   onSelectSubLang: (lang: string) => void;
@@ -130,11 +133,83 @@ export function PlayerControls({
   onToggleFullscreen: () => void;
   onNavigateEpisode: (target: EpisodePosition & { key?: string }) => void;
 }) {
+  const [audioSheetOpen, setAudioSheetOpen] = useState(false);
+  const [settingsSheetOpen, setSettingsSheetOpen] = useState(false);
+
   const prefs = controls.library.preferences;
   const skipIntro = prefs.intro ?? preferenceDefaults.intro;
   const skipRecap = prefs.recap ?? preferenceDefaults.recap;
   const skipCredits = prefs.credits ?? preferenceDefaults.credits;
   const pipSupported = !media.embed && typeof document !== 'undefined' && Boolean(document.pictureInPictureEnabled);
+
+  const audioBody = <>
+    <label className="af-player-popup-head" htmlFor="af-player-volume">
+      <span>Volume</span><span className="af-player-volume-level">{muted ? '0%' : volumePct}</span>
+    </label>
+    <input
+      id="af-player-volume"
+      className="af-player-volume"
+      type="range"
+      min={0}
+      max={1}
+      step={0.05}
+      value={muted ? 0 : volume}
+      aria-valuetext={muted || volume === 0 ? 'Muted' : volumePct}
+      style={{ '--volume-fill': muted ? '0%' : volumePct } as CSSProperties}
+      onChange={event => { const v = Number(event.currentTarget.value); onUpdateAudio(v, v === 0); }}
+    />
+    <button type="button" className="af-player-popup-action" onClick={() => onUpdateAudio(volume || lastVolume, !muted && volume > 0)}>
+      {muted || volume === 0 ? 'Unmute' : 'Mute'}
+    </button>
+  </>;
+
+  const settingsBody = <>
+    <div>
+      <p className="af-meta">Speed</p>
+      <div className="af-player-choice-group" role="group" aria-label="Speed">
+        {speedOptions.map(val => <button key={val} type="button" aria-pressed={speed === val} onClick={() => onSpeedChange(val)}>{`${val}×`}</button>)}
+      </div>
+    </div>
+    {media.embed && <div>
+      <p className="af-meta">Preferred quality</p>
+      <div className="af-player-choice-group" role="group" aria-label="Preferred quality">
+        {qualityOptions.map(([val, lbl]) => <button key={val} type="button" aria-pressed={quality === val} onClick={() => onQualityChange(val)}>{lbl}</button>)}
+      </div>
+    </div>}
+    <div>
+      <p className="af-meta">Auto-skip</p>
+      <div className="af-player-choice-group" role="group" aria-label="Auto-skip segments">
+        <button type="button" aria-pressed={skipIntro} disabled={!controls.ready}
+          onClick={() => void controls.setPreference('intro', !skipIntro, 'Automatically skip intros')}>Intro</button>
+        <button type="button" aria-pressed={skipRecap} disabled={!controls.ready}
+          onClick={() => void controls.setPreference('recap', !skipRecap, 'Automatically skip recaps')}>Recap</button>
+        <button type="button" aria-pressed={skipCredits} disabled={!controls.ready}
+          onClick={() => void controls.setPreference('credits', !skipCredits, 'Automatically skip credits')}>Credits</button>
+      </div>
+    </div>
+    {!media.embed && nativeAudioTracks.length > 1 && <label className="af-player-language">
+      <span>Audio track</span>
+      <select
+        className="af-player-select"
+        value={nativeAudioTracks.find(t => t.enabled)?.index ?? 0}
+        onChange={event => {
+          const idx = Number(event.target.value);
+          const list = videoRef.current?.audioTracks;
+          if (!list) return;
+          for (let i = 0; i < list.length; i++) list[i].enabled = i === idx;
+          const chosen = nativeAudioTracks[idx];
+          if (chosen?.language && chosen.language.length <= 60) {
+            void controls.setPreference('audioLanguage', chosen.language, 'Preferred audio');
+          }
+        }}
+      >
+        {nativeAudioTracks.map(t => <option key={t.index} value={t.index}>{t.label}</option>)}
+      </select>
+    </label>}
+    {media.embed && <button type="button" className="af-player-provider-toggle" onClick={() => { setSettingsSheetOpen(false); onOpenProviderSources(); }}>
+      <span>Provider video sources</span><Icon name="right" />
+    </button>}
+  </>;
 
   return <div
     ref={controlsBarRef}
@@ -232,36 +307,42 @@ export function PlayerControls({
           </div>
         </div>
 
-        <details ref={audioMenuRef} className="af-player-menu af-player-audio-mobile" onToggle={event => { if (event.currentTarget.open) onCloseOtherMenus(event.currentTarget); }}>
-          <summary className="af-player-btn af-player-utility" aria-label={muted || volume === 0 ? 'Audio controls (muted)' : 'Audio controls'} title={muted || volume === 0 ? 'Audio controls (muted)' : 'Audio controls'}>
+        {useMobileSheets ? <>
+          <button
+            type="button"
+            className="af-player-btn af-player-utility af-player-audio-mobile-btn"
+            aria-label={muted || volume === 0 ? 'Audio controls (muted)' : 'Audio controls'}
+            onClick={() => setAudioSheetOpen(true)}
+          >
             <PlayerGlyph name={muted || volume === 0 ? 'muted' : 'speaker'} />
-          </summary>
-          <div className="af-player-popup af-player-audio-panel">
-            <label className="af-player-popup-head" htmlFor="af-player-volume">
-              <span>Volume</span><span className="af-player-volume-level">{muted ? '0%' : volumePct}</span>
-            </label>
-            <input
-              id="af-player-volume"
-              className="af-player-volume"
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={muted ? 0 : volume}
-              aria-valuetext={muted || volume === 0 ? 'Muted' : volumePct}
-              style={{ '--volume-fill': muted ? '0%' : volumePct } as CSSProperties}
-              onChange={event => { const v = Number(event.currentTarget.value); onUpdateAudio(v, v === 0); }}
-            />
-            <button type="button" className="af-player-popup-action" onClick={() => onUpdateAudio(volume || lastVolume, !muted && volume > 0)}>
-              {muted || volume === 0 ? 'Unmute' : 'Mute'}
-            </button>
-          </div>
-        </details>
+          </button>
+          <Dialog.Root open={audioSheetOpen} onOpenChange={setAudioSheetOpen}>
+            <Dialog.Portal>
+              <Dialog.Backdrop className="af-scrim af-sheet-scrim" />
+              <Dialog.Popup className="af-mobile-sheet af-player-sheet">
+                <div className="af-sheet-handle" aria-hidden="true" />
+                <header className="af-sheet-head">
+                  <Dialog.Title>Audio</Dialog.Title>
+                  <Dialog.Close className="af-icon-button" aria-label="Close audio"><Icon name="close" /></Dialog.Close>
+                </header>
+                <div className="af-sheet-body">{audioBody}</div>
+              </Dialog.Popup>
+            </Dialog.Portal>
+          </Dialog.Root>
+        </> : (
+          <details ref={audioMenuRef} className="af-player-menu af-player-audio-mobile" onToggle={event => { if (event.currentTarget.open) onCloseOtherMenus(event.currentTarget); }}>
+            <summary className="af-player-btn af-player-utility" aria-label={muted || volume === 0 ? 'Audio controls (muted)' : 'Audio controls'} title={muted || volume === 0 ? 'Audio controls (muted)' : 'Audio controls'}>
+              <PlayerGlyph name={muted || volume === 0 ? 'muted' : 'speaker'} />
+            </summary>
+            <div className="af-player-popup af-player-audio-panel">{audioBody}</div>
+          </details>
+        )}
 
         {(media.embed || media.nativeMedia?.captions) && <SubtitleMenu
           menuRef={subtitleMenuRef}
           videoRef={videoRef}
           isEmbed={media.embed}
+          useMobileSheets={useMobileSheets}
           activeCues={activeCues}
           nativeCaptionsOn={nativeCaptionsOn}
           subTracks={subTracks}
@@ -279,60 +360,42 @@ export function PlayerControls({
           onChangeCaptionStyle={onChangeCaptionStyle}
         />}
 
-        <details ref={settingsMenuRef} className="af-player-menu" onToggle={event => { if (event.currentTarget.open) onCloseOtherMenus(event.currentTarget); }}>
-          <summary className="af-player-btn af-player-utility af-player-tune-btn" aria-label="Playback settings" title="Playback settings">
+        {useMobileSheets ? <>
+          <button
+            type="button"
+            className="af-player-btn af-player-utility af-player-tune-btn"
+            aria-label="Playback settings"
+            title="Playback settings"
+            onClick={() => setSettingsSheetOpen(true)}
+          >
             <PlayerGlyph name="tune" />
             {speed !== 1 && <span className="af-speed-badge af-tabular">{speed}×</span>}
-          </summary>
-          <div className="af-player-popup">
-            <p className="af-player-popup-head">Playback</p>
-            <div>
-              <p className="af-meta">Speed</p>
-              <div className="af-player-choice-group" role="group" aria-label="Speed">
-                {speedOptions.map(val => <button key={val} type="button" aria-pressed={speed === val} onClick={() => onSpeedChange(val)}>{`${val}×`}</button>)}
-              </div>
+          </button>
+          <Dialog.Root open={settingsSheetOpen} onOpenChange={setSettingsSheetOpen}>
+            <Dialog.Portal>
+              <Dialog.Backdrop className="af-scrim af-sheet-scrim" />
+              <Dialog.Popup className="af-mobile-sheet af-player-sheet">
+                <div className="af-sheet-handle" aria-hidden="true" />
+                <header className="af-sheet-head">
+                  <Dialog.Title>Playback settings</Dialog.Title>
+                  <Dialog.Close className="af-icon-button" aria-label="Close playback settings"><Icon name="close" /></Dialog.Close>
+                </header>
+                <div className="af-sheet-body">{settingsBody}</div>
+              </Dialog.Popup>
+            </Dialog.Portal>
+          </Dialog.Root>
+        </> : (
+          <details ref={settingsMenuRef} className="af-player-menu" onToggle={event => { if (event.currentTarget.open) onCloseOtherMenus(event.currentTarget); }}>
+            <summary className="af-player-btn af-player-utility af-player-tune-btn" aria-label="Playback settings" title="Playback settings">
+              <PlayerGlyph name="tune" />
+              {speed !== 1 && <span className="af-speed-badge af-tabular">{speed}×</span>}
+            </summary>
+            <div className="af-player-popup">
+              <p className="af-player-popup-head">Playback</p>
+              {settingsBody}
             </div>
-            {media.embed && <div>
-              <p className="af-meta">Preferred quality</p>
-              <div className="af-player-choice-group" role="group" aria-label="Preferred quality">
-                {qualityOptions.map(([val, lbl]) => <button key={val} type="button" aria-pressed={quality === val} onClick={() => onQualityChange(val)}>{lbl}</button>)}
-              </div>
-            </div>}
-            <div>
-              <p className="af-meta">Auto-skip</p>
-              <div className="af-player-choice-group" role="group" aria-label="Auto-skip segments">
-                <button type="button" aria-pressed={skipIntro} disabled={!controls.ready}
-                  onClick={() => void controls.setPreference('intro', !skipIntro, 'Automatically skip intros')}>Intro</button>
-                <button type="button" aria-pressed={skipRecap} disabled={!controls.ready}
-                  onClick={() => void controls.setPreference('recap', !skipRecap, 'Automatically skip recaps')}>Recap</button>
-                <button type="button" aria-pressed={skipCredits} disabled={!controls.ready}
-                  onClick={() => void controls.setPreference('credits', !skipCredits, 'Automatically skip credits')}>Credits</button>
-              </div>
-            </div>
-            {!media.embed && nativeAudioTracks.length > 1 && <label className="af-player-language">
-              <span>Audio track</span>
-              <select
-                className="af-player-select"
-                value={nativeAudioTracks.find(t => t.enabled)?.index ?? 0}
-                onChange={event => {
-                  const idx = Number(event.target.value);
-                  const list = videoRef.current?.audioTracks;
-                  if (!list) return;
-                  for (let i = 0; i < list.length; i++) list[i].enabled = i === idx;
-                  const chosen = nativeAudioTracks[idx];
-                  if (chosen?.language && chosen.language.length <= 60) {
-                    void controls.setPreference('audioLanguage', chosen.language, 'Preferred audio');
-                  }
-                }}
-              >
-                {nativeAudioTracks.map(t => <option key={t.index} value={t.index}>{t.label}</option>)}
-              </select>
-            </label>}
-            {media.embed && <button type="button" className="af-player-provider-toggle" onClick={onOpenProviderSources}>
-              <span>Provider video sources</span><Icon name="right" />
-            </button>}
-          </div>
-        </details>
+          </details>
+        )}
 
         {hasEpisodesDrawer && onToggleEpisodes && (
           <button type="button" className="af-player-btn af-player-utility af-desktop-utility" aria-label="Episodes" aria-pressed={episodesOpen} title="Episodes (E)" onClick={onToggleEpisodes}>
