@@ -182,4 +182,15 @@ test('multi-source skip parser & merger combines SkipDB, IntroDB, TheIntroDB, an
   ], 1435);
   assert.equal(animeMerged[0].source, 'aniskip');
   assert.equal(animeMerged[0].start, 1338.255);
+
+  // Hannibal S2E3-style 30s end-card runtime delta keeps intro as manual skip but still excludes unverified credits
+  const hannibal = parseTheIntroDbPayload({
+    type: 'tv',
+    group_duration_ms: 2590000,
+    intro: [{ start_ms: 538000, end_ms: 561000, confidence: 0.9744, submission_count: 4 }],
+    credits: [{ start_ms: 2520000, end_ms: null, confidence: 0.9, submission_count: 3 }],
+  }, 'tv', 2560000);
+  assert.equal(hannibal.length, 1);
+  assert.equal(hannibal[0].kind, 'intro');
+  assert.equal(hannibal[0].autoSkip, false);
 });

@@ -311,13 +311,15 @@ async function loadSkipDbSegments(type, imdbId, season, episode, durationSec) {
 export function parseTheIntroDbPayload(data, type, durationMs) {
   if (!data || data.type !== type || !Number.isFinite(data.group_duration_ms)) return [];
   const deltaMs = Math.abs(data.group_duration_ms - durationMs);
-  // Reject wildly different cuts (> 10s mismatch); exact <= 2s gets autoSkip eligibility, 2s..10s becomes manual skip.
-  if (deltaMs > 10000) return [];
+  // Reject wildly different cuts (> 60s). Credits need a tight cut match (<= 10s) so end-card differences never misplace them;
+  // intros/recaps occur near the start and stay valid as manual skips even when end credits/logos differ by 15–60s.
+  if (deltaMs > 60000) return [];
   const exactCut = deltaMs <= 2000;
   const durationSec = durationMs / 1000;
   /** @type {SegmentCandidate[]} */
   const found = [];
   for (const kind of segmentKinds) {
+    if (kind === 'credits' && deltaMs > 10000) continue;
     const entries = Array.isArray(data[kind]) ? data[kind] : [];
     const filtered = entries.filter(entry => {
       if (!Number.isFinite(entry?.confidence)) return false;
@@ -335,7 +337,7 @@ export function parseTheIntroDbPayload(data, type, durationMs) {
       if (!isReasonableSegment(kind, start, end, durationSec)) continue;
       const votes = Number(entry.submission_count ?? 0);
       const confidence = Number(entry.confidence);
-      const base = exactCut ? 86 : 68;
+      const base = exactCut ? 86 : deltaMs <= 10000 ? 68 : 58;
       const voteBonus = Math.min(8, votes * 2);
       const confBonus = Math.min(6, confidence * 6);
       const autoSkip = exactCut && ((votes >= 2 && confidence >= 0.78) || confidence >= 0.9);
