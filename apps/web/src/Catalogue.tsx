@@ -341,7 +341,7 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
         ...(search ? [[setType(''), 'All']] as const : []),
         [setType('movie'), 'Movies'],
         [setType('tv'), 'TV Shows'],
-        ...(search ? [[setType('anime'), 'Anime'], [setType('comic'), 'Comics']] as const : []),
+        ...(search ? [[setType('anime'), 'Anime'], [setType('comic'), 'Manga']] as const : []),
       ]} />
     </div>}
     {!comicSearch && <form className="af-field-bar" ref={form} onSubmit={submit}>
@@ -361,7 +361,7 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
     {comicSearch ? (comicItems.length > 0 && <div className="af-poster-grid">{comicItems.map((item, index) => <ComicCard item={item} controls={controls} key={item.key} eager={index < 6} />)}</div>)
       : items.length > 0 && (releases ? <Releases items={items} controls={controls} /> :
         <div className="af-poster-grid">{items.map((item, index) => <MediaCard item={item} controls={controls} key={item.key} eager={index < 6} />)}</div>)}
-    {search && selected === '' && inlineComics.length > 0 && <div className="af-discovery-shelves"><Shelf title="Matching comics" href={webHref(setType('comic'))}>
+    {search && selected === '' && inlineComics.length > 0 && <div className="af-discovery-shelves"><Shelf title="Matching manga" href={webHref(setType('comic'))}>
       {inlineComics.map(item => <ComicCard item={item} controls={controls} key={item.key} />)}
     </Shelf></div>}
     {!comicSearch && params.get('imdb') && !loading && !error && <div className="af-rating-coverage">
@@ -383,7 +383,7 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
         setLoading(true);
         if (error) { setError(''); setAttempt(value => value + 1); }
         else if (next) setPage(next);
-      }}>{error ? 'Retry loading more' : loading ? 'Loading more…' : comicSearch ? 'Load more comics' : 'Load more titles'}</button>
+      }}>{error ? 'Retry loading more' : loading ? 'Loading more…' : comicSearch ? 'Load more manga' : 'Load more titles'}</button>
     </div>}
   </div>;
 }

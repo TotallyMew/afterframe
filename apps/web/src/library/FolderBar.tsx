@@ -49,7 +49,7 @@ export function FolderBar({
   async function handleDelete(folder: Folder) {
     const ok = await confirmAction({
       title: `Delete “${folder.name}”?`,
-      message: 'This deletes the folder only. Your saved movies, shows, and comics stay in your Library.',
+      message: 'This deletes the folder only. Your saved movies, shows, and manga stay in your Library.',
       confirmLabel: 'Delete folder',
     });
     if (!ok) return;

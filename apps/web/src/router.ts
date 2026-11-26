@@ -1,5 +1,5 @@
 const legacyHashPattern = /^#\/?(.*)$/;
-const safeBackPattern = /^\/?(?:home|movies|tv|new|anime|comics|search|watchlist|watched|ratings|reading|history|notifications|recommendations)(?:[?/=]|$)/i;
+const safeBackPattern = /^\/?(?:home|movies|tv|new|anime|comics|manga|search|watchlist|watched|ratings|reading|history|notifications|recommendations)(?:[?/=]|$)/i;
 const nonSpaPrefixes = ['/api/', '/art/', '/assets/', '/icons/', '/stream/', '/comic-cover/', '/comic-page/'];
 const nonSpaExact = new Set(['/manifest.webmanifest', '/sw.js']);
 

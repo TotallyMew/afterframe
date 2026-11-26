@@ -395,10 +395,10 @@ export function LibraryCollection({
         icon={mode === 'reading' ? 'book' : 'bookmark'}
         title={mode === 'reading' ? 'Your reading list is empty' : 'Your library is empty'}
         description={mode === 'reading'
-          ? 'Save manga, manhwa, or comics to track your reading status, ratings, and custom folders.'
+          ? 'Save manga, manhwa, or manhua to track your reading status, ratings, and custom folders.'
           : 'Save movies, TV shows, and anime to track what you watch, organize folders, and view your stats.'}
         actions={<ActionLink primary href={webHref(mode === 'reading' ? 'comics' : 'movies')}>
-          {mode === 'reading' ? 'Browse comics' : 'Browse movies'}
+          {mode === 'reading' ? 'Browse manga' : 'Browse movies'}
         </ActionLink>}
       />
     );
@@ -605,7 +605,7 @@ export function LibraryCollection({
             const busy = !controls.ready || saving.includes(item.key) || controls.isPending(item.key);
             const canEditStatus = item.type === 'comic' || (!item.archiveId && Number.isSafeInteger(item.id));
             const metaLine = item.type === 'comic'
-              ? [item.year, comicFormats.find(([k]) => k === item.format)?.[1] || 'Comic'].filter(Boolean).join(' · ')
+              ? [item.year, comicFormats.find(([k]) => k === item.format)?.[1] || 'Manga'].filter(Boolean).join(' · ')
               : epInfo && epInfo.watched > 0 && status !== 'completed'
                 ? [item.year, epInfo.total ? `${epInfo.watched}/${epInfo.total} ep` : `${epInfo.watched} ep`].filter(Boolean).join(' · ')
                 : [item.year, item.genre || (item.type === 'tv' ? 'TV series' : 'Movie')].filter(Boolean).join(' · ');
@@ -700,7 +700,7 @@ export function LibraryCollection({
                     <a className="af-lib-row-title" href={libraryItemHref(item)}>{item.title}</a>
                     <span className="af-meta">
                       {item.type === 'comic'
-                        ? [item.year, comicFormats.find(([k]) => k === item.format)?.[1] || 'Comic'].filter(Boolean).join(' · ')
+                        ? [item.year, comicFormats.find(([k]) => k === item.format)?.[1] || 'Manga'].filter(Boolean).join(' · ')
                         : [item.year, item.genre || (item.type === 'tv' ? 'TV series' : 'Movie')].filter(Boolean).join(' · ')}
                     </span>
                   </div>

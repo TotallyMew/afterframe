@@ -87,10 +87,10 @@ describe('Afterframe web enhancements', () => {
     expect(await screen.findByText('Keyboard shortcuts')).toBeTruthy();
 
     // Typing matches saved library items instantaneously
-    const input = screen.getByRole('combobox', { name: 'Search movies, TV, anime, and comics' });
+    const input = screen.getByRole('combobox', { name: 'Search movies, TV, anime, and manga' });
     fireEvent.change(input, { target: { value: 'Matrix' } });
     expect(await screen.findByText('The Matrix')).toBeTruthy();
-    expect(screen.getByText(/In My Library/)).toBeTruthy();
+    expect(screen.getByText(/In Library/)).toBeTruthy();
   });
 
   it('displays unified toasts with Undo actions', async () => {

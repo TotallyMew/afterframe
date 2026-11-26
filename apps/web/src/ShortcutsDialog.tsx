@@ -21,12 +21,12 @@ const groups = [
     ],
   },
   {
-    title: 'Comic reader',
+    title: 'Manga reader',
     items: [
       { keys: ['←', '→'], label: 'Previous or next page' },
       { keys: ['+', '-', '0'], label: 'Zoom in, zoom out, or reset zoom' },
-      { keys: ['M'], label: 'Toggle reader HUD' },
-      { keys: ['G'], label: 'Open chapters drawer' },
+      { keys: ['M', 'X'], label: 'Toggle floating reader controls' },
+      { keys: ['G'], label: 'Open chapters menu' },
       { keys: ['S'], label: 'Open reader settings' },
       { keys: ['D'], label: 'Flip reading direction (RTL / LTR)' },
       { keys: ['F'], label: 'Toggle fullscreen' },

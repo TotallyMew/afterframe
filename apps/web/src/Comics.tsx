@@ -8,7 +8,7 @@ import { readingStatuses, savedRating, type LibraryControls, type WatchStatus } 
 import { FolderPickerPopover } from './library/FolderPickerPopover';
 import { AfSelect } from './UiControls';
 
-const formats = [['', 'All comics'], ['manga', 'Manga'], ['manhwa', 'Manhwa'], ['manhua', 'Manhua'], ['comic', 'Comics']] as const;
+const formats = [['', 'All'], ['manga', 'Manga'], ['manhwa', 'Manhwa'], ['manhua', 'Manhua'], ['comic', 'Comics']] as const;
 const statuses = [['ongoing', 'Ongoing'], ['completed', 'Completed'], ['hiatus', 'On hiatus'], ['cancelled', 'Cancelled']] as const;
 const sorts = [['popular', 'Popularity'], ['updated', 'Recently updated'], ['newest', 'Publication year'], ['title', 'Title A–Z']] as const;
 const readingStatusOptions = Object.entries(readingStatuses).map(([value, label]) => ({ value, label }));
@@ -32,7 +32,7 @@ export function readerHref(item: Pick<Comic, 'id'>, chapter: string, language: s
 }
 
 function comicFacts(item: Comic) {
-  const format = formats.find(([key]) => key && key === item.format)?.[1] ?? 'Comics';
+  const format = formats.find(([key]) => key && key === item.format)?.[1] ?? 'Manga';
   const status = statuses.find(([key]) => key === item.status)?.[1];
   return [format, item.year, status].filter(Boolean).join(' · ');
 }
@@ -81,7 +81,7 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
     reqParams.set('page', String(page));
     request<ComicsResults>(`/api/comics?${reqParams}`, { signal })
       .then(value => {
-        if (!Array.isArray(value.results)) throw new Error('The comic catalog returned invalid results.');
+        if (!Array.isArray(value.results)) throw new Error('The manga catalog returned invalid results.');
         if (signal.aborted) return;
         setItems(current => page === 1 ? value.results : [...new Map([...current, ...value.results].map(item => [item.key, item])).values()]);
         setNextPage(value.nextPage ?? null);
@@ -126,9 +126,9 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
   }
 
   return <div className="af-wrap af-directory">
-    <PageHeading title="Comics" />
+    <PageHeading title="Manga" />
     <div className="af-catalog-tools">
-      <RouteTabs tabs={formats.map(([key, label]) => [withParam('type', key), label])} active={withParam('type', type)} label="Comic formats" />
+      <RouteTabs tabs={formats.map(([key, label]) => [withParam('type', key), label])} active={withParam('type', type)} label="Manga formats" />
       <form className="af-field-bar" onSubmit={event => {
         event.preventDefault();
         const update = new URLSearchParams();
@@ -136,7 +136,7 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
         for (const [key, value] of new FormData(event.currentTarget)) if (typeof value === 'string' && value.trim()) update.set(key, value.trim());
         navigate(routeWithParams('comics', update));
       }}>
-        <div className="af-catalog-search"><InputField name="q" label="Find comics" type="search" placeholder="Search comics…" maxLength={180} defaultValue={text} /></div>
+        <div className="af-catalog-search"><InputField name="q" label="Find manga" type="search" placeholder="Search manga…" maxLength={180} defaultValue={text} /></div>
         <div className="af-facet-with-status">
           <SelectField label="Genre" name="genre" empty="All genres" value={selectedGenre} options={genreOptions} />
           {auxError.genres && <p className="af-meta" role="status">Genres are unavailable. <button type="button" className="af-text-link" onClick={() => setGenreAttempt(value => value + 1)}>Retry genres</button></p>}
@@ -146,7 +146,7 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
         <button className="af-button af-primary" type="submit">Apply filters</button>
       </form>
     </div>
-    {auxError.updates && <p className="af-state" role="alert">Recently updated comics could not load. <button type="button" className="af-text-link" onClick={() => setUpdateAttempt(value => value + 1)}>Retry updates</button></p>}
+    {auxError.updates && <p className="af-state" role="alert">Recently updated manga could not load. <button type="button" className="af-text-link" onClick={() => setUpdateAttempt(value => value + 1)}>Retry updates</button></p>}
     {recent.length > 0 && <Shelf title="Recently updated">
       {recent.map((item, index) => <ComicCard item={item} key={item.key} controls={controls} eager={index < 5} />)}
     </Shelf>}
@@ -158,17 +158,17 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
       sort: value => sorts.find(([key]) => key === value)?.[1] ?? '',
     }} />
     {items.length > 0 && <div className="af-poster-grid">{items.map((item, index) => <ComicCard item={item} key={item.key} controls={controls} eager={!recent.length && index < 6} />)}</div>}
-    {loading && page === 1 && <Loading label="Loading comics…" />}
+    {loading && page === 1 && <Loading label="Loading manga…" />}
     {error && page === 1 && <p className="af-state" role="alert">{error} <button className="af-text-link" type="button" onClick={() => { setError(''); setLoading(true); setAttempt(value => value + 1); }}>Retry</button></p>}
-    {!loading && !error && !items.length && <p className="af-state" role="status">{query ? 'No comics match these filters.' : 'No comics are available in the catalog yet.'}</p>}
-    {page > 1 && <p className="af-meta" role="status">{loading ? 'Loading more comics…' : error || `${items.length} comics shown`}</p>}
+    {!loading && !error && !items.length && <p className="af-state" role="status">{query ? 'No manga match these filters.' : 'No manga are available in the catalog yet.'}</p>}
+    {page > 1 && <p className="af-meta" role="status">{loading ? 'Loading more manga…' : error || `${items.length} manga shown`}</p>}
     {(nextPage || (page > 1 && (loading || error))) && <div className="af-pagination">
       <button type="button" className="af-button af-secondary" aria-disabled={loading} onClick={() => {
         if (loading) return;
         setLoading(true);
         if (error) { setError(''); setAttempt(value => value + 1); }
         else if (nextPage) setPage(nextPage);
-      }}>{error ? 'Retry loading more' : loading ? 'Loading more…' : 'Load more comics'}</button>
+      }}>{error ? 'Retry loading more' : loading ? 'Loading more…' : 'Load more manga'}</button>
     </div>}
   </div>;
 }
@@ -203,7 +203,7 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
     request<ComicRecord>(`/api/comics/${id}`, { signal })
       .then(value => {
         if (signal.aborted) return;
-        if (!Array.isArray(value.languages) || typeof value.title !== 'string') throw new Error('This comic record is incomplete.');
+        if (!Array.isArray(value.languages) || typeof value.title !== 'string') throw new Error('This manga record is incomplete.');
         setItem(value);
         document.title = `${value.title} · Afterframe`;
       }).catch(problem => { if (!signal.aborted) setError(problem.message); });
@@ -263,9 +263,9 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
   }, [groupedChapters, chapterQuery, chapterOrder]);
 
   if (!item || !language) return <div className="af-wrap af-directory">
-    <PageHeading title={error ? 'Comic unavailable' : 'Comics'} />
+    <PageHeading title={error ? 'Manga unavailable' : 'Manga'} />
     {error ? <p className="af-state" role="alert">{error} <button className="af-text-link" type="button" onClick={() => { setError(''); setAttempt(value => value + 1); }}>Retry</button></p>
-      : <Loading label="Loading comic…" shape="hero" />}
+      : <Loading label="Loading manga…" shape="hero" />}
   </div>;
 
   const cover = coverFailed ? undefined : comicCover(item.poster);
@@ -385,7 +385,7 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
         </div>}
       </section>
 
-      {related.length > 0 && <div id="related" tabIndex={-1}><Shelf title="Related comics">
+      {related.length > 0 && <div id="related" tabIndex={-1}><Shelf title="Related manga">
         {related.map(other => <ComicCard item={other} controls={controls} key={other.key} />)}
       </Shelf></div>}
     </div>

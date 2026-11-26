@@ -223,7 +223,7 @@ function AppShell() {
   else if (playerRoute && playerKey) { page = <PlayerPage key={playerKey} route={playerRoute} controls={controls} />; fallbackShape = 'hero'; }
   else if (catalogue) page = <Catalogue key={route} route={route} controls={controls} />;
   else if (path === 'anime') page = <AnimePage key={route} query={query} controls={controls} />;
-  else if (path === 'comics') page = <ComicsPage key={route} query={query} controls={controls} />;
+  else if (path === 'comics' || path === 'manga') page = <ComicsPage key={route} query={query} controls={controls} />;
   else if (comic) { page = <ComicDetailsPage key={path} id={comic[1]} query={query} controls={controls} />; fallbackShape = 'hero'; }
   else if (reader) { page = <ComicReader key={path} id={reader[1]} chapterId={reader[2]} query={query} controls={controls} />; fallbackShape = 'hero'; }
   else if (path === 'recommendations') page = <RecommendationsPage controls={controls} />;
@@ -235,7 +235,7 @@ function AppShell() {
     data-page={home ? 'home' : title || comic ? 'title' : reader ? 'reader' : playerRoute ? 'player' : 'directory'}
   >
     <a href="#main" className="af-skip" onClick={event => { event.preventDefault(); document.getElementById('main')?.focus(); }}>Skip to content</a>
-    <Header controls={controls} route={route} />
+    {!reader && <Header controls={controls} route={route} />}
     {controls.error && <div className="af-notice" role="alert">{controls.error} {controls.state === 'expired' ? <AccountButton className="af-text-link">Sign in</AccountButton> : <button className="af-text-link" type="button" onClick={() => void controls.refresh()}>Retry connection</button>}</div>}
     {(controls.recoverable.length > 0 || controls.recoveryStatus || controls.recoveryError) &&
       <section className="af-wrap af-recovery" aria-label="Library changes to recover">

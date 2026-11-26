@@ -72,7 +72,7 @@ export function Home({ controls }: { controls: LibraryControls }) {
   }
 
   useEffect(() => {
-    document.title = 'Afterframe · Movies, TV & Comics';
+    document.title = 'Afterframe · Movies, TV & Manga';
     for (const [key] of shelves) loadShelf(key);
     const currentJobs = jobs.current;
     return () => { for (const task of Object.values(currentJobs)) task?.abort(); };
@@ -95,7 +95,7 @@ export function Home({ controls }: { controls: LibraryControls }) {
         }
       })
       .catch(problem => {
-        if (!task.signal.aborted) setComicsError(problem instanceof Error ? problem.message : 'Comics are temporarily unavailable.');
+        if (!task.signal.aborted) setComicsError(problem instanceof Error ? problem.message : 'Manga is temporarily unavailable.');
       });
     return () => task.abort();
   }, [comicsAttempt]);
@@ -235,7 +235,7 @@ export function Home({ controls }: { controls: LibraryControls }) {
       <h1>Home</h1>
       {error ? <CatalogProblem error={error} retry={retry} />
         : shelves.every(([key]) => !shelfTitles(key).length) && <div className="af-state">
-          <p role="status">No featured titles are available yet.</p><ActionLink href={webHref('comics')}>Browse comics</ActionLink>
+          <p role="status">No featured titles are available yet.</p><ActionLink href={webHref('comics')}>Browse manga</ActionLink>
         </div>}
     </div>}
     <div className="af-wrap af-content">
@@ -282,10 +282,10 @@ export function Home({ controls }: { controls: LibraryControls }) {
       {collections.map(([key, label, path]) => shelfTitles(key).length ? <Shelf title={label} key={key} href={webHref(path)}>
         {shelfTitles(key).slice(0, 8).map(item => <MediaCard key={item.key} item={withRating(item)} controls={controls} />)}
       </Shelf> : !error && !pending && shelfStatus(key, label))}
-      {recentComics.length > 0 ? <Shelf title="Comics & Manga" href={webHref('comics')}>
+      {recentComics.length > 0 ? <Shelf title="Manga" href={webHref('comics')}>
         {recentComics.map(item => <ComicCard key={item.key} item={item} controls={controls} />)}
-      </Shelf> : comicsError && <section className="af-section"><h2>Comics &amp; Manga</h2>
-        <p className="af-state" role="alert">{comicsError} <button type="button" className="af-text-link" onClick={() => { setComicsError(''); setComicsAttempt(v => v + 1); }}>Retry comics</button></p>
+      </Shelf> : comicsError && <section className="af-section"><h2>Manga</h2>
+        <p className="af-state" role="alert">{comicsError} <button type="button" className="af-text-link" onClick={() => { setComicsError(''); setComicsAttempt(v => v + 1); }}>Retry manga</button></p>
       </section>}
     </div>
   </>;

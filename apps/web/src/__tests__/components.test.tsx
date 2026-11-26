@@ -64,7 +64,7 @@ describe('Navigation, shortcuts, and error states', () => {
 
     render(<Header controls={stubControls} route="home" />);
     fireEvent.keyDown(window, { key: '/' });
-    const input = await screen.findByRole('combobox', { name: 'Search movies, TV, anime, and comics' });
+    const input = await screen.findByRole('combobox', { name: 'Search movies, TV, anime, and manga' });
     fireEvent.change(input, { target: { value: 'Frieren' } });
 
     await waitFor(() => expect(screen.getByText('Frieren')).toBeTruthy());

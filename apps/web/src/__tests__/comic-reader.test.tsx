@@ -43,10 +43,10 @@ describe('ComicReader', () => {
     expect(screen.getByText('First page dialogue')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
-    expect(screen.getByAltText('Comic page 2')).toBeTruthy();
+    expect(screen.getByAltText('Manga page 2')).toBeTruthy();
   });
 
-  it('supports MangaFire-style double spreads, RTL/LTR direction, long strip, drawer, and scrubber', async () => {
+  it('supports MangaFire-style double spreads, RTL/LTR direction, long strip, subtle HUD toggle, dim/grayscale, and scrubber', async () => {
     window.localStorage.clear();
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
@@ -74,29 +74,47 @@ describe('ComicReader', () => {
     // Default for manga is RTL
     const stage = container.querySelector('.af-reader-pages') as HTMLElement;
     expect(stage.dataset.direction).toBe('rtl');
+    expect(container.querySelector('.af-reader-edge-rail.is-left')).toBeTruthy();
 
-    // Open Settings drawer and switch to Double page mode
+    // Open Settings modal and switch to Double page mode
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
     fireEvent.click(screen.getByRole('button', { name: 'Double' }));
     expect(stage.dataset.layout).toBe('double');
 
     // Offset cover keeps page 1 solo; Next page moves to spread 2-3
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
-    expect(screen.getByAltText('Comic page 2')).toBeTruthy();
-    expect(screen.getByAltText('Comic page 3')).toBeTruthy();
+    expect(screen.getByAltText('Manga page 2')).toBeTruthy();
+    expect(screen.getByAltText('Manga page 3')).toBeTruthy();
 
     // Flip direction to Left to Right
     fireEvent.click(screen.getByRole('button', { name: 'Left to Right' }));
     expect(stage.dataset.direction).toBe('ltr');
 
+    // Test Dim screen and Grayscale image controls + edge progress bar placement
+    fireEvent.change(screen.getByLabelText('Dim screen'), { target: { value: '20' } });
+    fireEvent.click(screen.getByLabelText('Grayscale pages'));
+    expect(stage.style.filter).toContain('brightness(0.8)');
+    expect(stage.style.filter).toContain('grayscale(1)');
+    fireEvent.click(screen.getByRole('button', { name: 'Bottom' }));
+    expect(container.querySelector('.af-reader-edge-rail.is-bottom')).toBeTruthy();
+
     // Switch to Long strip to show all 4 pages stacked
     fireEvent.click(screen.getByRole('button', { name: 'Long strip' }));
     expect(stage.dataset.layout).toBe('scroll');
-    expect(screen.getByAltText('Comic page 4')).toBeTruthy();
+    expect(screen.getByAltText('Manga page 4')).toBeTruthy();
 
-    // Switch to Chapters tab in the slide-over drawer
+    // Switch to Chapters tab in the centered modal
     fireEvent.click(screen.getByRole('tab', { name: 'Chapters' }));
     await waitFor(() => expect(screen.getByRole('link', { name: 'Chapter 2' })).toBeTruthy());
+
+    // Close modal and verify tap toggles subtle HUD off and back on
+    fireEvent.click(screen.getByRole('button', { name: 'Close reader menu' }));
+    const shell = container.querySelector('.af-reader-shell') as HTMLElement;
+    expect(shell.classList.contains('is-hud-hidden')).toBe(false);
+    fireEvent.click(container.querySelector('.af-reader-stage') as HTMLElement);
+    expect(shell.classList.contains('is-hud-hidden')).toBe(true);
+    fireEvent.click(container.querySelector('.af-reader-stage') as HTMLElement);
+    expect(shell.classList.contains('is-hud-hidden')).toBe(false);
 
     // Scrubber range input jumps pages
     const scrubber = screen.getByRole('slider', { name: 'Page progress' });

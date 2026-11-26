@@ -20,7 +20,7 @@ export function Footer({ onOpenShortcuts }: { onOpenShortcuts: () => void }) {
       <nav className="af-footer-links" aria-label="Footer">
         <a className="af-text-link" href={webHref('movies')}>Movies</a>
         <a className="af-text-link" href={webHref('tv')}>TV Shows</a>
-        <a className="af-text-link" href={webHref('comics')}>Comics</a>
+        <a className="af-text-link" href={webHref('comics')}>Manga</a>
         <a className="af-text-link" href={webHref('watchlist')}>Library</a>
         <button type="button" className="af-text-link" onClick={event => openSettings('general', event.currentTarget)}>Settings</button>
         <button type="button" className="af-text-link" onClick={onOpenShortcuts}>

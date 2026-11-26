@@ -88,7 +88,7 @@ export function CatalogProblem({ error, retry }: { error: string; retry: () => v
       </p>}
       <div className="af-actions">
         {managed !== true && <button className="af-button af-primary" type="button" onClick={event => openSettings('integrations', event.currentTarget, retry)}>Configure catalog</button>}
-        <ActionLink href={webHref('comics')}>Browse comics</ActionLink>
+        <ActionLink href={webHref('comics')}>Browse manga</ActionLink>
         <ActionLink href={webHref('edition/sintel')}>Watch free classic</ActionLink>
         <ActionLink href={webHref('watchlist')}>Open library</ActionLink>
       </div>
@@ -234,7 +234,7 @@ export function Shelf({ title, children, href, hrefLabel = 'View all', actions, 
 
 const pages = [
   ['Movies', 'movies'], ['TV Shows', 'tv'], ['Anime', 'anime'],
-  ['Comics', 'comics'], ['Releases', 'new'], ['For You', 'recommendations'],
+  ['Manga', 'comics'], ['Releases', 'new'], ['For You', 'recommendations'],
 ];
 
 type SearchEntry =
@@ -281,8 +281,8 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
   const needle = trimmed.toLowerCase();
 
   const quickCommands: Extract<SearchEntry, { kind: 'command' }>[] = [
-    { kind: 'command', key: 'cmd-watchlist', title: 'My Library', subtitle: 'Open watchlist, watched titles, and history', icon: 'bookmark', run: () => { navigate('watchlist'); close(); } },
-    { kind: 'command', key: 'cmd-comics', title: 'Comics & Manga', subtitle: 'Browse and read comics', icon: 'book', run: () => { navigate('comics'); close(); } },
+    { kind: 'command', key: 'cmd-watchlist', title: 'Library', subtitle: 'Open your library, stats, ratings, and history', icon: 'bookmark', run: () => { navigate('watchlist'); close(); } },
+    { kind: 'command', key: 'cmd-comics', title: 'Manga', subtitle: 'Browse and read manga, manhwa, and manhua', icon: 'book', run: () => { navigate('comics'); close(); } },
     { kind: 'command', key: 'cmd-releases', title: 'New Releases', subtitle: 'Weekly movies and TV releases', icon: 'clock', run: () => { navigate('new'); close(); } },
     { kind: 'command', key: 'cmd-settings', title: 'Settings', subtitle: 'Playback, spoilers, interface, and API keys', icon: 'settings', run: () => { close(); openSettings('general', null); } },
     { kind: 'command', key: 'cmd-shortcuts', title: 'Keyboard shortcuts', subtitle: 'View all keyboard shortcuts (?)', icon: 'search', run: () => { close(); window.dispatchEvent(new Event('afterframe-shortcuts')); } },
@@ -317,7 +317,7 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
         kind: 'library',
         key: `lib-${item.key}`,
         title: item.title,
-        subtitle: `In My Library · ${item.type === 'comic' ? 'Comic' : item.type === 'tv' ? 'TV series' : 'Movie'}`,
+        subtitle: `In Library · ${item.type === 'comic' ? 'Manga' : item.type === 'tv' ? 'TV series' : 'Movie'}`,
         href: libraryItemHref(item),
         art: item.type === 'comic' ? comicCover(item.poster) : item.poster,
         isComic: item.type === 'comic',
@@ -361,7 +361,7 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
             kind: 'comic',
             key: item.key,
             title: item.title,
-            subtitle: `${comicFormatNames[item.format || ''] || 'Comic'}${item.year ? ` · ${item.year}` : ''}`,
+            subtitle: `${comicFormatNames[item.format || ''] || 'Manga'}${item.year ? ` · ${item.year}` : ''}`,
             href: comicDetailsHref(item.id),
             art: comicCover(item.poster),
             malId: item.malId,
@@ -444,7 +444,7 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
     <Dialog.Popup className="af-modal" initialFocus={input} finalFocus={finalFocus}>
       <header className="af-section-head"><Dialog.Title>Search &amp; Commands</Dialog.Title><Dialog.Close className="af-icon-button" aria-label="Close search"><Icon name="close" /></Dialog.Close></header>
       <form onSubmit={submit}>
-        <label className="af-search-field"><Icon name="search" /><input ref={input} type="search" placeholder="Search movies, TV, anime, and comics" aria-label="Search movies, TV, anime, and comics" value={query}
+        <label className="af-search-field"><Icon name="search" /><input ref={input} type="search" placeholder="Search movies, TV, anime, and manga" aria-label="Search movies, TV, anime, and manga" value={query}
           role="combobox" aria-autocomplete="list" aria-expanded={results.length > 0} aria-controls="af-search-results"
           aria-activedescendant={results[selected] ? `af-search-${selected}` : undefined}
           onChange={event => onInput(event.target.value)} onKeyDown={onKey} /></label>
@@ -487,7 +487,7 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
         </div>
         {trimmed && <div className="af-actions af-all-results">
           <button type="submit" className="af-button af-secondary">See all results</button>
-          <a href={searchHref(trimmed, { type: 'comic' })} onClick={() => { saveRecentSearch(trimmed); close(); }} className="af-text-link">Comics only</a>
+          <a href={searchHref(trimmed, { type: 'comic' })} onClick={() => { saveRecentSearch(trimmed); close(); }} className="af-text-link">Manga only</a>
           {error && <button type="button" className="af-text-link" onClick={() => { setError(''); setPending(true); setAttempt(value => value + 1); }}>Retry suggestions</button>}
         </div>}
       </form>
@@ -593,7 +593,7 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
     if (titleSection) return link === titleSection;
     return (link === 'movies' && path.startsWith('movie/'))
       || (link === 'tv' && path.startsWith('tv/'))
-      || (link === 'comics' && path.startsWith('comic/'));
+      || (link === 'comics' && (path === 'manga' || path.startsWith('comic/')));
   };
   const activeNavKey = route === 'home' ? 'home' : (pages.find(([, link]) => isNavCurrent(link))?.[1] ?? '');
 
@@ -701,7 +701,7 @@ export function MobileNav({ route }: { route: string }) {
   const path = route.split('?')[0];
   const isHome = path === 'home' || path === 'main';
   const isBrowse = ['movies', 'tv', 'anime', 'new', 'recommendations'].includes(path) || path.startsWith('movie/') || path.startsWith('tv/');
-  const isComics = path === 'comics' || path.startsWith('comic/');
+  const isComics = path === 'comics' || path === 'manga' || path.startsWith('comic/');
   const isLibrary = ['watchlist', 'watched', 'ratings', 'reading', 'history', 'notifications'].includes(path);
   return <nav className="af-mobile-nav" aria-label="Mobile navigation">
     <a href={webHref('home')} aria-current={isHome ? 'page' : undefined}>
@@ -711,7 +711,7 @@ export function MobileNav({ route }: { route: string }) {
       <Icon name="film" /><span>Browse</span>
     </button>
     <a href={webHref('comics')} aria-current={isComics ? 'page' : undefined}>
-      <Icon name="book" /><span>Comics</span>
+      <Icon name="book" /><span>Manga</span>
     </a>
     <button type="button" onClick={() => window.dispatchEvent(new Event('afterframe-open-search'))}>
       <Icon name="search" /><span>Search</span>

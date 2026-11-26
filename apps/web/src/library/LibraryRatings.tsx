@@ -15,7 +15,7 @@ const typeFilters = [
   ['movie', 'Movies'],
   ['tv', 'TV Shows'],
   ['anime', 'Anime'],
-  ['comic', 'Comics'],
+  ['comic', 'Manga'],
 ] as const;
 const sortOptions = [
   { value: 'highest', label: 'Highest rated' },
@@ -40,7 +40,7 @@ export function LibraryRatings({ controls }: { controls: LibraryControls }) {
       <EmptyState
         icon="film"
         title="No ratings yet"
-        description="Rate any movie, series, anime, or comic from its details page or Library list."
+        description="Rate any movie, series, anime, or manga from its details page or Library list."
         actions={<ActionLink href={webHref('movies')} primary>Browse movies</ActionLink>}
       />
     );
@@ -137,7 +137,7 @@ export function LibraryRatings({ controls }: { controls: LibraryControls }) {
           {visible.map(({ item, score }) => {
             const poster = item.type === 'comic' ? comicCover(item.poster) : item.poster;
             const subtitle = item.type === 'comic'
-              ? [item.year, 'Comic'].filter(Boolean).join(' · ')
+              ? [item.year, 'Manga'].filter(Boolean).join(' · ')
               : [item.year, item.genre || (item.type === 'tv' ? 'TV series' : 'Movie')].filter(Boolean).join(' · ');
             return (
               <article className="af-lib-card af-lib-rating-card" key={item.key}>

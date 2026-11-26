@@ -676,7 +676,8 @@ a.af-episode-title:hover { color: var(--af-selection); }
 .af-next-up-title { font-weight: 650; color: var(--af-ink); overflow-wrap: anywhere; }
 
 /* Footer & Keyboard Shortcuts */
-.af-app { display: flex; flex-direction: column; min-block-size: 100dvh; }
+.af-app { display: flex; flex-direction: column; min-block-size: 100svh; }
+.af-app[data-page=reader] { --header: 0px; }
 .af-app > main { flex: 1 0 auto; }
 .af-footer {
   margin-top: auto;
