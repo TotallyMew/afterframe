@@ -251,7 +251,7 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
   useEffect(() => {
     if (drawerTab !== 'chapters') return;
     const tick = requestAnimationFrame(() => {
-      activeChapterRef.current?.scrollIntoView({ block: 'center', behavior: 'instant' });
+      activeChapterRef.current?.scrollIntoView?.({ block: 'center', behavior: 'instant' });
     });
     return () => cancelAnimationFrame(tick);
   }, [drawerTab, chapterList.length]);

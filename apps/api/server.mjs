@@ -317,7 +317,7 @@ export async function startApiServer() {
   await loadInitialCredentials();
   const server = createApiServer();
   const stopRefresh = refreshMetadataPeriodically(async key => {
-    const match = key.match(/^title:(movie|tv):(\d{1,10}):(\d{0,4})$/);
+    const match = key.match(/^title:v2:(movie|tv):(\d{1,10}):(\d{0,4})$/);
     if (match && hasTmdbCredential()) await titleMetadata(match[1], match[2], match[3], true);
   });
   const stopReleases = monitorReleases(

@@ -48,7 +48,7 @@ export async function tmdb(path, params = {}, credential = tmdbCredential) {
 export function rawTitleMetadata(type, id, season, refresh = false) {
   const path = `/${type}/${id}`;
   const hasSeason = season !== undefined && season !== null && season !== '';
-  return cacheMetadata(`title:${type}:${id}:${season ?? ''}`, 12 * 3600000, () => hasSeason && type === 'tv'
+  return cacheMetadata(`title:v2:${type}:${id}:${season ?? ''}`, 12 * 3600000, () => hasSeason && type === 'tv'
     ? tmdb(`${path}/season/${season}`, { language: 'en-US' })
     : tmdb(path, {
       language: 'en-US',
@@ -97,7 +97,7 @@ export async function titleMetadata(type, id, season, refresh = false) {
   if (hasSeason) {
     const seasonNumber = Number(season);
     if (!Number.isSafeInteger(seasonNumber) || seasonNumber < 1) return data;
-    const parent = peekMetadata(`title:tv:${id}:`) ?? peekMetadata(`basic:tv:${id}:`)
+    const parent = peekMetadata(`title:v2:tv:${id}:`) ?? peekMetadata(`basic:tv:${id}:`)
       ?? await basicTitle('tv', id).catch(() => null);
     if (!isAnime(parent?.original_language, parent?.genres?.map(genre => genre.id))) return data;
     return enrichAnimeSeason(id, seasonNumber, data).catch(() => data);
@@ -107,7 +107,7 @@ export async function titleMetadata(type, id, season, refresh = false) {
 }
 
 export function basicTitle(type, id) {
-  return peekMetadata(`title:${type}:${id}:`) ?? cacheMetadata(`basic:${type}:${id}:`, 12 * 3600000,
+  return peekMetadata(`title:v2:${type}:${id}:`) ?? cacheMetadata(`basic:${type}:${id}:`, 12 * 3600000,
     () => tmdb(`/${type}/${id}`, { language: 'en-US', ...(type === 'tv' ? { append_to_response: 'external_ids' } : {}) }));
 }
 

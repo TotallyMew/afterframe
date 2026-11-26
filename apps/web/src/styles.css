@@ -1552,12 +1552,15 @@ h3:focus:not(:focus-visible) {
   align-self: flex-start;
   margin-top: var(--af-space-1);
 }
-.af-hero-split {
+.af-details-main.af-hero-split {
   display: grid;
+  align-self: stretch;
+  width: 100%;
   grid-template-columns: minmax(0, 1fr) minmax(13rem, 20rem);
   align-items: end;
   gap: var(--af-space-5) var(--af-space-7);
 }
+.af-cinema-hero h1[tabindex="-1"]:focus { outline: none; }
 .af-hero-split .af-copy {
   display: grid;
   gap: var(--af-space-3);
