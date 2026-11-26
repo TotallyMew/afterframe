@@ -173,7 +173,7 @@ export function parseAniSkipPayload(payload, durationSec) {
     if (!kind || !Number.isFinite(start) || !Number.isFinite(rawEnd)) continue;
     const end = Math.min(durationSec, rawEnd);
     const isMixed = skipType.startsWith('mixed-');
-    let score = isMixed ? 88 : 105;
+    let score = isMixed ? 88 : 125;
     let autoSkip = !isMixed;
     if (Number.isFinite(reportedLen) && reportedLen > 0) {
       const diff = Math.abs(reportedLen - durationSec);

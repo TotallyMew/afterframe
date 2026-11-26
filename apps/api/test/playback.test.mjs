@@ -165,7 +165,7 @@ test('multi-source skip parser & merger combines SkipDB, IntroDB, TheIntroDB, an
   assert.equal(aniSkip[1].kind, 'credits');
   assert.equal(aniSkip[1].autoSkip, false); // 6s drift -> manual skip only
 
-  // Exact-length AniSkip ED outranks a shorter SkipDB exact outro on anime
+  // Exact-length AniSkip ED outranks even corroborated shorter TV preview outros on anime
   const animeMerged = mergeSkipCandidates([
     ...parseAniSkipPayload({
       found: true,
@@ -174,6 +174,11 @@ test('multi-source skip parser & merger combines SkipDB, IntroDB, TheIntroDB, an
     ...parseSkipDbPayload({
       segments: { outro: { start_ms: 1424700, end_ms: 1435000, match: 'exact', confidence: 0.9 } },
     }, 1435),
+    ...parseTheIntroDbPayload({
+      type: 'tv',
+      group_duration_ms: 1435467,
+      credits: [{ start_ms: 1424843, end_ms: 1434043, confidence: 0.84, submission_count: 2 }],
+    }, 'tv', 1435000),
   ], 1435);
   assert.equal(animeMerged[0].source, 'aniskip');
   assert.equal(animeMerged[0].start, 1338.255);
