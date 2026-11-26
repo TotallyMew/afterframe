@@ -94,7 +94,10 @@ export async function imdbRating(id, strict = false) {
     if (used >= 900) throw new Error('OMDb daily budget reached');
     used++;
     const response = await requestOmdb(omdbKey, id);
-    if (!response.ok) throw new Error('OMDb unavailable');
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error('OMDb unavailable');
+    }
     const data = await response.json();
     if (data.Response !== 'True') {
       if (/not found/i.test(data.Error || '')) return null;
@@ -138,19 +141,19 @@ export async function validateOmdbKey(key) {
 export async function cachedRatings(keys) {
   const ratings = {};
   for (const key of keys) {
-    const details = peekMetadata(`title:${key}:`) || peekMetadata(`basic:${key}:`);
+    const details = peekMetadata(`title:v2:${key}:`) || peekMetadata(`title:${key}:`) || peekMetadata(`basic:${key}:`);
     const id = details?.external_ids?.imdb_id || details?.imdb_id;
     const rating = peekMetadata(`imdb:${id}`);
     if (rating) ratings[key.replace(':', '-')] = rating;
   }
   const missing = keys.filter(key => !ratings[key.replace(':', '-')]);
   if (!missing.length) return ratings;
-  const result = await dbQuery(`SELECT left(substr(t.cache_key, 7), -1) AS title, r.payload
+  const result = await dbQuery(`SELECT regexp_replace(t.cache_key, '^(?:title:v2:|title:|basic:)|:$', '', 'g') AS title, r.payload
     FROM afterframe_metadata t JOIN afterframe_metadata r ON r.cache_key =
       'imdb:' || COALESCE(t.payload #>> '{external_ids,imdb_id}', t.payload ->> 'imdb_id')
     WHERE t.cache_key = ANY($1::text[]) AND r.payload <> 'null'::jsonb
     ORDER BY t.expires_at`,
-  [missing.flatMap(key => [`title:${key}:`, `basic:${key}:`])]);
+  [missing.flatMap(key => [`title:v2:${key}:`, `title:${key}:`, `basic:${key}:`])]);
   for (const row of result?.rows || []) ratings[row.title.replace(':', '-')] = row.payload;
   return ratings;
 }
@@ -159,7 +162,7 @@ export function refreshMetadataPeriodically(refreshTitle) {
   if (!pool) return () => {};
   const timer = setInterval(async () => {
     const result = await dbQuery(`SELECT cache_key FROM afterframe_metadata
-      WHERE (cache_key LIKE 'title:%' OR cache_key LIKE 'imdb:%')
+      WHERE (cache_key LIKE 'title:v2:%' OR cache_key LIKE 'imdb:%')
       AND expires_at <= now() AND expires_at >= $1
       ORDER BY expires_at LIMIT 12`, [new Date(Date.now() - refreshWindow)]);
     for (const { cache_key: key } of result?.rows || []) {

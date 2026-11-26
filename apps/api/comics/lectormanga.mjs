@@ -51,7 +51,9 @@ export async function lectorChapters(item) {
 }
 
 export async function lectorPageList(item, chapterId) {
-  const { slug } = await findListing(item);
+  const match = await findListing(item);
+  if (!match?.slug) throw new Error('Lector Manga pages are temporarily unavailable.');
+  const { slug } = match;
   const number = chapterId.slice('lector-'.length);
   return cacheMetadata(`comics:lector:pages:${slug}:${number}`, 10 * minute, async () => {
     const result = await sourceHtml(`${origin}/comics/${slug}/capitulo-${number}`, 'Lector Manga');

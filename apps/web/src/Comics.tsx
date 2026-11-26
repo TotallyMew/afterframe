@@ -1,5 +1,5 @@
 import { comicEditionCredit, comicLanguage, groupComicEditions } from '@afterframe/shared/comic-display';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { comicCover, comicDetailsHref, navigate, previousBrowse, request, routeWithParams, webHref, type Comic } from './catalog';
 import { currentLocationHref, currentSearchParams } from './router';
 import { InputField, PageHeading, ResultsSummary, RouteTabs, SelectField } from './Catalogue';
@@ -31,10 +31,12 @@ export function readerHref(item: Pick<Comic, 'id'>, chapter: string, language: s
   return webHref(routeWithParams(`comic/${encodeURIComponent(item.id)}/read/${encodeURIComponent(chapter)}`, variables));
 }
 
-function comicFacts(item: Comic) {
+function comicFacts(item: Comic, includeChapters = true) {
   const format = formats.find(([key]) => key && key === item.format)?.[1] ?? 'Manga';
   const status = statuses.find(([key]) => key === item.status)?.[1];
-  return [format, item.year, status].filter(Boolean).join(' · ');
+  const chapters = includeChapters ? (item.chapterCount || item.lastChapter) : '';
+  const chapterLabel = chapters ? `${chapters} ch` : '';
+  return [format, chapterLabel || item.year, status].filter(Boolean).join(' · ');
 }
 
 export function ComicCard({ item, controls, href, context, eager, onDismiss }: {
@@ -68,6 +70,8 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
   const [auxError, setAuxError] = useState({ genres: false, updates: false });
   const [genreAttempt, setGenreAttempt] = useState(0);
   const [updateAttempt, setUpdateAttempt] = useState(0);
+  const [chapterCounts, setChapterCounts] = useState<Record<string, string>>({});
+  const requestedCountsRef = useRef<Set<string>>(new Set());
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const isCompactBrowse = useMediaQuery('(max-width: 640px)');
   const type = params.get('type') || '';
@@ -120,6 +124,44 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
       }).catch(() => { if (!task.signal.aborted) setAuxError(current => ({ ...current, updates: true })); });
     return () => task.abort();
   }, [query, updateAttempt]);
+
+  useEffect(() => {
+    const requested = requestedCountsRef.current;
+    const missing = [...new Set([...recent, ...items]
+      .filter(item => !item.lastChapter && !item.chapterCount && !requested.has(item.id))
+      .map(item => item.id))];
+    if (!missing.length) return;
+    const task = new AbortController();
+    const { signal } = task;
+    for (const id of missing) requested.add(id);
+    const pending = new Set(missing);
+    void (async () => {
+      for (let i = 0; i < missing.length; i += 8) {
+        if (signal.aborted) break;
+        const batch = missing.slice(i, i + 8);
+        try {
+          const data = await request<{ counts?: Record<string, string> }>(`/api/comics/counts?ids=${encodeURIComponent(batch.join(','))}`, { signal });
+          for (const id of batch) pending.delete(id);
+          if (!signal.aborted && data.counts && Object.keys(data.counts).length) {
+            setChapterCounts(current => ({ ...current, ...data.counts }));
+          }
+        } catch {
+          if (signal.aborted) break;
+          for (const id of batch) pending.delete(id);
+        }
+      }
+    })();
+    return () => {
+      task.abort();
+      for (const id of pending) requested.delete(id);
+    };
+  }, [recent, items]);
+
+  const withChapterCount = (item: Comic) => (
+    item.chapterCount || item.lastChapter || !chapterCounts[item.id]
+      ? item
+      : { ...item, chapterCount: chapterCounts[item.id] }
+  );
 
   function withParam(name: string, value: string) {
     const update = new URLSearchParams(params);
@@ -185,7 +227,7 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
     </div>
     {auxError.updates && <p className="af-state" role="alert">Recently updated manga could not load. <button type="button" className="af-text-link" onClick={() => setUpdateAttempt(value => value + 1)}>Retry updates</button></p>}
     {recent.length > 0 && <Shelf title="Recently updated">
-      {recent.map((item, index) => <ComicCard item={item} key={item.key} controls={controls} eager={index < 5} />)}
+      {recent.map((item, index) => <ComicCard item={withChapterCount(item)} key={item.key} controls={controls} eager={index < 5} />)}
     </Shelf>}
     {recent.length > 0 && <h2 className="af-comic-catalog-heading">Browse the catalog</h2>}
     <ResultsSummary count={!loading || items.length ? items.length : null} loading={loading && page === 1 && !items.length} route="comics" filters={params} clear={webHref('comics')} labels={{
@@ -194,7 +236,7 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
       status: value => statuses.find(([key]) => key === value)?.[1] ?? '',
       sort: value => sorts.find(([key]) => key === value)?.[1] ?? '',
     }} />
-    {items.length > 0 && <div className="af-poster-grid">{items.map((item, index) => <ComicCard item={item} key={item.key} controls={controls} eager={!recent.length && index < 6} />)}</div>}
+    {items.length > 0 && <div className="af-poster-grid">{items.map((item, index) => <ComicCard item={withChapterCount(item)} key={item.key} controls={controls} eager={!recent.length && index < 6} />)}</div>}
     {loading && page === 1 && <Loading label="Loading manga…" />}
     {error && page === 1 && <p className="af-state" role="alert">{error} <button className="af-text-link" type="button" onClick={() => { setError(''); setLoading(true); setAttempt(value => value + 1); }}>Retry</button></p>}
     {!loading && !error && !items.length && <p className="af-state" role="status">{query ? 'No manga match these filters.' : 'No manga are available in the catalog yet.'}</p>}
@@ -328,7 +370,7 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
           <div className="af-copy">
             <h1>{item.title}</h1>
             <div className="af-meta af-details-meta af-title-facts">
-              <span>{comicFacts(item)}</span>
+              <span>{comicFacts(item, false)}</span>
               {chapterFact && <a href="#chapters" className="af-fact-link af-tabular">{chapterFact}</a>}
               {item.genres?.slice(0, 3).map(g => <span key={g.id}>{g.name}</span>)}
               <Score mal={mal.value} />

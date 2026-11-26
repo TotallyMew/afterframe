@@ -1,4 +1,4 @@
-import { animeSource } from './anime.mjs';
+import { animeMalSource } from './anime.mjs';
 import { cacheMetadata } from './metadata.mjs';
 
 const verifiedCuts = {
@@ -126,23 +126,6 @@ export function mergeSkipCandidates(candidates, durationSec) {
   return merged;
 }
 
-/** @param {number} anilistId */
-async function resolveMalId(anilistId) {
-  return cacheMetadata(`anilist-mal:${anilistId}`, 7 * 86400000, async () => {
-    const response = await fetch('https://graphql.anilist.co', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query: 'query($id:Int!) { Media(id:$id,type:ANIME) { idMal } }', variables: { id: anilistId } }),
-      signal: AbortSignal.timeout(4500),
-    });
-    if (!response.ok) {
-      await response.body?.cancel();
-      return null;
-    }
-    return (await response.json()).data?.Media?.idMal || null;
-  }).catch(() => null);
-}
-
 /**
  * Resolve IMDb ID from cached TMDB basic title metadata.
  * @param {'movie' | 'tv'} type
@@ -205,10 +188,9 @@ export function parseAniSkipPayload(payload, durationSec) {
  * @returns {Promise<SegmentCandidate[]>}
  */
 async function loadAniSkipSegments(type, id, season, episode, durationSec) {
-  const mapped = await animeSource(type, id, Number(season || 1), type === 'tv' ? Number(episode) : 1).catch(() => null);
-  if (!mapped?.id) return [];
-  const malId = await resolveMalId(mapped.id);
-  if (!malId) return [];
+  const mapped = await animeMalSource(type, id, Number(season || 1), type === 'tv' ? Number(episode) : 1).catch(() => null);
+  if (!mapped?.malId) return [];
+  const { malId } = mapped;
   // Fetch with episodeLength=0 so all crowdsourced cuts are returned and scored against durationSec locally.
   const payload = await cacheMetadata(`aniskip:v2:${malId}:${mapped.episode}`, 6 * 3600000, async () => {
     const url = new URL(`https://api.aniskip.com/v2/skip-times/${malId}/${mapped.episode}`);

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { mkdtemp, rm, rmdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { cacheMetadata, peekMetadata } from '../catalog/metadata.mjs';
+import { cacheMetadata, cachedRatings, peekMetadata } from '../catalog/metadata.mjs';
 import { comicsApi } from '../comics/comics.mjs';
 import { fetchWithRetry, resetCircuits } from '../http-client.mjs';
 import { checkRateLimit, resetRateLimits } from '../rate-limit.mjs';
@@ -285,4 +285,201 @@ test('fetchWithRetry retries transient 503 and trips circuit breaker after repea
     error => Boolean(error.circuitOpen),
   );
   resetCircuits();
+});
+
+test('EmnexAnime stream and server routes validate input, sanitize URLs, and require API key', async t => {
+  const prevKey = process.env.EMNEX_API_KEY;
+  const invoke = async path => {
+    let statusCode = 0;
+    let body = '';
+    const response = {
+      writeHead(code) { statusCode = code; },
+      end(chunk) { body = chunk; },
+    };
+    await handleApi({ method: 'GET', headers: {} }, response, new URL(`http://localhost${path}`));
+    return { statusCode, body: JSON.parse(body) };
+  };
+  try {
+    delete process.env.EMNEX_API_KEY;
+    const unconfigured = await invoke('/api/anime/stream/151807/1?type=sub');
+    assert.equal(unconfigured.statusCode, 503);
+
+    process.env.EMNEX_API_KEY = 'emnx_test_key';
+    const badType = await invoke('/api/anime/stream/151807/1?type=raw');
+    assert.equal(badType.statusCode, 400);
+
+    t.mock.method(globalThis, 'fetch', async (url, init) => {
+      assert.equal(init?.headers?.['x-api-key'], 'emnx_test_key');
+      if (String(url).includes('/api/servers/')) {
+        return Response.json({
+          servers: [
+            { provider: 'HD-2', type: 'sub' },
+            { provider: 'HD-2', type: 'sub' },
+            { provider: 'HD-1', type: 'dub' },
+            { provider: 'bad server!', type: 'sub' },
+          ],
+        });
+      }
+      return Response.json({
+        provider: 'HD-2',
+        type: 'sub',
+        hls: 'https://api.emnexanime.site/hls?u=abc',
+        subtitles: [
+          { lang: 'English', url: 'https://api.emnexanime.site/sub?u=en', default: true },
+          { lang: 'Evil', url: 'https://evil.example/sub.vtt', default: false },
+        ],
+        intro: { start: 0, end: 0 },
+        outro: { start: 1325, end: 1414 },
+      });
+    });
+
+    const stream = await invoke('/api/anime/stream/151807/1?type=sub');
+    assert.equal(stream.statusCode, 200);
+    assert.equal(stream.body.provider, 'HD-2');
+    assert.equal(stream.body.hls, 'https://api.emnexanime.site/hls?u=abc');
+    assert.deepEqual(stream.body.subtitles, [{ lang: 'English', url: 'https://api.emnexanime.site/sub?u=en', default: true }]);
+    assert.equal(stream.body.intro, null);
+    assert.deepEqual(stream.body.outro, { start: 1325, end: 1414 });
+
+    const servers = await invoke('/api/anime/servers/151807/1');
+    assert.equal(servers.statusCode, 200);
+    assert.deepEqual(servers.body.servers, [
+      { provider: 'HD-2', type: 'sub' },
+      { provider: 'HD-1', type: 'dub' },
+    ]);
+
+    const malStream = await invoke('/api/anime/stream/52299/1?type=sub&idType=mal');
+    assert.equal(malStream.statusCode, 200);
+    assert.equal(malStream.body.hls, 'https://api.emnexanime.site/hls?u=abc');
+    assert.deepEqual(malStream.body.availableTypes, { sub: true, dub: true });
+
+    // Sub-only episode: requesting dub returns sub with availableTypes.dub=false and fallbackFrom='dub'
+    t.mock.method(globalThis, 'fetch', async url => {
+      if (String(url).includes('/api/servers/')) {
+        return Response.json({ servers: [{ provider: 'HD-1', type: 'sub' }] });
+      }
+      assert.match(String(url), /type=sub/);
+      return Response.json({
+        provider: 'HD-1',
+        type: 'sub',
+        hls: 'https://api.emnexanime.site/hls?u=subonly',
+        subtitles: [],
+        intro: null,
+        outro: null,
+      });
+    });
+    const subOnlyFallback = await invoke('/api/anime/stream/999001/1?type=dub');
+    assert.equal(subOnlyFallback.statusCode, 200);
+    assert.equal(subOnlyFallback.body.type, 'sub');
+    assert.equal(subOnlyFallback.body.fallbackFrom, 'dub');
+    assert.deepEqual(subOnlyFallback.body.availableTypes, { sub: true, dub: false });
+  } finally {
+    if (prevKey === undefined) delete process.env.EMNEX_API_KEY;
+    else process.env.EMNEX_API_KEY = prevKey;
+  }
+});
+
+test('accounts sanitize malformed timestamps, check complete-series accountId, and isolate per-IP login rate limits', async () => {
+  let cookie = '';
+  const captureRes = {
+    setHeader(name, value) {
+      if (String(name).toLowerCase() === 'set-cookie') {
+        const raw = Array.isArray(value) ? value[0] : value;
+        cookie = String(raw).split(';')[0];
+      }
+    },
+  };
+  const created = await accountApi(
+    { method: 'POST', headers: {}, socket: { remoteAddress: '10.1.0.1' } },
+    captureRes,
+    '/api/account/create',
+    { username: 'ts-guard-user', password: 'strong-test-password' },
+  );
+  assert.equal(created.code, 201);
+  const accountId = created.body.account.id;
+
+  // Float / NaN / string timestamps must not crash SQLite/Postgres writes
+  const writeBadTs = await accountApi(
+    { method: 'POST', headers: { cookie } },
+    captureRes,
+    '/api/account/library',
+    {
+      accountId,
+      kind: 'saved',
+      key: 'movie-101',
+      value: { key: 'movie-101', id: 101, type: 'movie', title: 'Safe Timestamps', watchStatus: 'planned', added: 'not-a-number' },
+      at: 'NaN',
+    },
+  );
+  assert.equal(writeBadTs.code, 200);
+
+  // complete-series enforces accountId match (409) and ignores invalid totalEpisodes
+  await accountApi(
+    { method: 'POST', headers: { cookie } },
+    captureRes,
+    '/api/account/library',
+    {
+      accountId,
+      kind: 'saved',
+      key: 'tv-202',
+      value: { key: 'tv-202', id: 202, type: 'tv', title: 'Series Fixture', totalEpisodes: 12, watchStatus: 'watching', added: Date.now() },
+    },
+  );
+  const wrongAccount = await accountApi(
+    { method: 'POST', headers: { cookie } },
+    captureRes,
+    '/api/account/complete-series',
+    { accountId: accountId + 999, item: { key: 'tv-202', type: 'tv' }, episodes: ['s1e1'] },
+  );
+  assert.equal(wrongAccount.code, 409);
+
+  const badTotal = await accountApi(
+    { method: 'POST', headers: { cookie } },
+    captureRes,
+    '/api/account/complete-series',
+    { accountId, item: { key: 'tv-202', type: 'tv', totalEpisodes: -5 }, episodes: ['s1e1'] },
+  );
+  assert.equal(badTotal.code, 200);
+  assert.equal(badTotal.body.saved.totalEpisodes, 12);
+
+  // Invalid recovery code format is rejected immediately with 400
+  const badReset = await accountApi(
+    { method: 'POST', headers: {}, socket: { remoteAddress: '10.1.0.2' } },
+    captureRes,
+    '/api/account/reset',
+    { username: 'ts-guard-user', code: 'short', password: 'new-strong-password' },
+  );
+  assert.equal(badReset.code, 400);
+
+  // 8 failed attempts from attacker IP rate-limit that IP without locking out legitimate user IP
+  for (let i = 0; i < 8; i++) {
+    await accountApi(
+      { method: 'POST', headers: {}, socket: { remoteAddress: '198.51.100.77' } },
+      captureRes,
+      '/api/account/signin',
+      { username: 'ts-guard-user', password: 'wrong-password-attempt' },
+    );
+  }
+  const attackerBlocked = await accountApi(
+    { method: 'POST', headers: {}, socket: { remoteAddress: '198.51.100.77' } },
+    captureRes,
+    '/api/account/signin',
+    { username: 'ts-guard-user', password: 'strong-test-password' },
+  );
+  assert.equal(attackerBlocked.code, 429);
+
+  const legitSignIn = await accountApi(
+    { method: 'POST', headers: {}, socket: { remoteAddress: '203.0.113.42' } },
+    captureRes,
+    '/api/account/signin',
+    { username: 'ts-guard-user', password: 'strong-test-password' },
+  );
+  assert.equal(legitSignIn.code, 200);
+});
+
+test('cachedRatings resolves title:v2: cache entries to cached IMDb ratings', async () => {
+  await cacheMetadata('title:v2:movie:77777:', 60_000, async () => ({ external_ids: { imdb_id: 'tt7777777' } }));
+  await cacheMetadata('imdb:tt7777777', 60_000, async () => ({ score: 8.6, votes: 12000 }));
+  const ratings = await cachedRatings(['movie:77777']);
+  assert.deepEqual(ratings['movie-77777'], { score: 8.6, votes: 12000 });
 });

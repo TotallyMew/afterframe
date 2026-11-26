@@ -5,6 +5,7 @@ import {
   preferenceDefaults, samplePlayback, viewingSession, watchedSeconds, type PlaybackPosition, type SkipSegment, type ViewingSession,
 } from '@afterframe/shared/playback';
 import { findSubtitles, loadSubtitle, playbackLanguage, samePlaybackLanguage, type SubtitleCue, type SubtitleTrack } from '@afterframe/shared/subtitles';
+import type Hls from 'hls.js';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { imagePath, navigate, request, type EpisodePosition, type Title } from '../catalog';
 import { Artwork, Icon } from '../components';
@@ -14,12 +15,53 @@ import { PlayerControls } from './PlayerControls';
 import { PlayerGlyph } from './PlayerGlyph';
 import { formatClock, rememberCineServer } from './route';
 import { readCaptionStyle, writeCaptionStyle, type CaptionStyle } from './SubtitleMenu';
-import { animePlayers, cineSrcOrigin, cineSrcServers, segmentNames, type ActiveMedia, type AnimeProvider, type CineRestoreState, type VideoWithAudioTracks } from './types';
+import {
+  animePlayers, cineSrcOrigin, cineSrcServers, readAnimeAudioPreference, segmentNames, writeAnimeAudioPreference,
+  type ActiveMedia, type AnimeProvider, type CineRestoreState,
+  type EmnexAvailableTypes, type EmnexServerOption, type EmnexStreamData, type VideoWithAudioTracks,
+} from './types';
 import { useMediaQuery } from '../UiControls';
+
+function endSegmentReachesEnd(segment: SkipSegment | undefined, allSegments: SkipSegment[], duration: number): boolean {
+  if (!segment || !Number.isFinite(duration) || duration <= 0) return false;
+  if (segment.kind !== 'credits' && segment.kind !== 'preview') return false;
+  if (segment.end >= duration - 8) return true;
+  if (segment.kind === 'credits') {
+    return allSegments.some(other => other.kind === 'preview' && other.start <= segment.end + 5 && other.end >= duration - 8);
+  }
+  return false;
+}
+
+function clampEmnexSegments(intro: { start: number; end: number } | null, outro: { start: number; end: number } | null, duration: number): SkipSegment[] {
+  const out: SkipSegment[] = [];
+  const push = (kind: 'intro' | 'credits', range: { start: number; end: number } | null) => {
+    if (!range) return;
+    if (duration > 0) {
+      if (range.start >= duration - 2 || range.end > duration + 20) return;
+      const clampedEnd = Math.min(range.end, duration);
+      if (clampedEnd <= range.start + 3) return;
+      out.push({ kind, start: range.start, end: clampedEnd, autoSkip: true });
+    } else if (range.end > range.start + 3) {
+      out.push({ kind, start: range.start, end: range.end, autoSkip: true });
+    }
+  };
+  push('intro', intro);
+  push('credits', outro);
+  return out;
+}
+
+function formatEmnexSubtitleTrack(entry: { lang: string; url: string }): SubtitleTrack {
+  const cleaned = entry.lang.replace(/\s*\(\s*-\s*/g, ' (').replace(/\)\)+$/, ')').trim();
+  const parenIdx = cleaned.indexOf('(');
+  const base = (parenIdx > 0 ? cleaned.slice(0, parenIdx) : cleaned).trim();
+  const language = playbackLanguage(base) || cleaned;
+  return { url: entry.url, language, release: cleaned !== language ? cleaned : '' };
+}
 
 export function VideoStage({
   stageRef, media, displayItem, displayEpisode, backHref, adjacent, nextStillPath, controls,
-  initialProvider, onProviderChange, providerControls, onProviderControlsChange,
+  initialProvider, onProviderChange, initialAnimeAudio, onAnimeAudioChange, autoPlayEpisode,
+  providerControls, onProviderControlsChange,
   preferredQuality, onPreferredQualityChange, onNavigateEpisode,
   theatreMode, onToggleTheatre, hasEpisodesDrawer, episodesOpen, onToggleEpisodes, episodesDrawer,
 }: {
@@ -33,6 +75,9 @@ export function VideoStage({
   controls: LibraryControls;
   initialProvider: AnimeProvider | null;
   onProviderChange: (provider: AnimeProvider) => void;
+  initialAnimeAudio?: 'sub' | 'dub' | null;
+  onAnimeAudioChange?: (audio: 'sub' | 'dub') => void;
+  autoPlayEpisode?: boolean;
   providerControls: boolean;
   onProviderControlsChange: (next: boolean) => void;
   preferredQuality: string | undefined;
@@ -46,13 +91,16 @@ export function VideoStage({
   episodesDrawer?: ReactNode;
 }) {
   const animeEligible = media.embed && isAnime(media.item.originalLanguage, media.item.genreIds);
-  const initialSelectedProvider: AnimeProvider = animeEligible ? (initialProvider ?? 'animeembed') : 'cinesrc';
+  const initialSelectedProvider: AnimeProvider = animeEligible ? (initialProvider ?? 'emnex') : 'cinesrc';
 
   const prefs = controls.library.preferences;
   const pref = useCallback(<K extends keyof typeof preferenceDefaults>(name: K) => prefs[name] ?? preferenceDefaults[name], [prefs]);
   const preferredSubtitleLang = pref('subtitles') ? (prefs.subtitleLanguage ?? (prefs.captions ? 'English' : '')) : '';
 
   const [provider, setProviderState] = useState<AnimeProvider>(initialSelectedProvider);
+  const isEmnex = Boolean(media.embed && provider === 'emnex');
+  const isCineSrc = Boolean(media.embed && provider === 'cinesrc');
+  const isNativeVideo = !media.embed || isEmnex;
   const quality = preferredQuality ?? prefs.quality ?? '';
 
   const setProvider = useCallback((next: AnimeProvider) => {
@@ -114,13 +162,31 @@ export function VideoStage({
   const pendingAudioTimerRef = useRef<number | undefined>(undefined);
   const skippedToRef = useRef<number | undefined>(undefined);
   const unidentifiedEpisodeRef = useRef<boolean>(false);
-  const commandIdRef = useRef(0);
-  const animeReadyRef = useRef(false);
+  const hlsRef = useRef<Hls | null>(null);
+  const emnexResumeTimeRef = useRef<number | null>(null);
+  const emnexServersLoadingRef = useRef(false);
+  const emnexServersRef = useRef<EmnexServerOption[] | null>(null);
+  const failedEmnexServersRef = useRef(new Set<string>());
+  const emnexTimingsRef = useRef<{ intro: { start: number; end: number } | null; outro: { start: number; end: number } | null }>({ intro: null, outro: null });
 
   const [direct, setDirect] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [dubFallback, setDubFallback] = useState(false);
-  const [animeSourceData, setAnimeSourceData] = useState<{ id: number; episode: number } | null>(null);
+  const [animeSourceData, setAnimeSourceData] = useState<{ id: number; episode: number; idType?: 'anilist' | 'mal' } | null>(null);
+  const [emnexAudio, setEmnexAudio] = useState<'sub' | 'dub'>(() => (
+    initialAnimeAudio
+    ?? readAnimeAudioPreference(media.item.key)
+    ?? (samePlaybackLanguage(initialPrefsRef.current.audioLanguage, 'English') ? 'dub' : 'sub')
+  ));
+  const activeEmnexAudioRef = useRef<'sub' | 'dub'>(emnexAudio);
+  const [emnexServer, setEmnexServer] = useState('');
+  const [emnexStream, setEmnexStream] = useState<EmnexStreamData | null>(null);
+  const [emnexServers, setEmnexServers] = useState<EmnexServerOption[] | null>(null);
+  const [emnexAvailableTypes, setEmnexAvailableTypes] = useState<EmnexAvailableTypes | null>(null);
+  const [emnexFallbackNotice, setEmnexFallbackNotice] = useState('');
+  const [hlsLevels, setHlsLevels] = useState<{ index: number; label: string }[]>([]);
+  const [hlsLevel, setHlsLevel] = useState(-1);
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const [embedStatus, setEmbedStatus] = useState<{ message: string; canRetry: boolean }>({ message: media.embed ? 'Loading player…' : '', canRetry: false });
   const [pictureVisible, setPictureVisible] = useState(!media.embed);
   const [position, setPosition] = useState<PlaybackPosition>({ currentTime: 0, duration: 0, paused: true });
@@ -304,7 +370,7 @@ export function VideoStage({
   }, [persistPlayback, media.episode, media.progressKey, media.item.key]);
 
   const sendCommand = useCallback((command: string, ...args: unknown[]) => {
-    if (!media.embed) {
+    if (!media.embed || providerRef.current === 'emnex') {
       const video = videoRef.current;
       if (!video) return;
       if (command === 'play') void video.play().catch(() => {});
@@ -320,29 +386,16 @@ export function VideoStage({
     }
     const targetWindow = frameRef.current?.contentWindow;
     if (!targetWindow) return;
-    const activeProv = providerRef.current;
-    if (activeProv === 'cinesrc') {
-      if (durationMismatchRef.current && ['play', 'seek'].includes(command)) return;
-      if (command === 'seek') {
-        const target = Number(args[0]);
-        if (!Number.isFinite(target)) return;
-        relativeJumpRef.current = undefined;
-        seekTargetRef.current = target;
-        seekStartedRef.current = performance.now();
-        trackingRef.current.sample = null;
-      }
-      targetWindow.postMessage({ type: 'cinesrc:command', command, args }, cineSrcOrigin);
-    } else if (activeProv === 'anipm') {
-      targetWindow.postMessage({ ns: 'anipm.player', v: 1, cmd: command, args: command === 'seek' ? { time: args[0] } : (args[0] ?? {}) }, animePlayers.anipm.origin);
-    } else {
-      targetWindow.postMessage({
-        channel: 'animeembed',
-        version: 1,
-        command,
-        data: command === 'seek' ? { time: args[0] } : (args[0] ?? {}),
-        requestId: String(++commandIdRef.current),
-      }, animePlayers.animeembed.origin);
+    if (durationMismatchRef.current && ['play', 'seek'].includes(command)) return;
+    if (command === 'seek') {
+      const target = Number(args[0]);
+      if (!Number.isFinite(target)) return;
+      relativeJumpRef.current = undefined;
+      seekTargetRef.current = target;
+      seekStartedRef.current = performance.now();
+      trackingRef.current.sample = null;
     }
+    targetWindow.postMessage({ type: 'cinesrc:command', command, args }, cineSrcOrigin);
   }, [media.embed]);
 
   const jumpPlayback = useCallback((delta: number) => {
@@ -373,6 +426,15 @@ export function VideoStage({
       setSegments(media.nativeMedia?.segments ?? []);
       autoSkippedRef.current.clear();
     }
+    if (providerRef.current === 'emnex') {
+      const clamped = clampEmnexSegments(emnexTimingsRef.current.intro, emnexTimingsRef.current.outro, duration);
+      if (clamped.length) {
+        setSegments(current => {
+          const otherKinds = current.filter(s => !clamped.some(c => c.kind === s.kind));
+          return [...clamped, ...otherKinds];
+        });
+      }
+    }
     const revision = sourceRevisionRef.current;
     const params = new URLSearchParams({ id: String(media.item.id), type: media.item.type, duration: String(Math.round(duration * 1000)) });
     if (media.embed) params.set('source', providerRef.current);
@@ -383,11 +445,10 @@ export function VideoStage({
     try {
       const { segments: found } = await request<{ segments: SkipSegment[] }>(`/api/segments?${params}`);
       if (sourceRevisionRef.current !== revision || segmentDurationRef.current !== rounded || !found.length) return;
-      const isAnimeEmbed = media.embed && providerRef.current !== 'cinesrc';
       setSegments(current => {
         const existingKinds = new Set(current.map(s => s.kind));
         const additions = found
-          .filter(s => !existingKinds.has(s.kind) && (!isAnimeEmbed || s.kind === 'credits'))
+          .filter(s => !existingKinds.has(s.kind))
           .map(s => ({ ...s, end: Math.min(s.end, duration) }));
         if (!additions.length) return current;
         const next = [...current, ...additions];
@@ -415,78 +476,341 @@ export function VideoStage({
     if (!seeking) persistPlayback(pos);
   }, [loadSegmentsForDuration, checkForCompletion, persistPlayback]);
 
-  // Resolve anime embed source once per episode (does NOT re-run when title/details hydrate)
+  // Resolve anime AniList source once per episode (does NOT re-run when title/details hydrate)
   const epSeason = media.episode?.season;
   const epNumber = media.episode?.number;
   useEffect(() => {
-    if (!media.embed || !animeEligible || provider === 'cinesrc') {
+    if (!isEmnex || !animeEligible) {
       setAnimeSourceData(null);
+      setEmnexStream(null);
+      setEmnexServers(null);
+      emnexServersLoadingRef.current = false;
       return;
     }
     const controller = new AbortController();
     const query = epSeason !== undefined && epNumber !== undefined ? `?s=${epSeason}&e=${epNumber}` : '';
-    request<{ source: { id: number; episode: number } | null }>(`/api/anime/${media.item.type}/${media.item.id}${query}`, { signal: controller.signal })
-      .then(({ source }) => {
+    setEmbedStatus({ message: 'Loading stream…', canRetry: false });
+    setPictureVisible(false);
+    request<{ source: { id: number; episode: number; idType?: 'anilist' | 'mal' } | null; emnex?: boolean }>(`/api/anime/${media.item.type}/${media.item.id}${query}`, { signal: controller.signal })
+      .then(({ source, emnex }) => {
         if (controller.signal.aborted) return;
-        if (source) setAnimeSourceData(source);
+        if (source && emnex !== false) setAnimeSourceData(source);
         else setProvider('cinesrc');
       }).catch(() => {
         if (!controller.signal.aborted) setProvider('cinesrc');
       });
     return () => controller.abort();
-  }, [media.embed, animeEligible, provider, media.item.type, media.item.id, epSeason, epNumber, setProvider]);
+  }, [isEmnex, animeEligible, media.item.type, media.item.id, epSeason, epNumber, setProvider]);
 
-  const preferDub = provider === 'animeembed' && !dubFallback && samePlaybackLanguage(initialPrefsRef.current.audioLanguage, 'English');
+  // Resolve EmnexAnime HLS stream when AniList coordinates, audio type, or server change
+  useEffect(() => {
+    if (!isEmnex || !animeSourceData) {
+      setEmnexStream(null);
+      return;
+    }
+    const controller = new AbortController();
+    sourceRevisionRef.current += 1;
+    segmentDurationRef.current = null;
+    autoSkippedRef.current.clear();
+    subDownloadRef.current?.abort();
+    emnexTimingsRef.current = { intro: null, outro: null };
+    setSegments([]);
+    setActiveCues(null);
+    setSubTracks(null);
+    subTracksRef.current = null;
+    setEmnexStream(null);
+    setEmnexFallbackNotice('');
+    setHlsLevels([]);
+    setHlsLevel(-1);
+    setBufferedCss('');
+    setAutoplayBlocked(false);
+    setPictureVisible(false);
+    setEmbedStatus({ message: 'Loading stream…', canRetry: false });
+    trackingRef.current = viewingSession(
+      initialProgressRef.current?.provider === 'emnex' ? initialProgressRef.current : null,
+    );
 
-  // Compute iframe src ONLY when player config/source intentionally changes
+    const requestType = emnexServer ? activeEmnexAudioRef.current : emnexAudio;
+    const params = new URLSearchParams({ type: requestType });
+    if (animeSourceData.idType === 'mal') params.set('idType', 'mal');
+    if (emnexServer) params.set('provider', emnexServer);
+    if (reloadNonce > 0) params.set('refresh', '1');
+
+    request<EmnexStreamData>(`/api/anime/stream/${animeSourceData.id}/${animeSourceData.episode}?${params}`, { signal: controller.signal })
+      .then(data => {
+        if (controller.signal.aborted) return;
+        activeEmnexAudioRef.current = data.type;
+        setEmnexStream(data);
+        if (Array.isArray(data.servers)) {
+          emnexServersRef.current = data.servers;
+          setEmnexServers(data.servers);
+        }
+        if (data.availableTypes) setEmnexAvailableTypes(data.availableTypes);
+        if (data.fallbackFrom === 'dub') {
+          setEmnexFallbackNotice('Dub unavailable for this episode · Playing Sub.');
+        } else if (data.fallbackFrom === 'sub') {
+          setEmnexFallbackNotice('Sub unavailable for this episode · Playing Dub.');
+        } else {
+          setEmnexFallbackNotice('');
+        }
+        emnexTimingsRef.current = { intro: data.intro, outro: data.outro };
+        const initialSegments = clampEmnexSegments(data.intro, data.outro, positionRef.current.duration);
+        if (initialSegments.length) setSegments(initialSegments);
+
+        const tracks = data.subtitles.map(formatEmnexSubtitleTrack);
+        if (tracks.length) {
+          setSubTracks(tracks);
+          subTracksRef.current = tracks;
+        }
+        const langs = [...new Set(tracks.map(t => t.language))];
+        const defaultEntry = data.subtitles.find(entry => entry.default);
+        const defaultLang = defaultEntry ? formatEmnexSubtitleTrack(defaultEntry).language : '';
+        const curPrefs = controlsRef.current.library.preferences;
+        const allowSubs = curPrefs.subtitles ?? preferenceDefaults.subtitles;
+        const explicitLang = curPrefs.subtitleLanguage;
+        const wantedLang = !allowSubs
+          ? ''
+          : explicitLang !== undefined
+            ? explicitLang
+            : data.type === 'sub'
+              ? (defaultLang || 'English')
+              : (curPrefs.captions ? 'English' : '');
+        const initialLang = langs.find(l => samePlaybackLanguage(l, wantedLang))
+          || (langs.includes('English') ? 'English' : langs[0] || '');
+        setSubLang(initialLang);
+        setSubStatus('');
+        if (wantedLang && tracks.length) {
+          const match = tracks.find(t => samePlaybackLanguage(t.language, wantedLang))
+            || (data.type === 'sub' && defaultEntry ? tracks.find(t => t.url === defaultEntry.url) : undefined);
+          if (match) {
+            subDownloadRef.current?.abort();
+            const subCtrl = new AbortController();
+            subDownloadRef.current = subCtrl;
+            void loadSubtitle(match, AbortSignal.any([subCtrl.signal, AbortSignal.timeout(10_000)]))
+              .then(cues => {
+                if (!subCtrl.signal.aborted && subDownloadRef.current === subCtrl) {
+                  setActiveCues({ url: match.url, cues });
+                  setSubStatus('');
+                }
+              }).catch(() => {});
+          }
+        }
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        if (emnexAudio === 'dub' && !dubFallback) {
+          setDubFallback(true);
+          setEmnexAvailableTypes(prev => ({ sub: prev?.sub ?? true, dub: false }));
+          setEmnexFallbackNotice('Dub unavailable for this episode · Playing Sub.');
+          failedEmnexServersRef.current.clear();
+          setEmnexServer('');
+          setEmnexAudio('sub');
+        } else if (emnexServer) {
+          failedEmnexServersRef.current.add(emnexServer);
+          setEmnexServer('');
+        } else {
+          setProvider('cinesrc');
+        }
+      });
+
+    return () => controller.abort();
+  }, [isEmnex, animeSourceData, emnexAudio, emnexServer, reloadNonce, dubFallback, setProvider]);
+
+  const tryNextEmnexServerOrFail = useCallback(async (failedProvider: string) => {
+    failedEmnexServersRef.current.add(failedProvider);
+    if (animeSourceData) {
+      let list = emnexServersRef.current;
+      if (!list) {
+        try {
+          const srvQuery = animeSourceData.idType === 'mal' ? '?idType=mal' : '';
+          const fetched = await request<{ servers: EmnexServerOption[] }>(`/api/anime/servers/${animeSourceData.id}/${animeSourceData.episode}${srvQuery}`);
+          list = fetched.servers;
+          emnexServersRef.current = list;
+          setEmnexServers(list);
+        } catch {
+          list = [];
+        }
+      }
+      const next = list.find(entry => entry.type === activeEmnexAudioRef.current && !failedEmnexServersRef.current.has(entry.provider));
+      if (next) {
+        const pos = positionRef.current;
+        if (pos.duration > 0 && pos.currentTime > 2) emnexResumeTimeRef.current = pos.currentTime;
+        setEmnexServer(next.provider);
+        return;
+      }
+    }
+    setPictureVisible(false);
+    setEmbedStatus({ message: 'EmnexAnime stream could not play. Try reloading, another server, or CineSrc.', canRetry: true });
+  }, [animeSourceData]);
+
+  // Attach EmnexAnime HLS stream to the native <video> element via hls.js (or native HLS on Safari)
+  useEffect(() => {
+    if (!isEmnex || !emnexStream?.hls) return;
+    const video = videoRef.current;
+    if (!video) return;
+    let cancelled = false;
+    let networkRecovered = false;
+    let mediaRecovered = false;
+
+    const startPlayback = () => {
+      void video.play().catch(err => {
+        if (!cancelled && err?.name === 'NotAllowedError') setAutoplayBlocked(true);
+      });
+    };
+
+    const attach = async () => {
+      try {
+        const { default: Hls } = await import('hls.js');
+        if (cancelled || videoRef.current !== video) return;
+        if (Hls.isSupported()) {
+          const hls = new Hls({ enableWorker: true, lowLatencyMode: false });
+          hlsRef.current = hls;
+          hls.loadSource(emnexStream.hls);
+          hls.attachMedia(video);
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            if (cancelled) return;
+            const seenHeights = new Set<number>();
+            const levels = hls.levels
+              .map((lvl, index) => ({ index, height: lvl.height || 0 }))
+              .filter(lvl => lvl.height > 0)
+              .sort((a, b) => b.height - a.height)
+              .filter(lvl => {
+                if (seenHeights.has(lvl.height)) return false;
+                seenHeights.add(lvl.height);
+                return true;
+              })
+              .map(lvl => ({ index: lvl.index, label: `${lvl.height}p` }));
+            setHlsLevels(levels);
+            setHlsLevel(-1);
+            startPlayback();
+          });
+          hls.on(Hls.Events.ERROR, (_event, data) => {
+            if (cancelled || !data.fatal) return;
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR && !networkRecovered) {
+              networkRecovered = true;
+              hls.startLoad();
+              return;
+            }
+            if (data.type === Hls.ErrorTypes.MEDIA_ERROR && !mediaRecovered) {
+              mediaRecovered = true;
+              hls.recoverMediaError();
+              return;
+            }
+            hls.destroy();
+            if (hlsRef.current === hls) hlsRef.current = null;
+            void tryNextEmnexServerOrFail(emnexStream.provider);
+          });
+          return;
+        }
+      } catch {
+        // Fall through to native HLS if supported
+      }
+      if (cancelled || videoRef.current !== video) return;
+      if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = emnexStream.hls;
+        startPlayback();
+      } else {
+        setPictureVisible(false);
+        setEmbedStatus({ message: 'HLS playback is unsupported in this browser. Switch to CineSrc.', canRetry: true });
+      }
+    };
+
+    void attach();
+    return () => {
+      cancelled = true;
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+      setHlsLevels([]);
+      setHlsLevel(-1);
+      video.pause();
+      video.removeAttribute('src');
+      video.load();
+    };
+  }, [isEmnex, emnexStream?.hls, emnexStream?.provider, tryNextEmnexServerOrFail]);
+
+  const loadEmnexServers = useCallback(() => {
+    if (!isEmnex || !animeSourceData || emnexServersRef.current !== null || emnexServersLoadingRef.current) return;
+    emnexServersLoadingRef.current = true;
+    const srvQuery = animeSourceData.idType === 'mal' ? '?idType=mal' : '';
+    request<{ servers: EmnexServerOption[] }>(`/api/anime/servers/${animeSourceData.id}/${animeSourceData.episode}${srvQuery}`)
+      .then(({ servers }) => {
+        emnexServersRef.current = servers;
+        setEmnexServers(servers);
+      })
+      .catch(() => {})
+      .finally(() => { emnexServersLoadingRef.current = false; });
+  }, [isEmnex, animeSourceData]);
+
+  const handleEmnexAudioChange = useCallback((nextAudio: 'sub' | 'dub') => {
+    const activeAudio = emnexStream?.type ?? emnexAudio;
+    if (nextAudio === activeAudio && nextAudio === emnexAudio) return;
+    if (emnexAvailableTypes && !emnexAvailableTypes[nextAudio]) return;
+    const pos = positionRef.current;
+    if (pos.duration > 0 && pos.currentTime > 2) emnexResumeTimeRef.current = pos.currentTime;
+    failedEmnexServersRef.current.clear();
+    setDubFallback(false);
+    setEmnexFallbackNotice('');
+    setEmnexServer('');
+    activeEmnexAudioRef.current = nextAudio;
+    setEmnexAudio(nextAudio);
+    onAnimeAudioChange?.(nextAudio);
+    writeAnimeAudioPreference(media.item.key, nextAudio);
+    void controlsRef.current.setPreference('audioLanguage', nextAudio === 'dub' ? 'English' : 'Japanese', 'Preferred audio');
+  }, [emnexAudio, emnexStream?.type, emnexAvailableTypes, onAnimeAudioChange, media.item.key]);
+
+  const handleEmnexServerChange = useCallback((nextServer: string) => {
+    if (nextServer === (emnexServer || emnexStream?.provider)) return;
+    const pos = positionRef.current;
+    if (pos.duration > 0 && pos.currentTime > 2) emnexResumeTimeRef.current = pos.currentTime;
+    failedEmnexServersRef.current.delete(nextServer);
+    setEmnexServer(nextServer);
+  }, [emnexServer, emnexStream?.provider]);
+
+  const handleHlsLevelChange = useCallback((level: number) => {
+    setHlsLevel(level);
+    if (hlsRef.current) hlsRef.current.currentLevel = level;
+  }, []);
+
+  // Compute iframe src ONLY when CineSrc config/source intentionally changes
   const embedSrc = useMemo(() => {
-    if (!media.embed || reloadNonce < 0) return '';
+    if (!isCineSrc || reloadNonce < 0) return '';
     const restore = restoreStateRef.current;
     const saved = initialProgressRef.current;
     const initPrefs = initialPrefsRef.current;
     const allowResume = initPrefs.resume ?? preferenceDefaults.resume;
     const allowVolume = initPrefs.volume ?? preferenceDefaults.volume;
-    const savedMatchesProvider = (saved?.provider || 'cinesrc') === provider;
+    const savedMatchesProvider = (saved?.provider || 'cinesrc') === 'cinesrc';
     const savedResumeTime = allowResume && savedMatchesProvider && saved && saved.time > 5 && saved.time < saved.duration - 2
       && !(media.item.type === 'movie' && movieDurationMismatch(media.item.duration, saved.duration))
       ? saved.time : 0;
     const resumeTime = restore?.time !== undefined ? restore.time : savedResumeTime;
 
-    if (provider === 'cinesrc') {
-      const url = new URL(`/embed/${media.item.type}/${media.item.id}`, cineSrcOrigin);
-      url.searchParams.set('color', '#efb09d');
-      url.searchParams.set('controls', String(providerControls));
-      if (providerControls) url.searchParams.set('back', 'close');
-      else url.searchParams.set('subtitles', 'off');
-      if (epSeason !== undefined && epNumber !== undefined) {
-        url.searchParams.set('s', String(epSeason));
-        url.searchParams.set('e', String(epNumber));
-        url.searchParams.set('autonext', String(providerControls && (initPrefs.autoplay ?? preferenceDefaults.autoplay)));
-        url.searchParams.set('autoskip', String(providerControls && (initPrefs.intro ?? preferenceDefaults.intro) && (initPrefs.recap ?? preferenceDefaults.recap)));
-      }
-      const serverId = cineSrcServers.get(media.item.key);
-      if (serverId) {
-        url.searchParams.set('prioritize', 'true');
-        url.searchParams.set('lastserver', serverId);
-      }
-      url.searchParams.set('continueprompt', 'false');
-      if (resumeTime > 0) url.searchParams.set('t', String(Math.floor(resumeTime)));
-      if (quality) url.searchParams.set('quality', quality);
-      if (restore?.muted ?? (allowVolume && Boolean(initPrefs.muted))) url.searchParams.set('muted', 'true');
-      if (typeof restore?.paused === 'boolean') url.searchParams.set('autoplay', String(!restore.paused));
-      return url.href;
+    const url = new URL(`/embed/${media.item.type}/${media.item.id}`, cineSrcOrigin);
+    url.searchParams.set('color', '#efb09d');
+    url.searchParams.set('controls', String(providerControls));
+    if (providerControls) url.searchParams.set('back', 'close');
+    else url.searchParams.set('subtitles', 'off');
+    if (epSeason !== undefined && epNumber !== undefined) {
+      url.searchParams.set('s', String(epSeason));
+      url.searchParams.set('e', String(epNumber));
+      url.searchParams.set('autonext', String(providerControls && (initPrefs.autoplay ?? preferenceDefaults.autoplay)));
+      url.searchParams.set('autoskip', String(providerControls && (initPrefs.intro ?? preferenceDefaults.intro) && (initPrefs.recap ?? preferenceDefaults.recap)));
     }
-
-    if (!animeSourceData) return '';
-    const origin = animePlayers[provider].origin;
-    const url = new URL(`/embed/ani/${animeSourceData.id}/${animeSourceData.episode}${provider === 'anipm' ? '/sub' : ''}`, origin);
-    url.search = new URLSearchParams(provider === 'anipm'
-      ? { start: String(Math.floor(resumeTime)), color: 'efb09d', autonext: '0', episodes: '0', adult: '0', autoskip: '0' }
-      : { start: String(Math.floor(resumeTime)), accent: 'efb09d', autoPlay: '1', autoNext: '0', autoSkip: '0', hide: 'next' }).toString();
-    if (preferDub) url.searchParams.set('track', 'dub');
-    if (allowVolume && initPrefs.muted) url.searchParams.set('muted', '1');
+    const serverId = cineSrcServers.get(media.item.key);
+    if (serverId) {
+      url.searchParams.set('prioritize', 'true');
+      url.searchParams.set('lastserver', serverId);
+    }
+    url.searchParams.set('continueprompt', 'false');
+    if (resumeTime > 0) url.searchParams.set('t', String(Math.floor(resumeTime)));
+    if (quality) url.searchParams.set('quality', quality);
+    if (restore?.muted ?? (allowVolume && Boolean(initPrefs.muted))) url.searchParams.set('muted', 'true');
+    if (typeof restore?.paused === 'boolean') url.searchParams.set('autoplay', String(!restore.paused));
+    else if (autoPlayEpisode) url.searchParams.set('autoplay', 'true');
     return url.href;
-  }, [media.embed, media.item.key, media.item.type, media.item.id, media.item.duration, epSeason, epNumber, provider, providerControls, quality, reloadNonce, animeSourceData, preferDub]);
+  }, [isCineSrc, media.item.key, media.item.type, media.item.id, media.item.duration, epSeason, epNumber, providerControls, quality, reloadNonce, autoPlayEpisode]);
 
   const reloadCineWithState = useCallback((nextProviderControls: boolean, nextQuality: string) => {
     const pos = positionRef.current;
@@ -517,9 +841,13 @@ export function VideoStage({
     }, 350);
   }, []);
 
-  // Listen to CineSrc / AnimeEmbed / Ani.pm postMessage events (stable deps — ONLY resets when embedSrc changes!)
+  // Listen to CineSrc postMessage events (stable deps — ONLY resets when embedSrc changes!)
   useEffect(() => {
-    if (!media.embed || !embedSrc) return;
+    if (!isCineSrc || !embedSrc) return;
+    const saved = initialProgressRef.current;
+    if (!trackingRef.current.ranges.length && !completedRef.current && saved && (saved.provider || 'cinesrc') === 'cinesrc') {
+      trackingRef.current = viewingSession(saved);
+    }
     sourceRevisionRef.current += 1;
     segmentDurationRef.current = null;
     durationMismatchRef.current = false;
@@ -531,27 +859,16 @@ export function VideoStage({
     seekTargetRef.current = null;
     seekStartedRef.current = -Infinity;
     skippedToRef.current = undefined;
-    animeReadyRef.current = false;
     setPictureVisible(false);
-
-    if (provider !== 'cinesrc') {
-      trackingRef.current = viewingSession(
-        initialProgressRef.current?.provider === provider ? initialProgressRef.current : null,
-      );
-      setEmbedStatus({ message: 'Loading video…', canRetry: false });
-    } else {
-      setEmbedStatus({ message: 'Loading player…', canRetry: false });
-    }
+    setEmbedStatus({ message: 'Loading player…', canRetry: false });
 
     let slowTimer: number | undefined;
     let failTimer: number | undefined;
-    let animeFallbackTimer: number | undefined;
 
     const clearTimers = () => {
       clearTimeout(slowTimer);
       clearTimeout(failTimer);
-      clearTimeout(animeFallbackTimer);
-      slowTimer = failTimer = animeFallbackTimer = undefined;
+      slowTimer = failTimer = undefined;
     };
 
     const startStallTimeout = () => {
@@ -580,19 +897,7 @@ export function VideoStage({
       }, 20000);
     };
 
-    const retryAnimeProvider = () => {
-      if (preferDub && !positionRef.current.currentTime) {
-        setDubFallback(true);
-      } else {
-        setProvider(animePlayers[provider].next);
-      }
-    };
-
-    if (provider === 'cinesrc') {
-      waitForCineStream();
-    } else {
-      animeFallbackTimer = window.setTimeout(retryAnimeProvider, 16000);
-    }
+    waitForCineStream();
 
     const restoreAudioAndRate = () => {
       if (!restoreVolumeRef.current) return;
@@ -667,7 +972,7 @@ export function VideoStage({
     const onMessage = (event: MessageEvent) => {
       if (event.source !== frameRef.current?.contentWindow) return;
 
-      if (provider === 'cinesrc' && event.origin === cineSrcOrigin) {
+      if (event.origin === cineSrcOrigin) {
         const data = event.data as Record<string, unknown> | null;
         if (!data || typeof data.type !== 'string') return;
         switch (data.type) {
@@ -906,86 +1211,23 @@ export function VideoStage({
             if (providerControlsRef.current) navigate(backHrefRef.current);
             break;
         }
-      } else if (provider !== 'cinesrc' && event.origin === animePlayers[provider].origin) {
-        const msg = event.data as Record<string, unknown> | null;
-        const supported = provider === 'anipm'
-          ? msg?.ns === 'anipm.player' && msg.v === 1
-          : msg?.channel === 'animeembed' && msg.version === 1;
-        if (!supported) return;
-        const data = (msg?.data as Record<string, unknown>) || {};
-        const state = (data.state as Record<string, unknown>) || data;
-        const reportedId = state.anilistId ?? msg?.animeId;
-        if (animeSourceData && reportedId != null && Number(reportedId) !== animeSourceData.id) return;
-        const reportedEp = Number(state.episode ?? msg?.episode);
-        if (animeSourceData && Number.isInteger(reportedEp) && reportedEp > 0 && reportedEp !== animeSourceData.episode) {
-          if (msg?.event !== 'episodechange' && msg?.event !== 'ready') return;
-          const target = reportedEp === animeSourceData.episode + 1 ? adjacentRef.current.next
-            : reportedEp === animeSourceData.episode - 1 ? adjacentRef.current.previous : undefined;
-          if (target) onNavigateEpisodeRef.current(target);
-          else if (provider === 'anipm') sendCommand('loadEpisode', { episode: animeSourceData.episode, start: positionRef.current.currentTime ?? 0 });
-          return;
-        }
-        if (msg?.event === 'error') {
-          if (!animeReadyRef.current || (preferDub && !positionRef.current.currentTime)) {
-            clearTimers();
-            retryAnimeProvider();
-            return;
-          }
-          setEmbedStatus({ message: 'The anime player lost its video source.', canRetry: true });
-          return;
-        }
-        if (['ready', 'autoplayblocked', 'timeupdate', 'progress'].includes(String(msg?.event))) {
-          clearTimers();
-          animeReadyRef.current = true;
-          setEmbedStatus({ message: '', canRetry: false });
-        }
-        const ct = Number(state.currentTime);
-        const dur = Number(state.duration);
-        if (Number.isFinite(ct) && Number.isFinite(dur) && dur > 0 && ct >= 0 && ct <= dur + 0.5) {
-          const prevDur = positionRef.current.duration || initialProgressRef.current?.duration;
-          if (!positionRef.current.duration && prevDur && Math.abs(prevDur - dur) > 2.5) {
-            trackingRef.current = viewingSession();
-          }
-          const isPaused = typeof state.paused === 'boolean'
-            ? state.paused
-            : (msg?.event === 'pause' || (msg?.event !== 'play' && msg?.event !== 'progress' && pausedRef.current));
-          pausedRef.current = isPaused;
-          if (!isPaused && endedRef.current && msg?.event === 'play') {
-            endedRef.current = false;
-            setEnded(false);
-            setCountdownCancelled(false);
-          }
-          const isSeeking = ['seeking', 'seeked'].includes(String(msg?.event));
-          handleSample({ currentTime: Math.min(ct, dur), duration: dur, paused: isPaused, seeking: isSeeking }, isSeeking);
-          if (msg?.event === 'pause') persistPlayback({ currentTime: Math.min(ct, dur), duration: dur, paused: true }, true);
-        }
-        if (msg?.event === 'ended') {
-          endedRef.current = true;
-          pausedRef.current = true;
-          setEnded(true);
-          if (positionRef.current.duration > 0) {
-            checkForCompletion({ currentTime: positionRef.current.duration, duration: positionRef.current.duration }, true);
-          }
-        }
       }
     };
 
     window.addEventListener('message', onMessage);
-    const poll = provider === 'cinesrc'
-      ? window.setInterval(() => {
-        if (endedRef.current || performance.now() - lastUpdateRef.current < 2200) return;
-        sendCommand('getDuration');
-        sendCommand('getPaused');
-        sendCommand('getCurrentTime');
-      }, 2500)
-      : undefined;
+    const poll = window.setInterval(() => {
+      if (endedRef.current || performance.now() - lastUpdateRef.current < 2200) return;
+      sendCommand('getDuration');
+      sendCommand('getPaused');
+      sendCommand('getCurrentTime');
+    }, 2500);
 
     return () => {
       clearTimers();
       clearInterval(poll);
       window.removeEventListener('message', onMessage);
     };
-  }, [media.embed, media.item.key, media.item.type, media.episode, epSeason, epNumber, embedSrc, reloadNonce, provider, animeSourceData, preferDub, sendCommand, persistPlayback, handleSample, checkForCompletion, revealControls, rememberAudioPref, setProvider]);
+  }, [isCineSrc, media.item.key, media.item.type, media.episode, epSeason, epNumber, embedSrc, reloadNonce, sendCommand, persistPlayback, handleSample, checkForCompletion, revealControls, rememberAudioPref]);
 
   // Auto-play native video when source loads or switches to direct stream
   const nativeSrc = media.nativeMedia
@@ -1091,10 +1333,10 @@ export function VideoStage({
 
   const togglePip = useCallback(() => {
     const video = videoRef.current;
-    if (!video || media.embed || !document.pictureInPictureEnabled) return;
+    if (!video || !isNativeVideo || !document.pictureInPictureEnabled) return;
     if (document.pictureInPictureElement) void document.exitPictureInPicture().catch(() => {});
     else void video.requestPictureInPicture?.().catch(() => {});
-  }, [media.embed]);
+  }, [isNativeVideo]);
 
   // Close player popup menus on outside click or Escape
   useEffect(() => {
@@ -1131,11 +1373,13 @@ export function VideoStage({
   };
 
   // Auto-skip segments & auto-next 10s countdown
-  const activeSegment = !providerControls ? activeSkipSegment(segments, position) : undefined;
+  const externalControls = isCineSrc && providerControls;
+  const activeSegment = !externalControls ? activeSkipSegment(segments, position) : undefined;
+  const allowAutoplay = pref('autoplay');
   const skipSegment = useCallback((segment: SkipSegment) => {
-    const reachesEnd = positionRef.current.duration > 0 && segment.end >= positionRef.current.duration - 6;
-    if ((segment.kind === 'credits' || segment.kind === 'preview') && reachesEnd && adjacentRef.current.next) {
-      checkForCompletion(positionRef.current);
+    const reachesEnd = endSegmentReachesEnd(segment, segmentsRef.current, positionRef.current.duration);
+    if (reachesEnd && adjacentRef.current.next) {
+      checkForCompletion(positionRef.current, endedRef.current);
       onNavigateEpisodeRef.current(adjacentRef.current.next);
       return;
     }
@@ -1161,18 +1405,21 @@ export function VideoStage({
     if (!activeSegment || position.paused || position.seeking || autoSkippedRef.current.has(activeSegment)) return;
     if (activeSegment.autoSkip === false) return;
     const isEndKind = activeSegment.kind === 'credits' || activeSegment.kind === 'preview';
-    const reachesEnd = position.duration > 0 && activeSegment.end >= position.duration - 6;
-    const endWithNext = isEndKind && reachesEnd && (Boolean(adjacent.next) || (Boolean(media.episode) && !adjacent.ready));
+    const reachesEnd = endSegmentReachesEnd(activeSegment, segments, position.duration);
+    const countdownWillHandle = allowAutoplay && !countdownCancelled
+      && (Boolean(adjacent.next) || (Boolean(media.episode) && !adjacent.ready));
+    const endWithNext = isEndKind && reachesEnd && countdownWillHandle;
     const prefKind = activeSegment.kind === 'preview' ? 'credits' : activeSegment.kind;
     if (!endWithNext && pref(prefKind)) {
       skipSegment(activeSegment);
       if (isEndKind && reachesEnd) checkForCompletion(positionRef.current);
     }
-  }, [activeSegment, position.paused, position.seeking, position.duration, adjacent.next, adjacent.ready, media.episode, pref, skipSegment, checkForCompletion]);
+  }, [activeSegment, segments, position.paused, position.seeking, position.duration, adjacent.next, adjacent.ready, media.episode, allowAutoplay, countdownCancelled, pref, skipSegment, checkForCompletion]);
 
-  const inCredits = activeSegment?.kind === 'credits' && !position.paused && !position.seeking && !unidentifiedEpisodeRef.current;
+  const inEndingForNext = endSegmentReachesEnd(activeSegment, segments, position.duration)
+    && !position.paused && !position.seeking && !unidentifiedEpisodeRef.current;
   useEffect(() => {
-    if (!adjacent.next || providerControls || !pref('autoplay') || countdownCancelled || (!ended && !inCredits)) {
+    if (!adjacent.next || externalControls || !allowAutoplay || countdownCancelled || (!ended && !inEndingForNext)) {
       setCountdown(null);
       return;
     }
@@ -1183,11 +1430,14 @@ export function VideoStage({
       setCountdown(left);
       if (left === 0) {
         clearInterval(timer);
-        if (adjacentRef.current.next) onNavigateEpisodeRef.current(adjacentRef.current.next);
+        if (adjacentRef.current.next) {
+          checkForCompletion(positionRef.current, endedRef.current);
+          onNavigateEpisodeRef.current(adjacentRef.current.next);
+        }
       }
     }, 250);
     return () => clearInterval(timer);
-  }, [adjacent.next, providerControls, ended, inCredits, countdownCancelled, pref]);
+  }, [adjacent.next, externalControls, ended, inEndingForNext, countdownCancelled, allowAutoplay, checkForCompletion]);
 
   const updateAudio = useCallback((nextVol: number, nextMuted: boolean) => {
     if (nextVol > 0) lastVolumeRef.current = nextVol;
@@ -1269,7 +1519,8 @@ export function VideoStage({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
-      if (event.target instanceof HTMLElement && event.target.closest('button, a, input, select, summary, iframe, [contenteditable]')) return;
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      if (event.target instanceof HTMLElement && event.target.closest('button, a, input, textarea, select, summary, iframe, [contenteditable]')) return;
       const key = event.key.toLowerCase();
       if (key === 's' && activeSegment) {
         event.preventDefault();
@@ -1360,9 +1611,9 @@ export function VideoStage({
   }, [sendCommand, revealControls]);
 
   // Auto-load preferred subtitles on CineSrc and when subtitle preference changes
-  const showOverlay = !media.embed || (provider === 'cinesrc' && !providerControls);
+  const showOverlay = isNativeVideo || (isCineSrc && !providerControls);
   useEffect(() => {
-    if (!media.embed || !showOverlay) return;
+    if (!isCineSrc || !showOverlay) return;
     if (!preferredSubtitleLang) {
       subDownloadRef.current?.abort();
       setActiveCues(null);
@@ -1370,7 +1621,7 @@ export function VideoStage({
       return;
     }
     void loadEmbedSubtitles(preferredSubtitleLang);
-  }, [media.embed, showOverlay, preferredSubtitleLang, loadEmbedSubtitles]);
+  }, [isCineSrc, showOverlay, preferredSubtitleLang, loadEmbedSubtitles]);
 
   const computeSeekPreview = (time: number) => {
     if (!(position.duration > 0) || !markersRef.current) return;
@@ -1451,10 +1702,15 @@ export function VideoStage({
     : displayItem.description;
   const sourcePage = media.nativeMedia?.page || (media.nativeMedia?.archive ? `https://archive.org/details/${encodeURIComponent(media.nativeMedia.archive)}` : '');
 
-  const showCineLoading = media.embed && provider === 'cinesrc' && !providerControls && Boolean(embedStatus.message) && !embedStatus.canRetry;
-  const showCineRecovery = media.embed && provider === 'cinesrc' && !providerControls && Boolean(embedStatus.message) && embedStatus.canRetry && !pictureVisible;
-  const showPictureLayer = !media.embed || (provider === 'cinesrc' && pictureVisible);
+  const showCineLoading = (isCineSrc && !providerControls && Boolean(embedStatus.message) && !embedStatus.canRetry)
+    || (isEmnex && Boolean(embedStatus.message) && !embedStatus.canRetry && !pictureVisible);
+  const showCineRecovery = (isCineSrc && !providerControls && Boolean(embedStatus.message) && embedStatus.canRetry && !pictureVisible)
+    || (isEmnex && Boolean(embedStatus.message) && embedStatus.canRetry && !pictureVisible);
+  const showPictureLayer = isNativeVideo || (isCineSrc && pictureVisible);
   const showEmbedNotice = media.embed && (embedStatus.canRetry || providerControls || animeEligible || provider !== 'cinesrc');
+  const emnexStreamMeta = isEmnex && emnexStream
+    ? `${emnexStream.provider} · ${emnexStream.type.toUpperCase()}`
+    : undefined;
   const nextStillUrl = imagePath(nextStillPath, 'w300');
   const blurNextStill = Boolean(nextStillUrl && controls.library.preferences.blur !== false);
   const countdownRingDash = countdown !== null ? `${Math.round((countdown / 10) * 100)} 100` : '100 100';
@@ -1462,13 +1718,14 @@ export function VideoStage({
   return <>
     <div
       ref={videoBoxRef}
-      className={`af-video-box ${controlsActive ? 'controls-active' : ''} ${position.paused || ended ? 'is-paused' : ''} ${ended ? 'is-ended' : ''} ${hasPlayed ? 'has-played' : ''}`}
+      className={`af-video-box ${controlsActive ? 'controls-active' : ''} ${position.paused || ended ? 'is-paused' : ''} ${ended ? 'is-ended' : ''} ${hasPlayed ? 'has-played' : ''} ${autoplayBlocked ? 'is-autoplay-blocked' : ''}`}
       onPointerMove={event => { if (event.pointerType !== 'touch') revealControls(); }}
       onFocus={revealControls}
     >
-      {!media.embed && media.nativeMedia && <video
+      {((!media.embed && media.nativeMedia) || isEmnex) && <video
         ref={videoRef}
-        src={nativeSrc}
+        src={!media.embed ? nativeSrc : undefined}
+        crossOrigin={isEmnex ? 'anonymous' : undefined}
         playsInline
         preload="auto"
         poster={displayItem.backdrop}
@@ -1476,16 +1733,29 @@ export function VideoStage({
         onLoadedMetadata={event => {
           const video = event.currentTarget;
           const saved = initialProgressRef.current;
-          if (pref('resume') && saved && saved.time > 5 && saved.time < video.duration - 2) video.currentTime = saved.time;
+          const savedMatches = !isEmnex || saved?.provider === 'emnex';
+          const emnexResume = emnexResumeTimeRef.current;
+          emnexResumeTimeRef.current = null;
+          if (emnexResume !== null && emnexResume > 2 && emnexResume < video.duration - 2) {
+            video.currentTime = emnexResume;
+          } else if (pref('resume') && savedMatches && saved && saved.time > 5 && saved.time < video.duration - 2) {
+            video.currentTime = saved.time;
+          }
           if (pref('volume')) {
             video.volume = volumeRef.current;
             video.muted = mutedRef.current;
           }
-          const track = video.textTracks[0];
-          if (track) {
-            const want = samePlaybackLanguage(playbackLanguage(track.language) || track.label, preferredSubtitleLang);
-            track.mode = want ? 'showing' : 'disabled';
-            setNativeCaptionsOn(want);
+          if (speedRef.current !== 1) video.playbackRate = speedRef.current;
+          if (!isEmnex) {
+            const track = video.textTracks[0];
+            if (track) {
+              const want = samePlaybackLanguage(playbackLanguage(track.language) || track.label, preferredSubtitleLang);
+              track.mode = want ? 'showing' : 'disabled';
+              setNativeCaptionsOn(want);
+            }
+          } else {
+            setPictureVisible(true);
+            setEmbedStatus({ message: '', canRetry: false });
           }
           pausedRef.current = video.paused;
           handleSample({ currentTime: video.currentTime, duration: video.duration, paused: video.paused }, true);
@@ -1510,6 +1780,11 @@ export function VideoStage({
         onPlay={() => {
           clearTimeout(bufferingTimerRef.current);
           setBuffering(false);
+          setAutoplayBlocked(false);
+          if (isEmnex) {
+            setPictureVisible(true);
+            setEmbedStatus({ message: '', canRetry: false });
+          }
           if (endedRef.current) {
             endedRef.current = false;
             setEnded(false);
@@ -1552,7 +1827,12 @@ export function VideoStage({
         onPlaying={() => {
           clearTimeout(bufferingTimerRef.current);
           setBuffering(false);
+          setAutoplayBlocked(false);
           setHasPlayed(true);
+          if (isEmnex) {
+            setPictureVisible(true);
+            setEmbedStatus({ message: '', canRetry: false });
+          }
         }}
         onVolumeChange={event => {
           const video = event.currentTarget;
@@ -1576,26 +1856,27 @@ export function VideoStage({
         onError={() => {
           clearTimeout(bufferingTimerRef.current);
           setBuffering(false);
-          setVideoError(true);
+          if (isEmnex) {
+            if (!hlsRef.current && emnexStream?.hls && videoRef.current?.src) {
+              void tryNextEmnexServerOrFail(emnexStream.provider);
+            }
+          } else {
+            setVideoError(true);
+          }
         }}
       >
-        {media.nativeMedia.captions && <track kind="captions" label="English (auto-generated)" srcLang="en" src={media.nativeMedia.captions} />}
+        {!media.embed && media.nativeMedia?.captions && <track kind="captions" label="English (auto-generated)" srcLang="en" src={media.nativeMedia.captions} />}
       </video>}
 
-      {media.embed && embedSrc && <iframe
+      {isCineSrc && embedSrc && <iframe
         key={`${provider}:${providerControls}:${quality}:${dubFallback}:${reloadNonce}`}
         ref={frameRef}
         src={embedSrc}
-        title={`${titleText} ${provider === 'cinesrc' ? 'video' : 'anime'} player`}
-        allow={provider === 'cinesrc'
-          ? 'autoplay; fullscreen; picture-in-picture; encrypted-media'
-          : 'autoplay; fullscreen; picture-in-picture; encrypted-media; screen-wake-lock'}
+        title={`${titleText} video player`}
+        allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
         allowFullScreen
-        sandbox={provider === 'cinesrc' ? 'allow-scripts allow-same-origin allow-presentation' : undefined}
+        sandbox="allow-scripts allow-same-origin allow-presentation"
         referrerPolicy="no-referrer"
-        onLoad={() => {
-          if (provider === 'anipm') sendCommand('hello');
-        }}
       />}
 
       {showCineLoading && <div className="af-embed-loading">
@@ -1612,11 +1893,17 @@ export function VideoStage({
           <strong>Stream needs attention</strong>
           <p>{embedStatus.message}</p>
           <div className="af-actions">
-            <button type="button" className="af-button af-primary" onClick={() => reloadCineWithState(true, quality)}>
+            {isCineSrc && <button type="button" className="af-button af-primary" onClick={() => reloadCineWithState(true, quality)}>
               Try CineSrc controls
-            </button>
-            {animeEligible && <button type="button" className="af-button af-secondary" onClick={() => {
+            </button>}
+            {animeEligible && <button type="button" className={`af-button ${isCineSrc ? 'af-secondary' : 'af-primary'}`} onClick={() => {
               restoreStateRef.current = null;
+              subDownloadRef.current?.abort();
+              setActiveCues(null);
+              setSubTracks(null);
+              subTracksRef.current = null;
+              failedEmnexServersRef.current.clear();
+              emnexServersRef.current = null;
               setDubFallback(false);
               setProvider(animePlayers[provider].next);
             }}>
@@ -1625,6 +1912,10 @@ export function VideoStage({
             <button type="button" className="af-button af-secondary" onClick={() => {
               cineSrcServers.delete(media.item.key);
               restoreStateRef.current = null;
+              failedEmnexServersRef.current.clear();
+              if (isEmnex && positionRef.current.duration > 0 && positionRef.current.currentTime > 2) {
+                emnexResumeTimeRef.current = positionRef.current.currentTime;
+              }
               setReloadNonce(n => n + 1);
             }}>
               Reload player
@@ -1634,7 +1925,7 @@ export function VideoStage({
       </div>}
 
       {showPictureLayer && <div
-        className={`af-video-picture ${media.embed && providerControls ? 'is-embed-passthrough' : ''}`}
+        className={`af-video-picture ${externalControls ? 'is-embed-passthrough' : ''}`}
         aria-hidden="true"
         onClick={handlePictureClick}
         onDoubleClick={handlePictureDoubleClick}
@@ -1727,7 +2018,7 @@ export function VideoStage({
               </svg>
             </div>
             <div className="af-actions">
-              <button type="button" className="af-button af-primary" onClick={() => onNavigateEpisode(adjacent.next!)}>Play now</button>
+              <button type="button" className="af-button af-primary" onClick={() => { checkForCompletion(positionRef.current, endedRef.current); onNavigateEpisode(adjacent.next!); }}>Play now</button>
               <button type="button" className="af-button af-secondary" onClick={() => { setCountdownCancelled(true); setCountdown(null); }}>Cancel</button>
             </div>
           </div>}
@@ -1744,6 +2035,14 @@ export function VideoStage({
 
           <PlayerControls
             media={media}
+            useNativeVideo={isNativeVideo}
+            isEmnex={isEmnex}
+            emnexAudio={emnexStream?.type ?? emnexAudio}
+            emnexAvailableTypes={emnexAvailableTypes}
+            emnexServer={emnexServer || emnexStream?.provider || ''}
+            emnexServers={emnexServers}
+            hlsLevels={hlsLevels}
+            hlsLevel={hlsLevel}
             controls={controls}
             position={position}
             displayTime={displayTime}
@@ -1819,6 +2118,10 @@ export function VideoStage({
             onChangeCaptionStyle={handleCaptionStyleChange}
             onSpeedChange={val => { setSpeed(val); sendCommand('setPlaybackRate', val); showFeedback(`${val}×`); }}
             onQualityChange={val => { if (val !== quality) reloadCineWithState(providerControls, val); }}
+            onEmnexAudioChange={handleEmnexAudioChange}
+            onEmnexServerChange={handleEmnexServerChange}
+            onHlsLevelChange={handleHlsLevelChange}
+            onOpenSettings={loadEmnexServers}
             onOpenProviderSources={() => {
               if (settingsMenuRef.current) settingsMenuRef.current.open = false;
               reloadCineWithState(true, quality);
@@ -1832,37 +2135,6 @@ export function VideoStage({
         </div>
       </>}
 
-      {media.embed && !showOverlay && (activeSegment || undoSkip || countdown !== null) && <div className="af-player-lower af-anime-overlay">
-        {countdown !== null && adjacent.next && <div className="af-next-countdown" role="region" aria-label="Next episode">
-          <div className="af-next-countdown-top">
-            {nextStillUrl && <span className="af-next-countdown-thumb">
-              <Artwork src={nextStillUrl} className={blurNextStill ? 'af-blurred' : undefined} loading="lazy" fallback={<Icon name="film" />} />
-            </span>}
-            <div className="af-next-countdown-meta">
-              <span className="af-next-countdown-kicker">Up next · S{adjacent.next.season} E{adjacent.next.number}</span>
-              <strong>{adjacent.next.title || `Episode ${adjacent.next.number}`}</strong>
-              <p className="af-tabular">Starting in {countdown}s</p>
-            </div>
-            <svg className="af-countdown-ring" viewBox="0 0 36 36" width="32" height="32" aria-hidden="true">
-              <circle className="af-countdown-ring-track" cx="18" cy="18" r="15.9" />
-              <circle className="af-countdown-ring-fill" cx="18" cy="18" r="15.9" strokeDasharray={countdownRingDash} />
-            </svg>
-          </div>
-          <div className="af-actions">
-            <button type="button" className="af-button af-primary" onClick={() => onNavigateEpisode(adjacent.next!)}>Play now</button>
-            <button type="button" className="af-button af-secondary" onClick={() => { setCountdownCancelled(true); setCountdown(null); }}>Cancel</button>
-          </div>
-        </div>}
-        {activeSegment && <button type="button" className="af-player-skip" data-kind={activeSegment.kind} onClick={() => skipSegment(activeSegment)}>
-          <span>Skip {segmentNames[activeSegment.kind].toLowerCase()}</span>
-          <kbd className="af-kbd af-skip-kbd">S</kbd>
-        </button>}
-        {!activeSegment && undoSkip && <div className="af-player-undo-skip" role="status">
-          <span>Skipped {segmentNames[undoSkip.kind].toLowerCase()}</span>
-          <button type="button" className="af-text-link" onClick={revertSkip}>Undo</button>
-        </div>}
-      </div>}
-
       {episodesDrawer}
     </div>
 
@@ -1871,8 +2143,16 @@ export function VideoStage({
       providerControls={providerControls}
       animeEligible={animeEligible}
       embedStatus={embedStatus}
+      streamMeta={emnexStreamMeta}
+      fallbackNotice={isEmnex ? emnexFallbackNotice : undefined}
       onSwitchProvider={next => {
         restoreStateRef.current = null;
+        subDownloadRef.current?.abort();
+        setActiveCues(null);
+        setSubTracks(null);
+        subTracksRef.current = null;
+        failedEmnexServersRef.current.clear();
+        emnexServersRef.current = null;
         setDubFallback(false);
         setProvider(next);
       }}
@@ -1880,6 +2160,10 @@ export function VideoStage({
       onReload={() => {
         cineSrcServers.delete(media.item.key);
         restoreStateRef.current = null;
+        failedEmnexServersRef.current.clear();
+        if (isEmnex && positionRef.current.duration > 0 && positionRef.current.currentTime > 2) {
+          emnexResumeTimeRef.current = positionRef.current.currentTime;
+        }
         setReloadNonce(n => n + 1);
       }}
     />}

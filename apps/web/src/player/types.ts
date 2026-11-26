@@ -4,12 +4,68 @@ import type { EpisodePosition, MediaType, Title } from '../catalog';
 export const cineSrcOrigin = 'https://cinesrc.st';
 
 export const animePlayers = {
-  animeembed: { label: 'AnimeEmbed', origin: 'https://animeembed.com', next: 'anipm' as const },
-  anipm: { label: 'Ani.pm', origin: 'https://ani.pm', next: 'cinesrc' as const },
-  cinesrc: { label: 'CineSrc', origin: cineSrcOrigin, next: 'animeembed' as const },
+  emnex: { label: 'EmnexAnime', origin: 'https://api.emnexanime.site', next: 'cinesrc' as const },
+  cinesrc: { label: 'CineSrc', origin: cineSrcOrigin, next: 'emnex' as const },
 };
 
 export type AnimeProvider = keyof typeof animePlayers;
+
+export interface EmnexSubtitle {
+  lang: string;
+  url: string;
+  default?: boolean;
+}
+
+export interface EmnexTimingRange {
+  start: number;
+  end: number;
+}
+
+export interface EmnexServerOption {
+  provider: string;
+  type: 'sub' | 'dub';
+}
+
+export interface EmnexAvailableTypes {
+  sub: boolean;
+  dub: boolean;
+}
+
+export interface EmnexStreamData {
+  provider: string;
+  type: 'sub' | 'dub';
+  hls: string;
+  subtitles: EmnexSubtitle[];
+  intro: EmnexTimingRange | null;
+  outro: EmnexTimingRange | null;
+  servers?: EmnexServerOption[];
+  availableTypes?: EmnexAvailableTypes;
+  fallbackFrom?: 'sub' | 'dub';
+}
+
+const animeShowAudioKey = 'afterframe.animeShowAudio';
+
+export function readAnimeAudioPreference(showKey: string): 'sub' | 'dub' | null {
+  try {
+    const map = JSON.parse(localStorage.getItem(animeShowAudioKey) || 'null');
+    if (map && typeof map === 'object') {
+      const value = (map as Record<string, unknown>)[showKey];
+      if (value === 'sub' || value === 'dub') return value;
+    }
+  } catch { /* Storage unavailable */ }
+  return null;
+}
+
+export function writeAnimeAudioPreference(showKey: string, audio: 'sub' | 'dub') {
+  try {
+    const raw = JSON.parse(localStorage.getItem(animeShowAudioKey) || 'null');
+    const map: Record<string, 'sub' | 'dub'> = raw && typeof raw === 'object' && !Array.isArray(raw) ? { ...raw } : {};
+    map[showKey] = audio;
+    const keys = Object.keys(map);
+    if (keys.length > 100) delete map[keys[0]];
+    localStorage.setItem(animeShowAudioKey, JSON.stringify(map));
+  } catch { /* Storage unavailable */ }
+}
 
 export const cineSrcServers = new Map<string, string>();
 export const segmentNames = { intro: 'Intro', recap: 'Recap', credits: 'Credits', preview: 'Preview' } as const;

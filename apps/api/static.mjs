@@ -13,13 +13,13 @@ const mime = {
   '.png': 'image/png', '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.vtt': 'text/vtt; charset=utf-8', '.woff2': 'font/woff2',
 };
-const spaRoute = /^\/(?:(?:home|main|movies|tv|new|anime|comics|recommendations|search|watchlist|watched|ratings|reading|history|notifications)\/?|(?:movie|tv)\/[1-9]\d{0,9}(?:\/(?:watch|s\d{1,4}e[1-9]\d{0,3}))?\/?|comic\/[\w-]+(?:\/read\/[\w.-]+)?\/?|edition\/[\w.-]+(?:\/watch(?:\/[\w-]+)?)?\/?)?$/i;
+const spaRoute = /^\/(?:(?:home|main|movies|tv|new|anime|comics|manga|recommendations|search|watchlist|watched|ratings|reading|history|notifications)\/?|(?:movie|tv)\/[1-9]\d{0,9}(?:\/(?:watch|s\d{1,4}e[1-9]\d{0,3}))?\/?|comic\/[\w-]+(?:\/read\/[\w.-]+)?\/?|edition\/[\w.-]+(?:\/watch(?:\/[\w-]+)?)?\/?)?$/i;
 const staticBuildPath = /^\/(?:assets\/[a-z0-9][\w.-]*|icons\/[a-z0-9][\w.-]*\.png|manifest\.webmanifest|sw\.js)$/i;
 
 export async function serveFile(request, response, pathname, sendJson) {
   const isBuildAsset = staticBuildPath.test(pathname);
   const isArtAsset = /^\/art\/[a-z0-9][\w.-]*$/i.test(pathname);
-  const isSpaFallback = !isBuildAsset && !isArtAsset && !extname(pathname);
+  const isSpaFallback = !isBuildAsset && !isArtAsset && (spaRoute.test(pathname) || !extname(pathname));
   if ((pathname === '/' || isSpaFallback) && !hasWebBuild) {
     return sendJson(response, 503, { error: 'The web client has not been built. Run npm run build in apps/web or use the web service.' });
   }

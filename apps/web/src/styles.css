@@ -1736,6 +1736,34 @@ h3:focus:not(:focus-visible) {
   align-items: center;
   gap: var(--af-space-2);
 }
+.af-audio-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--af-hairline-strong);
+  border-radius: var(--af-radius-control);
+  background: var(--af-panel);
+}
+.af-audio-switch-btn {
+  min-block-size: calc(2.375rem - 6px);
+  padding: 0 var(--af-space-3);
+  border: 1px solid transparent;
+  border-radius: calc(var(--af-radius-control) - 2px);
+  background: transparent;
+  color: var(--af-secondary-ink);
+  font: inherit;
+  font-size: var(--af-type-secondary);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--af-duration-fast) var(--af-ease), color var(--af-duration-fast) var(--af-ease), border-color var(--af-duration-fast) var(--af-ease);
+}
+.af-audio-switch-btn:hover { color: var(--af-ink); }
+.af-audio-switch-btn[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--af-selection) 38%, transparent);
+  background: var(--af-selection-fill);
+  color: var(--af-selection);
+}
 .af-tool-btn {
   min-block-size: 2.375rem;
   padding-inline: var(--af-space-3);

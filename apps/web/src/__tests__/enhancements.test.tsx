@@ -5,7 +5,7 @@ import { Catalogue } from '../Catalogue';
 import { Header } from '../components';
 import { buildLibraryExport, parseLibraryImport, type LibraryControls } from '../library';
 import { LibraryPage } from '../LibraryPage';
-import { normalizeRouteString, searchHref, webHref } from '../router';
+import { normalizeBackParam, normalizeRouteString, searchHref, webHref } from '../router';
 import { SettingsProvider } from '../Settings';
 import { useSettings } from '../settings-context';
 import { ShortcutsDialog } from '../ShortcutsDialog';
@@ -22,23 +22,23 @@ function makeControls(overrides: Partial<LibraryControls> = {}): LibraryControls
     problems: {},
     error: '',
     refresh: async () => {},
-    toggleSaved: async () => {},
+    toggleSaved: async () => true,
     toggleWatched: async () => {},
-    rate: async () => {},
-    setStatus: async () => {},
+    rate: async () => true,
+    setStatus: async () => true,
     setComicStatus: () => undefined,
-    setPreference: async () => {},
+    setPreference: async () => true,
     recordReading: () => undefined,
-    removeReading: async () => {},
+    removeReading: async () => true,
     recordProgress: () => {},
     recordHistory: () => {},
     removeHistory: () => undefined,
-    clearHistory: async () => {},
-    markNotification: async () => {},
-    markAllNotificationsRead: async () => {},
-    createFolder: () => undefined,
+    clearHistory: async () => true,
+    markNotification: async () => true,
+    markAllNotificationsRead: async () => true,
+    createFolder: async () => undefined,
     renameFolder: () => undefined,
-    deleteFolder: () => undefined,
+    deleteFolder: async () => true,
     toggleFolderItem: () => undefined,
     importLibrary: async () => ({ totalImported: 0, skipped: 0 }),
     updateAccount: () => {},
@@ -51,7 +51,7 @@ function makeControls(overrides: Partial<LibraryControls> = {}): LibraryControls
     recoveryStatus: '',
     recoveryError: '',
     undoable: undefined,
-    undo: () => undefined,
+    undo: async () => {},
     mutationMessage: '',
     ...overrides,
   };
@@ -70,6 +70,10 @@ describe('Afterframe web enhancements', () => {
     expect(normalizeRouteString('#search=dune?type=comic')).toBe('search?type=comic&q=dune');
     expect(webHref('search=dune?type=comic')).toBe('/search?type=comic&q=dune');
     expect(searchHref('matrix', { type: 'movie' })).toBe('/search?q=matrix&type=movie');
+    expect(normalizeBackParam('/movie/550')).toBe('/movie/550');
+    expect(normalizeBackParam('/comic/abc-123')).toBe('/comic/abc-123');
+    expect(normalizeBackParam('/edition/archive-night')).toBe('/edition/archive-night');
+    expect(normalizeBackParam('//evil.example/phish')).toBeNull();
   });
 
   it('surfaces My Library matches and quick commands inside the Command Palette', async () => {
@@ -132,7 +136,8 @@ describe('Afterframe web enhancements', () => {
         ratings: {
           'movie-1': { item: { key: 'movie-1', id: 1, type: 'movie', title: 'Interstellar' }, score: 9, scale: 10, updated: 3000 },
         },
-        progress: {}, preferences: {}, reading: {}, history: {}, notifications: {}, folders: {},
+        progress: {}, preferences: {}, reading: {}, history: {}, notifications: {},
+        folders: { f_1: { id: 'f_1', name: 'Sci-Fi', color: 'steel', items: ['movie-1'], created: 100, updated: 200 } },
       },
     });
     const exported = buildLibraryExport(controls.library);
@@ -140,6 +145,7 @@ describe('Afterframe web enhancements', () => {
     expect(exported.version).toBe(1);
     const parsed = parseLibraryImport(exported);
     expect(Object.keys(parsed?.saved ?? {})).toEqual(['movie-1', 'tv-2']);
+    expect(parsed?.folders?.f_1?.name).toBe('Sci-Fi');
 
     render(<ToastProvider><LibraryPage path="watchlist" query="" controls={controls} /></ToastProvider>);
     expect(screen.getByRole('heading', { level: 1, name: 'Library' })).toBeTruthy();
@@ -163,7 +169,7 @@ describe('Afterframe web enhancements', () => {
   });
 
   it('portals AfSelect options inside the Settings modal portal host and updates playback preference', async () => {
-    const setPreference = vi.fn(async () => {});
+    const setPreference = vi.fn(async () => true);
     const controls = makeControls({ setPreference });
     function SettingsOpener() {
       const openSettings = useSettings();

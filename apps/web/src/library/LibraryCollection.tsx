@@ -2,7 +2,7 @@ import { Popover } from '@base-ui/react/popover';
 import { isAnime } from '@afterframe/shared/discover';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  comicCover, libraryItemHref, navigate, playHref, request, resumeHref, routeWithParams, webHref,
+  comicCover, libraryItemHref, navigate, playerHref, playHref, request, resumeHref, routeWithParams, webHref,
   type Comic, type Details, type Title,
 } from '../catalog';
 import { InputField, ResultsSummary, SelectField } from '../Catalogue';
@@ -10,7 +10,7 @@ import { ActionLink, Artwork, Icon, MediaCard, Shelf } from '../components';
 import { ComicCard, readerHref } from '../Comics';
 import { EmptyState } from '../EmptyState';
 import {
-  effectiveWatchStatus, progressPercent, readingStatuses, resumeEntries, savedRating, titleCoverage,
+  effectiveWatchStatus, progressPercent, readingStatuses, resumeEntries, resumeFor, savedRating, titleCoverage,
   watchedEpisodeCount, watchStatuses, type LibraryControls, type SavedTitle, type WatchStatus,
 } from '../library';
 import { useToast } from '../Toast';
@@ -112,6 +112,7 @@ function CardQuickMenu({
   labels,
   controls,
   disabled,
+  canEditStatus,
   onChangeStatus,
 }: {
   item: SavedTitle;
@@ -120,6 +121,7 @@ function CardQuickMenu({
   labels: Record<WatchStatus, string>;
   controls: LibraryControls;
   disabled: boolean;
+  canEditStatus: boolean;
   onChangeStatus: (next: WatchStatus) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -139,25 +141,27 @@ function CardQuickMenu({
       <Popover.Portal>
         <Popover.Positioner className="af-popover-positioner" side="bottom" align="end" sideOffset={6}>
           <Popover.Popup className="af-popover-popup af-card-menu">
-            <div className="af-card-menu-section">
-              <span className="af-card-menu-label">Status</span>
-              <div className="af-card-menu-statuses">
-                {statusOrder.map(option => (
-                  <button
-                    key={option}
-                    type="button"
-                    className={`af-card-menu-pill is-${option} ${option === status ? 'is-selected' : ''}`}
-                    onClick={() => {
-                      setOpen(false);
-                      if (option !== status) onChangeStatus(option);
-                    }}
-                  >
-                    <span className={`af-status-dot is-${option}`} aria-hidden="true" />
-                    <span>{labels[option]}</span>
-                  </button>
-                ))}
+            {canEditStatus && (
+              <div className="af-card-menu-section">
+                <span className="af-card-menu-label">Status</span>
+                <div className="af-card-menu-statuses">
+                  {statusOrder.map(option => (
+                    <button
+                      key={option}
+                      type="button"
+                      className={`af-card-menu-pill is-${option} ${option === status ? 'is-selected' : ''}`}
+                      onClick={() => {
+                        setOpen(false);
+                        if (option !== status) onChangeStatus(option);
+                      }}
+                    >
+                      <span className={`af-status-dot is-${option}`} aria-hidden="true" />
+                      <span>{labels[option]}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
 
             <div className="af-card-menu-section">
               <span className="af-card-menu-label">Your rating</span>
@@ -194,12 +198,14 @@ function CardQuickMenu({
                             type="checkbox"
                             checked={checked}
                             onChange={() => {
-                              void controls.toggleFolderItem(folder.id, item.key);
-                              notify({
-                                message: checked
-                                  ? `Removed “${item.title}” from ${folder.name}.`
-                                  : `Added “${item.title}” to ${folder.name}.`,
-                                tone: 'default',
+                              void controls.toggleFolderItem(folder.id, item.key)?.then(ok => {
+                                if (!ok) return;
+                                notify({
+                                  message: checked
+                                    ? `Removed “${item.title}” from ${folder.name}.`
+                                    : `Added “${item.title}” to ${folder.name}.`,
+                                  tone: 'default',
+                                });
                               });
                             }}
                           />
@@ -650,6 +656,7 @@ export function LibraryCollection({
                       labels={labels}
                       controls={controls}
                       disabled={busy}
+                      canEditStatus={canEditStatus}
                       onChangeStatus={next => void handleStatusChange(item, next)}
                     />
                   </div>
@@ -751,11 +758,19 @@ export function LibraryCollection({
                     onChange={value => void controls.rate(item, Number(value))}
                   />
                   <FolderPickerPopover itemKey={item.key} itemTitle={item.title} controls={controls} compact />
-                  {item.type !== 'comic' && (
-                    <a className="af-icon-button" href={playHref(item)} aria-label={`Play ${item.title}`} title="Play">
-                      <Icon name="play" />
-                    </a>
-                  )}
+                  {item.type !== 'comic' && (() => {
+                    const isArchive = Boolean(item.archiveId) || !Number.isSafeInteger(item.id) || !/^(movie|tv)-\d+$/.test(item.key);
+                    const targetHref = isArchive
+                      ? playerHref(`edition/${encodeURIComponent(item.key)}/watch`)
+                      : item.type === 'tv'
+                        ? playHref(item, resumeFor(library, item)?.episode ?? { season: 1, number: 1 })
+                        : playHref(item);
+                    return (
+                      <a className="af-icon-button" href={targetHref} aria-label={`Play ${item.title}`} title="Play">
+                        <Icon name="play" />
+                      </a>
+                    );
+                  })()}
                   <button
                     type="button"
                     className="af-icon-button af-lib-row-remove"

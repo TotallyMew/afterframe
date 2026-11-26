@@ -53,6 +53,22 @@ test('recommendations count distinct watched media and exclude completed or drop
   const personalized = recommendationProfile({ saved, history: [entry(1), entry(2), entry(3)] });
   assert.equal(personalized.personalized, true);
   assert.deepEqual([...personalized.excluded].sort(), ['movie-9', 'tv-8001']);
+
+  // Disliked titles (score <= 3 on 10-point scale) must never become positive recommendation seeds
+  const hated = { key: 'movie-42', id: 42, title: 'Bad Movie', type: 'movie', genreIds: [27] };
+  const loved = { key: 'movie-43', id: 43, title: 'Great Movie', type: 'movie', genreIds: [18] };
+  const withDislike = recommendationProfile({
+    saved: {
+      'movie-42': { ...hated, watchStatus: 'completed' },
+      'movie-43': { ...loved, watchStatus: 'completed' },
+    },
+    ratings: {
+      'movie-42': { item: hated, score: 1, scale: 5 },
+      'movie-43': { item: loved, score: 9, scale: 10 },
+    },
+  });
+  assert.equal(withDislike.seeds.some(seed => seed.item.key === 'movie-42'), false);
+  assert.equal(withDislike.seeds.some(seed => seed.item.key === 'movie-43'), true);
 });
 
 test('discovery explains recommendations and filters dropped titles', async () => {

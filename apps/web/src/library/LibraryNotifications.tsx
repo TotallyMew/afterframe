@@ -52,8 +52,8 @@ export function LibraryNotifications({ controls }: { controls: LibraryControls }
             className="af-button af-secondary af-lib-clear-btn"
             disabled={!controls.ready || controls.isPending('notifications-read-all')}
             onClick={() => {
-              void controls.markAllNotificationsRead().then(() => {
-                notify({ message: 'All notifications marked as read.', tone: 'success' });
+              void controls.markAllNotificationsRead().then(ok => {
+                if (ok) notify({ message: 'All notifications marked as read.', tone: 'success' });
               });
             }}
           >

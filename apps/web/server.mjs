@@ -82,7 +82,7 @@ const server = createServer(async (request, response) => {
     return forward(request, response, railwayHealth ? publicOrigin?.host || `localhost:${port}` : request.headers.host);
   }
   if (!['GET', 'HEAD'].includes(request.method)) return reply(response, 405, 'Method unavailable.');
-  const staticFile = path === '/' ? 'index.html' : isAsset ? path.slice(1) : !extname(path) ? 'index.html' : null;
+  const staticFile = path === '/' ? 'index.html' : isAsset ? path.slice(1) : (spaRoute.test(path) || !extname(path)) ? 'index.html' : null;
   if (!staticFile) return reply(response, 404, 'Not found.');
   const file = new URL(staticFile, build);
   const type = assets[extname(staticFile)];

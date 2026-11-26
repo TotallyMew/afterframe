@@ -25,11 +25,11 @@ export function FolderPickerPopover({
   const folders = Object.values(controls.library.folders ?? {}).sort((a, b) => a.created - b.created);
   const assignedCount = folders.filter(folder => folder.items.includes(itemKey)).length;
 
-  function handleCreate(event: FormEvent) {
+  async function handleCreate(event: FormEvent) {
     event.preventDefault();
     const trimmed = newName.trim();
     if (!trimmed) return;
-    const created = controls.createFolder(trimmed, color, itemKey);
+    const created = await controls.createFolder(trimmed, color, itemKey);
     if (created) {
       setNewName('');
       notify({ message: `Created “${created.name}” and added “${itemTitle}”.`, tone: 'success' });
@@ -68,12 +68,14 @@ export function FolderPickerPopover({
                           checked={checked}
                           disabled={controls.isPending(`folder/${folder.id}`)}
                           onChange={() => {
-                            void controls.toggleFolderItem(folder.id, itemKey);
-                            notify({
-                              message: checked
-                                ? `Removed “${itemTitle}” from ${folder.name}.`
-                                : `Added “${itemTitle}” to ${folder.name}.`,
-                              tone: 'default',
+                            void controls.toggleFolderItem(folder.id, itemKey)?.then(ok => {
+                              if (!ok) return;
+                              notify({
+                                message: checked
+                                  ? `Removed “${itemTitle}” from ${folder.name}.`
+                                  : `Added “${itemTitle}” to ${folder.name}.`,
+                                tone: 'default',
+                              });
                             });
                           }}
                         />

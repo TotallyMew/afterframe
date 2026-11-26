@@ -28,9 +28,9 @@ export function FolderBar({
   const folders = Object.values(controls.library.folders ?? {}).sort((a, b) => a.created - b.created);
   const activeFolder = folders.find(f => f.id === activeFolderId);
 
-  function handleCreate(event: FormEvent) {
+  async function handleCreate(event: FormEvent) {
     event.preventDefault();
-    const created = controls.createFolder(newName, newColor);
+    const created = await controls.createFolder(newName, newColor);
     if (!created) return;
     setNewName('');
     setNewColor('ember');
@@ -38,10 +38,11 @@ export function FolderBar({
     notify({ message: `Created folder “${created.name}”.`, tone: 'success' });
   }
 
-  function handleRename(event: FormEvent) {
+  async function handleRename(event: FormEvent) {
     event.preventDefault();
     if (!editing || !editName.trim()) return;
-    void controls.renameFolder(editing.id, editName, editColor);
+    const saved = await controls.renameFolder(editing.id, editName, editColor);
+    if (!saved) return;
     notify({ message: `Updated folder “${editName.trim()}”.`, tone: 'success' });
     setEditing(null);
   }
@@ -53,8 +54,9 @@ export function FolderBar({
       confirmLabel: 'Delete folder',
     });
     if (!ok) return;
+    const deleted = await controls.deleteFolder(folder.id);
+    if (!deleted) return;
     if (activeFolderId === folder.id) onSelectFolder('');
-    void controls.deleteFolder(folder.id);
     notify({ message: `Deleted folder “${folder.name}”.`, tone: 'default' });
   }
 

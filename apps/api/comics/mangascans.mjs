@@ -51,7 +51,9 @@ export async function scansChapters(item) {
 }
 
 export async function scansPageList(item, chapterId) {
-  const { slug } = await findListing(item);
+  const match = await findListing(item);
+  if (!match?.slug) throw new Error('Manga Scans pages are temporarily unavailable.');
+  const { slug } = match;
   const number = chapterId.slice('scans-'.length);
   return cacheMetadata(`comics:scans:pages:${slug}:${number}`, 10 * minute, async () => {
     const result = await sourceHtml(`${origin}/chapter/${slug}-chapter-${number}/`, 'Manga Scans');

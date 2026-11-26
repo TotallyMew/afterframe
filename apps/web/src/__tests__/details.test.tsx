@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { playbackLanguage } from '@afterframe/shared/subtitles';
 import { DetailsPage } from '../Details';
@@ -16,23 +16,23 @@ function makeControls(overrides: Partial<LibraryControls> = {}): LibraryControls
     problems: {},
     error: '',
     refresh: async () => {},
-    toggleSaved: async () => {},
+    toggleSaved: async () => true,
     toggleWatched: vi.fn(async () => {}),
-    rate: async () => {},
-    setStatus: async () => {},
+    rate: async () => true,
+    setStatus: async () => true,
     setComicStatus: () => undefined,
-    setPreference: vi.fn(async () => {}),
+    setPreference: vi.fn(async () => true),
     recordReading: () => undefined,
-    removeReading: async () => {},
+    removeReading: async () => true,
     recordProgress: vi.fn(),
     recordHistory: vi.fn(),
     removeHistory: () => undefined,
-    clearHistory: async () => {},
-    markNotification: async () => {},
-    markAllNotificationsRead: async () => {},
-    createFolder: () => undefined,
+    clearHistory: async () => true,
+    markNotification: async () => true,
+    markAllNotificationsRead: async () => true,
+    createFolder: async () => undefined,
     renameFolder: () => undefined,
-    deleteFolder: () => undefined,
+    deleteFolder: async () => true,
     toggleFolderItem: () => undefined,
     importLibrary: async () => ({ totalImported: 0, skipped: 0 }),
     updateAccount: () => {},
@@ -45,7 +45,7 @@ function makeControls(overrides: Partial<LibraryControls> = {}): LibraryControls
     recoveryStatus: '',
     recoveryError: '',
     undoable: undefined,
-    undo: () => undefined,
+    undo: async () => {},
     mutationMessage: '',
     ...overrides,
   };
@@ -162,5 +162,107 @@ describe('DetailsPage & ComicDetailsPage regressions', () => {
     expect(playbackLanguage('scc')).toBe('Serbian');
     expect(playbackLanguage('rum')).toBe('Romanian');
     expect(playbackLanguage('en')).toBe('English');
+  });
+
+  it('removes Shuffle button and shows Sub/Dub toggle with distinct airing dates on dubbed anime details', async () => {
+    window.history.replaceState(null, '', '/tv/220542');
+    window.localStorage.removeItem('afterframe.animeShowAudio');
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/api/tv/220542') {
+        return new Response(JSON.stringify({
+          id: 220542,
+          name: 'The Apothecary Diaries',
+          original_language: 'ja',
+          first_air_date: '2023-10-21',
+          status: 'Returning Series',
+          number_of_seasons: 3,
+          number_of_episodes: 60,
+          genres: [{ id: 16, name: 'Animation' }],
+          seasons: [
+            { season_number: 1, name: 'Season 1', episode_count: 24, air_date: '2023-10-21' },
+            { season_number: 2, name: 'Season 2', episode_count: 24, air_date: '2025-01-10' },
+            { season_number: 3, name: 'Season 3', episode_count: 12, air_date: '2026-10-02' },
+          ],
+          anime_dub: { available: true, next_episode_to_air: { season_number: 3, episode_number: 7, air_date: '2026-11-27' } },
+        }), { status: 200 });
+      }
+      if (url === '/api/tv/220542/season/1') {
+        return new Response(JSON.stringify({
+          dub_available: true,
+          episodes: [
+            { season_number: 1, episode_number: 1, name: 'Maomao', air_date: '2023-10-21', dub_aired: true, dub_air_date: '2023-11-04', runtime: 24 },
+            { season_number: 1, episode_number: 2, name: 'Chilly Apothecary', air_date: '2023-10-28', dub_aired: false, dub_air_date: '2099-01-01', runtime: 24 },
+          ],
+        }), { status: 200 });
+      }
+      if (url === '/api/tv/220542/related') return new Response(JSON.stringify({ results: [] }), { status: 200 });
+      if (url === '/api/tv/220542/ratings-map') return new Response(JSON.stringify({ seasons: [] }), { status: 200 });
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+
+    render(<DetailsPage type="tv" id={220542} controls={makeControls()} />);
+
+    await waitFor(() => expect(screen.getByRole('link', { name: 'Maomao' })).toBeTruthy());
+    // Shuffle must be gone
+    expect(screen.queryByRole('button', { name: /Shuffle/i })).toBeNull();
+    // All 3 seasons must render as tabs
+    expect(screen.getAllByRole('tab').map(t => t.textContent)).toEqual(['Season 1', 'Season 2', 'Season 3']);
+    // Sub/Dub toggle must render; Ep 2 is playable in Sub
+    const subBtn = screen.getByRole('button', { name: 'Sub' });
+    const dubBtn = screen.getByRole('button', { name: 'Dub' });
+    expect(subBtn.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('link', { name: 'Chilly Apothecary' })).toBeTruthy();
+
+    // Switching to Dub shows Dub airing dates and marks unaired dub episode as upcoming (not a link)
+    fireEvent.click(dubBtn);
+    expect(dubBtn.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.queryByRole('link', { name: 'Chilly Apothecary' })).toBeNull();
+    expect(screen.getByText(/Airs.*2099/)).toBeTruthy();
+  });
+
+  it('defaults dubbed anime to Dub when preferred audio is English and hides Play CTA for unaired TV shows', async () => {
+    window.history.replaceState(null, '', '/tv/330001');
+    window.localStorage.removeItem('afterframe.animeShowAudio');
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/api/tv/330001') {
+        return new Response(JSON.stringify({
+          id: 330001,
+          name: 'Future Anime',
+          original_language: 'ja',
+          first_air_date: '2099-04-01',
+          status: 'Planned',
+          number_of_seasons: 1,
+          number_of_episodes: 12,
+          genres: [{ id: 16, name: 'Animation' }],
+          seasons: [{ season_number: 1, name: 'Season 1', episode_count: 12, air_date: '2099-04-01' }],
+          anime_dub: { available: true },
+        }), { status: 200 });
+      }
+      if (url === '/api/tv/330001/season/1') {
+        return new Response(JSON.stringify({
+          dub_available: true,
+          episodes: [
+            { season_number: 1, episode_number: 1, name: 'Premiere', air_date: '2099-04-01', dub_aired: false, dub_air_date: '2099-04-15' },
+          ],
+        }), { status: 200 });
+      }
+      if (url === '/api/tv/330001/related') return new Response(JSON.stringify({ results: [] }), { status: 200 });
+      if (url === '/api/tv/330001/ratings-map') return new Response(JSON.stringify({ seasons: [] }), { status: 200 });
+      return new Response(JSON.stringify({}), { status: 200 });
+    });
+
+    const controls = makeControls({
+      library: {
+        saved: {}, watched: {}, ratings: {}, progress: {}, reading: {}, history: {}, notifications: {}, folders: {},
+        preferences: { audioLanguage: 'English' },
+      },
+    });
+    render(<DetailsPage type="tv" id={330001} controls={controls} />);
+
+    await waitFor(() => expect(screen.getByText('Premiere')).toBeTruthy());
+    expect(screen.getByRole('button', { name: 'Dub' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.queryByRole('link', { name: /Play S1 E1/i })).toBeNull();
   });
 });

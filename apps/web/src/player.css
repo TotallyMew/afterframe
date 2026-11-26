@@ -194,7 +194,7 @@
   pointer-events: none;
   transition: opacity 220ms var(--af-ease-out);
 }
-.af-video-box.is-paused.has-played:not(.is-ended, :has(.af-video-error, .af-embed-recovery, .af-player-menu[open])) > .af-player-pause {
+.af-video-box.is-paused:is(.has-played, .is-autoplay-blocked):not(.is-ended, :has(.af-video-error, .af-embed-recovery, .af-embed-loading, .af-player-menu[open])) > .af-player-pause {
   opacity: 1;
 }
 .af-player-pause-copy {
@@ -247,7 +247,7 @@
   pointer-events: none;
   transition: background-color var(--af-duration-fast) var(--af-ease-out), border-color var(--af-duration-fast) var(--af-ease-out), transform var(--af-duration-fast) var(--af-ease-out);
 }
-.af-video-box.is-paused.has-played:not(.is-ended, :has(.af-video-error, .af-embed-recovery, .af-player-menu[open])) .af-pause-center-play {
+.af-video-box.is-paused:is(.has-played, .is-autoplay-blocked):not(.is-ended, :has(.af-video-error, .af-embed-recovery, .af-embed-loading, .af-player-menu[open])) .af-pause-center-play {
   pointer-events: auto;
 }
 .af-pause-center-play:hover {
@@ -466,14 +466,14 @@
 .af-player-seek::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; background: var(--seek-fill); }
 .af-player-seek::-moz-range-track { height: 4px; border-radius: 2px; background: var(--seek-fill); }
 .af-player-seek.has-buffer-data::-webkit-slider-runnable-track {
-  height: 5px;
-  background: linear-gradient(to right, var(--player-progress) var(--played), transparent var(--played)) top / 100% 3px no-repeat,
-    var(--buffered-track) bottom / 100% 2px no-repeat, color-mix(in srgb, var(--af-ink) 22%, transparent);
+  height: 4px;
+  background: linear-gradient(to right, var(--player-progress) var(--played), transparent var(--played)) top / 100% 2.5px no-repeat,
+    var(--buffered-track) bottom / 100% 1.5px no-repeat, color-mix(in srgb, var(--af-ink) 22%, transparent);
 }
 .af-player-seek.has-buffer-data::-moz-range-track {
-  height: 5px;
-  background: linear-gradient(to right, var(--player-progress) var(--played), transparent var(--played)) top / 100% 3px no-repeat,
-    var(--buffered-track) bottom / 100% 2px no-repeat, color-mix(in srgb, var(--af-ink) 22%, transparent);
+  height: 4px;
+  background: linear-gradient(to right, var(--player-progress) var(--played), transparent var(--played)) top / 100% 2.5px no-repeat,
+    var(--buffered-track) bottom / 100% 1.5px no-repeat, color-mix(in srgb, var(--af-ink) 22%, transparent);
 }
 .af-player-seek::-webkit-slider-thumb { appearance: none; width: 12px; height: 12px; margin-top: -4px; border: 0; border-radius: 50%; background: var(--af-on-action); }
 .af-player-seek::-moz-range-thumb { width: 12px; height: 12px; border: 0; border-radius: 50%; background: var(--af-on-action); }
@@ -484,18 +484,17 @@
   position: absolute;
   z-index: 2;
   inset: 50% 6px auto;
-  height: 6px;
+  height: 3px;
   transform: translateY(-50%);
   pointer-events: none;
 }
 .af-player-marker {
   position: absolute;
   height: 100%;
-  min-width: 6px;
-  border-radius: 3px;
+  min-width: 3px;
+  border-radius: 1.5px;
   background: var(--af-segment-intro);
-  opacity: .96;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--af-oled) 55%, transparent);
+  opacity: .88;
 }
 .af-player-marker[data-kind="intro"] { background: var(--af-segment-intro); }
 .af-player-marker[data-kind="recap"] { background: var(--af-segment-recap); }

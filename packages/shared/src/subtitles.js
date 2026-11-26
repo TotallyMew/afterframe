@@ -136,7 +136,16 @@ export async function loadSubtitle(track, signal) {
     const [, startTime, endTime] = lines[timingIndex].match(cueTiming);
     const start = cueSeconds(startTime);
     const end = cueSeconds(endTime);
-    const text = lines.slice(timingIndex + 1).join('\n').replace(/<[^>]*>/g, '').trim();
+    const text = lines.slice(timingIndex + 1).join('\n')
+      .replace(/\{\\[^}]*\}/g, '')
+      .replace(/<[^>]*>/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;|&apos;/gi, "'")
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .trim();
     if (end > start && text) cues.push({ start, end, text });
   }
   if (!cues.length) throw new Error('This subtitle file has no readable captions.');

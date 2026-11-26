@@ -5,6 +5,8 @@ export function EmbedNoticeBar({
   providerControls,
   animeEligible,
   embedStatus,
+  streamMeta,
+  fallbackNotice,
   onSwitchProvider,
   onToggleProviderControls,
   onReload,
@@ -13,17 +15,22 @@ export function EmbedNoticeBar({
   providerControls: boolean;
   animeEligible: boolean;
   embedStatus: { message: string; canRetry: boolean };
+  streamMeta?: string;
+  fallbackNotice?: string;
   onSwitchProvider: (next: AnimeProvider) => void;
   onToggleProviderControls: () => void;
   onReload: () => void;
 }) {
-  const isExternalControls = provider !== 'cinesrc' || providerControls;
-  const modeLabel = isExternalControls ? 'External controls' : 'Afterframe controls';
-  const detail = embedStatus.message || (
-    isExternalControls
-      ? `${animePlayers[provider].label} handles playback controls for this stream.`
-      : `Streaming via ${animePlayers[provider].label}.`
-  );
+  const isExternalControls = provider === 'cinesrc' && providerControls;
+  const modeLabel = isExternalControls ? 'External controls' : (streamMeta || 'Afterframe controls');
+  const detail = (embedStatus.canRetry ? embedStatus.message : '')
+    || fallbackNotice
+    || embedStatus.message
+    || (
+      isExternalControls
+        ? `${animePlayers[provider].label} handles playback controls for this stream.`
+        : `Streaming via ${animePlayers[provider].label}.`
+    );
 
   return <div className="af-embed-notice" data-mode={isExternalControls ? 'external' : 'afterframe'}>
     <div className="af-embed-notice-info">
@@ -39,7 +46,7 @@ export function EmbedNoticeBar({
       {provider === 'cinesrc' && <button type="button" className="af-button af-secondary af-source-btn" onClick={onToggleProviderControls}>
         {providerControls ? 'Use Afterframe controls' : 'Use CineSrc controls'}
       </button>}
-      {(embedStatus.canRetry || provider === 'cinesrc') && <button type="button" className="af-button af-secondary af-source-btn" onClick={onReload}>
+      {(embedStatus.canRetry || provider === 'cinesrc' || provider === 'emnex') && <button type="button" className="af-button af-secondary af-source-btn" onClick={onReload}>
         Reload
       </button>}
     </div>

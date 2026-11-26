@@ -149,3 +149,83 @@ test('native MangaDex pages are served through the local image route', async t =
   assert.equal(refreshed.status, 200);
   assert.equal(manifests, 2);
 });
+
+test('comics chapter counts endpoint extracts aggregate chapter counts and ignores invalid IDs', async t => {
+  const ongoingId = '00000000-0000-0000-0000-000000002001';
+  const emptyId = '00000000-0000-0000-0000-000000002002';
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async url => {
+    calls++;
+    assert.equal(url.origin, 'https://api.mangadex.org');
+    if (url.pathname === `/manga/${ongoingId}/aggregate`) {
+      return Response.json({
+        result: 'ok',
+        volumes: {
+          1: { volume: '1', count: 2, chapters: { 1: { chapter: '1' }, '12.5': { chapter: '12.5' } } },
+          none: { volume: 'none', count: 2, chapters: { 145: { chapter: '145' }, '145.5': { chapter: '145.5' } } },
+        },
+      });
+    }
+    if (url.pathname === `/manga/${emptyId}/aggregate`) {
+      return Response.json({ result: 'ok', volumes: [] });
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  });
+
+  const first = await comicsApi('/api/comics/counts', new URLSearchParams({
+    ids: `${ongoingId},not-a-uuid,${emptyId},${ongoingId}`,
+  }));
+  assert.equal(first.status, 200);
+  assert.deepEqual(first.body, { counts: { [ongoingId]: '145' } });
+  assert.equal(calls, 2);
+
+  // Cached on second request.
+  const cached = await comicsApi('/api/comics/counts', new URLSearchParams({ ids: ongoingId }));
+  assert.equal(cached.status, 200);
+  assert.deepEqual(cached.body, { counts: { [ongoingId]: '145' } });
+  assert.equal(calls, 2);
+});
+
+test('comicPageResponse enforces contentRating for native MangaDex chapters and normalizes fractional chapter numbers', async t => {
+  const blockedTitle = '00000000-0000-0000-0000-000000009001';
+  const blockedChapter = '00000000-0000-0000-0000-000000009002';
+  const safeTitle = '00000000-0000-0000-0000-000000009003';
+  const chA = '00000000-0000-0000-0000-000000009004';
+  const chB = '00000000-0000-0000-0000-000000009005';
+  const chUnnumbered = '00000000-0000-0000-0000-000000009006';
+
+  t.mock.method(globalThis, 'fetch', async url => {
+    if (url.pathname === `/manga/${blockedTitle}`) {
+      return Response.json({
+        result: 'ok',
+        data: { id: blockedTitle, attributes: { title: { en: 'Blocked' }, originalLanguage: 'ja', contentRating: 'pornographic' }, relationships: [] },
+      });
+    }
+    if (url.pathname === `/manga/${safeTitle}`) {
+      return Response.json({
+        result: 'ok',
+        data: { id: safeTitle, attributes: { title: { en: 'Decimal Test' }, originalLanguage: 'ja', contentRating: 'safe', availableTranslatedLanguages: ['en'] }, relationships: [] },
+      });
+    }
+    if (url.pathname === `/manga/${safeTitle}/feed`) {
+      return Response.json({
+        result: 'ok',
+        data: [
+          { id: chUnnumbered, attributes: { chapter: null, title: 'Omake', translatedLanguage: 'en', pages: 1 }, relationships: [] },
+          { id: chA, attributes: { chapter: '10.50', title: '', translatedLanguage: 'en', pages: 1 }, relationships: [] },
+          { id: chB, attributes: { chapter: '10.5', title: '', translatedLanguage: 'en', pages: 1 }, relationships: [] },
+        ],
+        total: 3,
+      });
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  });
+
+  const blocked = await comicPageResponse(`/comic-page/${blockedTitle}/${blockedChapter}/1`, new AbortController().signal);
+  assert.equal(blocked, null);
+
+  const list = await comicsApi(`/api/comics/${safeTitle}/chapters`, new URLSearchParams({ all: '1' }));
+  assert.equal(list.status, 200);
+  // Both 10.50 and 10.5 normalize to '10.5', and unnumbered Omake sorts last (after 10.5)
+  assert.deepEqual(list.body.results.map(r => r.number), ['10.5', '10.5', null]);
+});

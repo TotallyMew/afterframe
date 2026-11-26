@@ -8,10 +8,18 @@ import type { LibraryControls } from '../library';
 import { PlayerGlyph } from './PlayerGlyph';
 import { formatClock } from './route';
 import { SubtitleMenu, type CaptionStyle } from './SubtitleMenu';
-import { qualityOptions, speedOptions, type ActiveMedia, type VideoWithAudioTracks } from './types';
+import { qualityOptions, speedOptions, type ActiveMedia, type EmnexAvailableTypes, type EmnexServerOption, type VideoWithAudioTracks } from './types';
 
 export function PlayerControls({
   media,
+  useNativeVideo,
+  isEmnex,
+  emnexAudio,
+  emnexAvailableTypes,
+  emnexServer,
+  emnexServers,
+  hlsLevels,
+  hlsLevel,
   controls,
   position,
   displayTime,
@@ -65,6 +73,10 @@ export function PlayerControls({
   onChangeCaptionStyle,
   onSpeedChange,
   onQualityChange,
+  onEmnexAudioChange,
+  onEmnexServerChange,
+  onHlsLevelChange,
+  onOpenSettings,
   onOpenProviderSources,
   onTogglePip,
   onToggleTheatre,
@@ -73,6 +85,14 @@ export function PlayerControls({
   onNavigateEpisode,
 }: {
   media: ActiveMedia;
+  useNativeVideo: boolean;
+  isEmnex?: boolean;
+  emnexAudio?: 'sub' | 'dub';
+  emnexAvailableTypes?: EmnexAvailableTypes | null;
+  emnexServer?: string;
+  emnexServers?: EmnexServerOption[] | null;
+  hlsLevels?: { index: number; label: string }[];
+  hlsLevel?: number;
   controls: LibraryControls;
   position: PlaybackPosition;
   displayTime: number;
@@ -126,6 +146,10 @@ export function PlayerControls({
   onChangeCaptionStyle: (next: CaptionStyle) => void;
   onSpeedChange: (val: number) => void;
   onQualityChange: (val: string) => void;
+  onEmnexAudioChange?: (audio: 'sub' | 'dub') => void;
+  onEmnexServerChange?: (server: string) => void;
+  onHlsLevelChange?: (level: number) => void;
+  onOpenSettings?: () => void;
   onOpenProviderSources: () => void;
   onTogglePip?: () => void;
   onToggleTheatre?: () => void;
@@ -140,7 +164,14 @@ export function PlayerControls({
   const skipIntro = prefs.intro ?? preferenceDefaults.intro;
   const skipRecap = prefs.recap ?? preferenceDefaults.recap;
   const skipCredits = prefs.credits ?? preferenceDefaults.credits;
-  const pipSupported = !media.embed && typeof document !== 'undefined' && Boolean(document.pictureInPictureEnabled);
+  const pipSupported = useNativeVideo && typeof document !== 'undefined' && Boolean(document.pictureInPictureEnabled);
+  const isCineSrc = Boolean(media.embed && !isEmnex);
+  const emnexServerChoices = isEmnex
+    ? [...new Set([
+      ...(emnexServer ? [emnexServer] : []),
+      ...(emnexServers ?? []).filter(entry => entry.type === emnexAudio).map(entry => entry.provider),
+    ])]
+    : [];
 
   const audioBody = <>
     <label className="af-player-popup-head" htmlFor="af-player-volume">
@@ -170,7 +201,47 @@ export function PlayerControls({
         {speedOptions.map(val => <button key={val} type="button" aria-pressed={speed === val} onClick={() => onSpeedChange(val)}>{`${val}×`}</button>)}
       </div>
     </div>
-    {media.embed && <div>
+    {isEmnex && onEmnexAudioChange && <div>
+      <p className="af-meta">Audio</p>
+      <div className="af-player-choice-group" role="group" aria-label="Anime audio">
+        <button
+          type="button"
+          aria-pressed={emnexAudio === 'sub'}
+          disabled={emnexAvailableTypes ? !emnexAvailableTypes.sub : false}
+          title={emnexAvailableTypes && !emnexAvailableTypes.sub ? 'Sub unavailable for this episode' : undefined}
+          onClick={() => onEmnexAudioChange('sub')}
+        >
+          {emnexAvailableTypes && !emnexAvailableTypes.sub ? 'Sub (N/A)' : 'Sub'}
+        </button>
+        <button
+          type="button"
+          aria-pressed={emnexAudio === 'dub'}
+          disabled={emnexAvailableTypes ? !emnexAvailableTypes.dub : false}
+          title={emnexAvailableTypes && !emnexAvailableTypes.dub ? 'Dub unavailable for this episode' : undefined}
+          onClick={() => onEmnexAudioChange('dub')}
+        >
+          {emnexAvailableTypes && !emnexAvailableTypes.dub ? 'Dub (N/A)' : 'Dub'}
+        </button>
+      </div>
+    </div>}
+    {isEmnex && onEmnexServerChange && emnexServerChoices.length > 0 && <div>
+      <p className="af-meta">Server</p>
+      <div className="af-player-choice-group" role="group" aria-label="Anime server">
+        {emnexServerChoices.map(srv => (
+          <button key={srv} type="button" aria-pressed={emnexServer === srv} onClick={() => onEmnexServerChange(srv)}>{srv}</button>
+        ))}
+      </div>
+    </div>}
+    {isEmnex && onHlsLevelChange && hlsLevels && hlsLevels.length > 1 && <div>
+      <p className="af-meta">Quality</p>
+      <div className="af-player-choice-group" role="group" aria-label="Video quality">
+        <button type="button" aria-pressed={hlsLevel === -1} onClick={() => onHlsLevelChange(-1)}>Auto</button>
+        {hlsLevels.map(lvl => (
+          <button key={lvl.index} type="button" aria-pressed={hlsLevel === lvl.index} onClick={() => onHlsLevelChange(lvl.index)}>{lvl.label}</button>
+        ))}
+      </div>
+    </div>}
+    {isCineSrc && <div>
       <p className="af-meta">Preferred quality</p>
       <div className="af-player-choice-group" role="group" aria-label="Preferred quality">
         {qualityOptions.map(([val, lbl]) => <button key={val} type="button" aria-pressed={quality === val} onClick={() => onQualityChange(val)}>{lbl}</button>)}
@@ -206,7 +277,7 @@ export function PlayerControls({
         {nativeAudioTracks.map(t => <option key={t.index} value={t.index}>{t.label}</option>)}
       </select>
     </label>}
-    {media.embed && <button type="button" className="af-player-provider-toggle" onClick={() => { setSettingsSheetOpen(false); onOpenProviderSources(); }}>
+    {isCineSrc && <button type="button" className="af-player-provider-toggle" onClick={() => { setSettingsSheetOpen(false); onOpenProviderSources(); }}>
       <span>Provider video sources</span><Icon name="right" />
     </button>}
   </>;
@@ -244,8 +315,8 @@ export function PlayerControls({
         value={displayTime}
         disabled={!(position.duration > 0)}
         aria-label="Seek"
-        title={media.embed ? 'This video source does not report buffered ranges' : undefined}
-        aria-description={media.embed ? 'This video source does not report buffered ranges' : undefined}
+        title={!useNativeVideo ? 'This video source does not report buffered ranges' : undefined}
+        aria-description={!useNativeVideo ? 'This video source does not report buffered ranges' : undefined}
         aria-valuetext={position.duration > 0 ? `${formatClock(displayTime)} of ${formatClock(position.duration)}` : formatClock(displayTime)}
         style={{ '--played': playedPct, '--buffered-track': bufferedCss || 'none' } as CSSProperties}
         onPointerDown={() => { onScrubStart(); onRevealControls(); }}
@@ -366,7 +437,7 @@ export function PlayerControls({
             className="af-player-btn af-player-utility af-player-tune-btn"
             aria-label="Playback settings"
             title="Playback settings"
-            onClick={() => setSettingsSheetOpen(true)}
+            onClick={() => { setSettingsSheetOpen(true); onOpenSettings?.(); }}
           >
             <PlayerGlyph name="tune" />
             {speed !== 1 && <span className="af-speed-badge af-tabular">{speed}×</span>}
@@ -385,7 +456,7 @@ export function PlayerControls({
             </Dialog.Portal>
           </Dialog.Root>
         </> : (
-          <details ref={settingsMenuRef} className="af-player-menu" onToggle={event => { if (event.currentTarget.open) onCloseOtherMenus(event.currentTarget); }}>
+          <details ref={settingsMenuRef} className="af-player-menu" onToggle={event => { if (event.currentTarget.open) { onCloseOtherMenus(event.currentTarget); onOpenSettings?.(); } }}>
             <summary className="af-player-btn af-player-utility af-player-tune-btn" aria-label="Playback settings" title="Playback settings">
               <PlayerGlyph name="tune" />
               {speed !== 1 && <span className="af-speed-badge af-tabular">{speed}×</span>}

@@ -36,7 +36,7 @@ export function LibraryHistory({ controls }: { controls: LibraryControls }) {
     const ids = new Set<string>();
     for (let i = 0; i < rawHistory.length; i++) {
       const [id, entry] = rawHistory[i];
-      if (rawHistory.slice(i + 1).some(([, prior]) => prior.mediaKey === entry.mediaKey && prior.completed)) {
+      if (entry.completed && rawHistory.slice(i + 1).some(([, prior]) => prior.mediaKey === entry.mediaKey && prior.completed)) {
         ids.add(id);
       }
     }
@@ -80,8 +80,8 @@ export function LibraryHistory({ controls }: { controls: LibraryControls }) {
       confirmLabel: 'Clear history',
     });
     if (!ok) return;
-    await controls.clearHistory();
-    notify({ message: 'Viewing history cleared.', tone: 'default' });
+    const cleared = await controls.clearHistory();
+    if (cleared) notify({ message: 'Viewing history cleared.', tone: 'default' });
   }
 
   function handleRemoveEntry(id: string, entry: History) {
@@ -91,7 +91,7 @@ export function LibraryHistory({ controls }: { controls: LibraryControls }) {
       tone: 'default',
       action: {
         label: 'Undo',
-        onAction: () => controls.recordHistory(id, entry),
+        onAction: () => controls.recordHistory(id, entry, Date.now()),
       },
     });
   }

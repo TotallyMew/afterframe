@@ -93,7 +93,7 @@ export function ResultsSummary({ count, route, filters, clear, labels = {}, load
     const remaining = new URLSearchParams(filters);
     remaining.delete(key);
     remaining.delete('page');
-    return webHref(routeWithParams(route, remaining));
+    return remaining.size ? webHref(routeWithParams(route, remaining)) : clear;
   };
   if (count == null && !active.length && !loading) return null;
   return <div className="af-results-bar">
@@ -323,9 +323,10 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
     const values = new FormData(event.currentTarget);
     const from = Number(values.get('from'));
     const to = Number(values.get('to'));
-    if (from && to && from > to) { setFormError('The starting year must come before the ending year.'); form.current?.querySelector<HTMLInputElement>('[name=from]')?.focus(); return; }
+    if (from && to && from > to) { setFormError('The starting year must come before the ending year.'); form.current?.querySelector<HTMLInputElement>('[name=from]')?.focus(); return false; }
     setFormError('');
     navigate(filterRoute(path, values, params));
+    return true;
   }
 
   const imdbValue = params.get('imdb') || '';
@@ -338,8 +339,7 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
 
   function submitMobile(event: FormEvent<HTMLFormElement>) {
-    submit(event);
-    setMobileFiltersOpen(false);
+    if (submit(event)) setMobileFiltersOpen(false);
   }
 
   return <div className="af-wrap af-directory">
@@ -370,7 +370,7 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
         )}
         <MobileFilterSheet open={mobileFiltersOpen} onOpenChange={setMobileFiltersOpen} title="Filters" activeCount={totalFilterCount}>
           <form className="af-mobile-filter-form" ref={form} onSubmit={submitMobile}>
-            <SelectField label="Genre" name="category" empty="All genres" value={params.get('category') || params.get('genre') || ''} options={catalogGenres.map(genre => [genre, genre])} />
+            {!animeSearch && <SelectField label="Genre" name="category" empty="All genres" value={params.get('category') || params.get('genre') || ''} options={catalogGenres.map(genre => [genre, genre])} />}
             {!releases && <SelectField label="Decade" name="decade" empty="Any decade" value={params.get('decade') || ''} options={decadeOptions} />}
             {!search && <SelectField label="Minimum IMDb rating" name="imdb" empty="Any rating" value={imdbValue} options={imdbOptions} />}
             {!search && !releases && <SelectField label="Sort by" name="sort" value={params.get('sort') || 'popular'} options={sortOptions} />}
@@ -385,7 +385,7 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
       </div>
     ) : (
       <form className="af-field-bar" ref={form} onSubmit={submit}>
-        <SelectField label="Genre" name="category" empty="All genres" value={params.get('category') || params.get('genre') || ''} options={catalogGenres.map(genre => [genre, genre])} />
+        {!animeSearch && <SelectField label="Genre" name="category" empty="All genres" value={params.get('category') || params.get('genre') || ''} options={catalogGenres.map(genre => [genre, genre])} />}
         {!releases && <SelectField label="Decade" name="decade" empty="Any decade" value={params.get('decade') || ''} options={decadeOptions} />}
         {!search && <SelectField label="Minimum IMDb rating" name="imdb" empty="Any rating" value={imdbValue} options={imdbOptions} />}
         {!search && !releases && <SelectField label="Sort by" name="sort" value={params.get('sort') || 'popular'} options={sortOptions} />}

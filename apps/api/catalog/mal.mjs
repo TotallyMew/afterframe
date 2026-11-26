@@ -1,5 +1,5 @@
 import { cacheMetadata } from './metadata.mjs';
-import { animeSource } from './anime.mjs';
+import { animeMalSource } from './anime.mjs';
 
 export async function malRating(type, id, strict = false) {
   const clientId = process.env.MAL_CLIENT_ID?.trim();
@@ -20,16 +20,7 @@ export async function malRating(type, id, strict = false) {
 
 export async function catalogAnimeRating(type, id, season, strict = false) {
   if (!process.env.MAL_CLIENT_ID?.trim()) return null;
-  const source = await animeSource(type, id, season, 1).catch(error => { if (strict) throw error; return null; });
-  if (!source) return null;
-  const mal = await cacheMetadata(`anilist-mal:${source.id}`, 7 * 86400000, async () => {
-    const response = await fetch('https://graphql.anilist.co', {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ query: 'query($id:Int!) { Media(id:$id,type:ANIME) { idMal } }', variables: { id: source.id } }),
-      signal: AbortSignal.timeout(5500),
-    });
-    if (!response.ok) { await response.body?.cancel(); throw new Error('AniList is unavailable.'); }
-    return (await response.json()).data?.Media?.idMal || null;
-  }).catch(error => { if (strict) throw error; return null; });
-  return malRating('anime', mal, strict);
+  const source = await animeMalSource(type, id, season, 1).catch(error => { if (strict) throw error; return null; });
+  if (!source?.malId) return null;
+  return malRating('anime', source.malId, strict);
 }

@@ -48,6 +48,8 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
   const [seasonAttempt, setSeasonAttempt] = useState(0);
   const [adjacent, setAdjacent] = useState<{ previous?: EpisodePosition & { key?: string }; next?: EpisodePosition & { key?: string }; ready: boolean }>({ ready: false });
   const [activeProvider, setActiveProvider] = useState<AnimeProvider | null>(null);
+  const [preferredAnimeAudio, setPreferredAnimeAudio] = useState<'sub' | 'dub' | null>(null);
+  const [autoPlayEpisode, setAutoPlayEpisode] = useState(false);
   const [providerControls, setProviderControls] = useState(false);
   const [preferredQuality, setPreferredQuality] = useState<string | undefined>(undefined);
   const [theatreMode, setTheatreMode] = useState(false);
@@ -302,6 +304,7 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
     const current = loadedRef.current;
     if (!current) return;
     setEpisodesOpen(false);
+    setAutoPlayEpisode(true);
     const nextHref = target.key
       ? playerHref(`edition/${encodeURIComponent(current.item.key)}/watch/${encodeURIComponent(target.key)}`, originBack)
       : playerHref(`${current.item.type}/${current.item.id}/s${target.season}e${target.number}`, originBack);
@@ -494,6 +497,9 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
         controls={controls}
         initialProvider={activeProvider}
         onProviderChange={setActiveProvider}
+        initialAnimeAudio={preferredAnimeAudio}
+        onAnimeAudioChange={setPreferredAnimeAudio}
+        autoPlayEpisode={autoPlayEpisode}
         providerControls={providerControls}
         onProviderControlsChange={setProviderControls}
         preferredQuality={preferredQuality}

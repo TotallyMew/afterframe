@@ -12,7 +12,7 @@ services:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "-e", "const base='http://127.0.0.1:'+process.env.PORT; Promise.all([fetch(base+'/api/health'),fetch(base+'/',{method:'HEAD'})]).then(results=>process.exit(results.every(result=>result.ok)?0:1),()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "const http=require('node:http'); const host=process.env.AFTERFRAME_ORIGIN?new URL(process.env.AFTERFRAME_ORIGIN).host:'127.0.0.1:'+process.env.PORT; const check=(path,method='GET')=>new Promise(resolve=>{const req=http.request({host:'127.0.0.1',port:process.env.PORT,path,method,headers:{host}},r=>{r.resume();resolve(r.statusCode>=200&&r.statusCode<300);});req.on('error',()=>resolve(false));req.end();}); Promise.all([check('/api/health'),check('/','HEAD')]).then(r=>process.exit(r.every(Boolean)?0:1));"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -29,12 +29,13 @@ services:
       TMDB_API_KEY: ${TMDB_API_KEY:-}
       OMDB_API_KEY: ${OMDB_API_KEY:-}
       MAL_CLIENT_ID: ${MAL_CLIENT_ID:-}
+      EMNEX_API_KEY: ${EMNEX_API_KEY:-}
       AFTERFRAME_REGISTRATION: ${AFTERFRAME_REGISTRATION:-}
     depends_on:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "-e", "require('node:http').get('http://127.0.0.1:8080/api/health',{headers:{host:'localhost:'+process.env.AFTERFRAME_WEB_PORT}},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "const host=process.env.AFTERFRAME_ORIGIN?new URL(process.env.AFTERFRAME_ORIGIN).host:'localhost:'+process.env.AFTERFRAME_WEB_PORT; require('node:http').get('http://127.0.0.1:8080/api/health',{headers:{host}},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 5s
       timeout: 5s
       retries: 12

@@ -162,6 +162,7 @@ export function buildLibraryExport(library: Library): LibraryExportBundle {
       preferences: library.preferences,
       reading: library.reading,
       history: library.history,
+      folders: library.folders ?? {},
     },
   };
 }
@@ -171,7 +172,7 @@ export function parseLibraryImport(raw: unknown): Partial<Library> | null {
   const candidate = (raw as { library?: unknown }).library && typeof (raw as { library?: unknown }).library === 'object'
     ? (raw as { library: Record<string, unknown> }).library
     : (raw as Record<string, unknown>);
-  const kinds = ['saved', 'watched', 'ratings', 'progress', 'reading', 'history', 'preferences'] as const;
+  const kinds = ['saved', 'watched', 'ratings', 'progress', 'reading', 'history', 'preferences', 'folders'] as const;
   const out: Partial<Library> = {};
   let hasBucket = false;
   for (const kind of kinds) {
@@ -310,7 +311,7 @@ export function computeLibraryStats(
   let totalSeconds = 0;
   for (let i = 0; i < historyList.length; i++) {
     const [, entry] = historyList[i];
-    if (historyList.slice(i + 1).some(([, prior]) => prior.mediaKey === entry.mediaKey && prior.completed)) {
+    if (entry.completed && historyList.slice(i + 1).some(([, prior]) => prior.mediaKey === entry.mediaKey && prior.completed)) {
       rewatched++;
     }
     const watchedPart = Math.min(entry.duration || 0, Math.max(0, entry.coverage || entry.time || 0));
@@ -366,17 +367,26 @@ export function titleCoverage(item: Title, library: Library) {
 }
 
 export function guestRecommendations(library: Library) {
-  const compact = (item: Title) => ({ key: item.key, id: item.id, title: item.title.slice(0, 120), type: item.type, genreIds: item.genreIds?.slice(0, 12) });
+  const compact = (item: Title) => ({
+    key: item.key, id: item.id, title: item.title.slice(0, 120), type: item.type, genreIds: item.genreIds?.slice(0, 12),
+    ...(item.totalEpisodes ? { totalEpisodes: item.totalEpisodes } : {}),
+  });
   const latest = <T extends { updated: number }>(records: Record<string, T>, limit: number) =>
     Object.values(records).sort((a, b) => b.updated - a.updated).slice(0, limit);
   const saved = Object.values(library.saved).sort((a, b) => b.added - a.added)
     .filter((item): item is SavedTitle & Title => item.type !== 'comic').slice(0, 75);
   const videoRatings = latest(library.ratings, 50).filter((entry): entry is PersonalRating & { item: Title } => entry.item.type !== 'comic');
+  const watchedEntries = Object.entries(library.watched)
+    .filter(([, entry]) => entry?.item && (entry.item.type === 'movie' || entry.item.type === 'tv'))
+    .sort(([, a], [, b]) => b.updated - a.updated)
+    .slice(0, 200);
   return {
     history: latest(library.history, 60).map(({ item, mediaKey, completed, coverage, duration, updated }) => ({ item: compact(item), mediaKey, completed, coverage, duration, updated })),
-    saved: Object.fromEntries(saved.map(item => [item.key, { ...compact(item), watchStatus: item.watchStatus }])),
-    ratings: videoRatings.map(({ item, score, scale }) => ({ item: compact(item), score, scale })),
-    watched: latest(library.watched, 50).filter(({ item }) => item.type === 'movie').map(({ item }) => ({ item: compact(item) })),
+    saved: Object.fromEntries(saved.map(item => [item.key, {
+      ...compact(item), watchStatus: item.watchStatus, ...(item.completedAt ? { completedAt: item.completedAt } : {}),
+    }])),
+    ratings: videoRatings.map(entry => ({ item: compact(entry.item), score: savedRating(entry), scale: 10 })),
+    watched: Object.fromEntries(watchedEntries.map(([key, { item, updated }]) => [key, { item: compact(item), updated }])),
   };
 }
 
@@ -410,6 +420,7 @@ type UndoableEdit = {
   value: unknown;
   revision?: number;
   label: string;
+  companion?: UndoableEdit;
 };
 
 const deferredKey = 'afterframe.deferred-edits';
@@ -452,6 +463,7 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
   const [completing, setCompleting] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [undoable, setUndoable] = useState<UndoableEdit>();
+  const lastUndoableRef = useRef<UndoableEdit | undefined>(undefined);
   const [mutationMessage, setMutationMessage] = useState('');
   const [problems, setProblems] = useState<Record<string, string>>({});
   const [deferred, setDeferred] = useState(readDeferred);
@@ -474,12 +486,15 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
   const flushPendingPlayback = useCallback((account: Account, fullLibrary: Library) => {
     const pendingKey = `pendingPlayback.${account.id}`;
     const queued = readGuest<Record<string, { value: unknown; at: number }>>(pendingKey, {});
-    const retries: [kind: 'progress' | 'history', key: string, value: unknown, at: number][] = [];
+    const retries: [kind: 'progress' | 'history' | 'saved', key: string, value: unknown, at: number][] = [];
     for (const [recordKey, entry] of Object.entries(queued)) {
       const separator = recordKey.indexOf('/');
       const kind = recordKey.slice(0, separator);
       const key = recordKey.slice(separator + 1);
-      if ((kind === 'progress' || kind === 'history') && entry?.at >= ((fullLibrary[kind][key]?.updated) || 0)) {
+      const serverTs = kind === 'saved'
+        ? ((fullLibrary.saved[key]?.completedAt ?? fullLibrary.saved[key]?.added) || 0)
+        : (kind === 'progress' || kind === 'history' ? ((fullLibrary[kind][key]?.updated) || 0) : Infinity);
+      if ((kind === 'progress' || kind === 'history' || kind === 'saved') && entry?.at >= serverTs) {
         retries.push([kind, key, entry.value, entry.at]);
       } else {
         delete queued[recordKey];
@@ -586,8 +601,8 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
     });
   }
 
-  async function change(key: string, operation: (account: Account | null, send: (edit: DeferredEdit) => ReturnType<typeof deferredPost>) => Promise<(library: Library) => Library>) {
-    if (!readyRef.current || replayingRef.current || running.current.has(key)) return;
+  async function change(key: string, operation: (account: Account | null, send: (edit: DeferredEdit) => ReturnType<typeof deferredPost>) => Promise<(library: Library) => Library>): Promise<boolean> {
+    if (!readyRef.current || replayingRef.current || running.current.has(key)) return false;
     revision.current++;
     running.current.add(key);
     setPending([...running.current]);
@@ -597,6 +612,7 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
     try {
       const update = await operation(owner, edit => { attempted = edit; return deferredPost(edit); });
       if (identity.current === (owner?.id ?? null)) setSession(current => ({ ...current, library: update(current.library) }));
+      return true;
     } catch (problem) {
       const message = problem instanceof Error ? problem.message : 'Could not save this change.';
       if (owner && problem instanceof RequestError && problem.status === 401) {
@@ -609,6 +625,7 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
       if (owner && attempted && (!(problem instanceof RequestError) || problem.status >= 500 || problem.status === 429)) holdEdit(attempted);
       setProblems(current => ({ ...current, [key]: problem instanceof RequestError && problem.status === 403
         ? 'This account does not have permission to make the change.' : message }));
+      return false;
     } finally {
       running.current.delete(key);
       setPending([...running.current]);
@@ -618,6 +635,7 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
   function edit<K extends 'saved' | 'watched' | 'ratings'>(
     kind: K, key: string, value: Library[K][string] | null, label: string, reverse?: UndoableEdit,
   ) {
+    lastUndoableRef.current = undefined;
     setUndoable(undefined);
     setMutationMessage('');
     return change(key, async (account, send) => {
@@ -648,15 +666,24 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
         nextRevision = result.revision;
       }
       setMutationMessage(reverse ? 'Change undone.' : label);
-      if (!reverse) setUndoable({ accountId: account?.id ?? null, kind, key, previous: prior, value, revision: nextRevision, label });
+      if (!reverse) {
+        const undoEntry: UndoableEdit = { accountId: account?.id ?? null, kind, key, previous: prior, value, revision: nextRevision, label };
+        lastUndoableRef.current = undoEntry;
+        setUndoable(undoEntry);
+      }
       return account ? update : guestLibrary;
     });
   }
 
-  function undo(inverse: UndoableEdit) {
+  async function undo(inverse: UndoableEdit) {
     if ((sessionRef.current.account?.id ?? null) !== inverse.accountId || running.current.has(inverse.key)) return;
-    return edit(inverse.kind, inverse.key,
+    await edit(inverse.kind, inverse.key,
       inverse.previous as Library[typeof inverse.kind][string] | null, `Undo ${inverse.label.toLowerCase()}`, inverse);
+    if (inverse.companion && (sessionRef.current.account?.id ?? null) === inverse.companion.accountId && !running.current.has(inverse.companion.key)) {
+      await edit(inverse.companion.kind, inverse.companion.key,
+        inverse.companion.previous as Library[typeof inverse.companion.kind][string] | null,
+        `Undo ${inverse.companion.label.toLowerCase()}`, inverse.companion);
+    }
   }
 
   function setPreference<K extends keyof Preferences>(key: K, value: NonNullable<Preferences[K]>, label: string) {
@@ -737,8 +764,8 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
     }
   }
 
-  function recordHistory(id: string, value: History) {
-    recordPlaybackEntry('history', id, value, value.updated);
+  function recordHistory(id: string, value: History, at = value.updated) {
+    recordPlaybackEntry('history', id, value, at);
   }
 
   function recordReading(entry: Reading) {
@@ -833,7 +860,7 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
     });
   }
 
-  function createFolder(rawName: string, color: FolderColor = 'ember', initialItemKey?: string) {
+  async function createFolder(rawName: string, color: FolderColor = 'ember', initialItemKey?: string): Promise<Folder | undefined> {
     const name = rawName.trim().slice(0, 50);
     if (!name) return undefined;
     const id = `f_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -846,8 +873,8 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
       created: now,
       updated: now,
     };
-    void saveFolder(folder, id, `Created folder “${name}”`);
-    return folder;
+    const saved = await saveFolder(folder, id, `Created folder “${name}”`);
+    return saved ? folder : undefined;
   }
 
   function renameFolder(id: string, rawName: string, color?: FolderColor) {
@@ -909,7 +936,9 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
     const label = key === item.key
       ? (nextMarked ? `Completed “${item.title}”` : `Unmarked “${item.title}”`)
       : (nextMarked ? `Marked episode watched · ${item.title}` : `Marked episode unwatched · ${item.title}`);
-    await edit('watched', key, nextMarked ? { item, updated: Date.now() } : null, label);
+    const firstOk = await edit('watched', key, nextMarked ? { item, updated: Date.now() } : null, label);
+    if (!firstOk) return;
+    const firstUndo = lastUndoableRef.current;
 
     // Keep Movie status and TV Watching status seamlessly in sync with watched records
     const currentSaved = sessionRef.current.library.saved[item.key];
@@ -919,10 +948,16 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
           ? { ...currentSaved, watchStatus: 'completed', completedAt: Date.now() }
           : { ...item, added: Date.now(), watchStatus: 'completed', completedAt: Date.now() };
         if (currentSaved?.watchStatus !== 'completed') {
-          await edit('saved', item.key, updatedSaved, `Completed “${item.title}”`);
+          const secondOk = await edit('saved', item.key, updatedSaved, `Completed “${item.title}”`);
+          if (secondOk && firstUndo && lastUndoableRef.current) {
+            setUndoable({ ...lastUndoableRef.current, companion: firstUndo });
+          }
         }
       } else if (currentSaved && currentSaved.type !== 'comic' && currentSaved.watchStatus === 'completed') {
-        await edit('saved', item.key, { ...currentSaved, watchStatus: 'planned' }, `Moved “${item.title}” to Plan to Watch`);
+        const secondOk = await edit('saved', item.key, { ...currentSaved, watchStatus: 'planned' }, `Moved “${item.title}” to Plan to Watch`);
+        if (secondOk && firstUndo && lastUndoableRef.current) {
+          setUndoable({ ...lastUndoableRef.current, companion: firstUndo });
+        }
       }
     } else if (item.type === 'tv' && key !== item.key && nextMarked) {
       const autoAdd = sessionRef.current.library.preferences.autoAddWatching !== false;
@@ -967,14 +1002,22 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
         watchStatus: value,
         ...(value === 'completed' ? { completedAt: Date.now() } : {}),
       };
-      await edit('saved', item.key, nextSaved, `${item.title} · ${watchStatuses[value]}`);
+      const firstOk = await edit('saved', item.key, nextSaved, `${item.title} · ${watchStatuses[value]}`);
+      if (!firstOk) return;
+      const firstUndo = lastUndoableRef.current;
       // Keep movie `watched` record synchronized with Completed status
       if (item.type === 'movie') {
         const isWatched = Boolean(sessionRef.current.library.watched[item.key]);
         if (value === 'completed' && !isWatched) {
-          await edit('watched', item.key, { item, updated: Date.now() }, `${item.title} · Completed`);
+          const secondOk = await edit('watched', item.key, { item, updated: Date.now() }, `${item.title} · Completed`);
+          if (secondOk && firstUndo && lastUndoableRef.current) {
+            setUndoable({ ...lastUndoableRef.current, companion: firstUndo });
+          }
         } else if (value !== 'completed' && isWatched) {
-          await edit('watched', item.key, null, `${item.title} · ${watchStatuses[value]}`);
+          const secondOk = await edit('watched', item.key, null, `${item.title} · ${watchStatuses[value]}`);
+          if (secondOk && firstUndo && lastUndoableRef.current) {
+            setUndoable({ ...lastUndoableRef.current, companion: firstUndo });
+          }
         }
       }
       return;

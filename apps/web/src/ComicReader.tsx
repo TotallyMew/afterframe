@@ -1,5 +1,5 @@
 import { comicEditionCredit, comicLanguage, groupComicEditions } from '@afterframe/shared/comic-display';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type PointerEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent } from 'react';
 import { navigate, request, routeWithParams, webHref, type Comic } from './catalog';
 import { ActionLink, Icon, Loading } from './components';
 import type { LibraryControls } from './library';
@@ -193,6 +193,7 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const dragStateRef = useRef<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>(null);
   const tapOriginRef = useRef<{ x: number; y: number; time: number } | null>(null);
+  const zoneClickTimerRef = useRef<number | undefined>(undefined);
   const prefetchedNextRef = useRef<string>('');
   const [hudVisible, setHudVisible] = useState(true);
   const [pinHud, setPinHud] = useState<boolean>(() => readOption('comicPinHud', false));
@@ -445,12 +446,16 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
     }
   };
 
-  const shortcuts = (event: KeyboardEvent<HTMLElement>) => {
-    const target = event.target as HTMLElement;
+  const shortcutsRef = useRef<(event: globalThis.KeyboardEvent) => void>(() => {});
+  shortcutsRef.current = (event: globalThis.KeyboardEvent) => {
+    const target = event.target instanceof Element ? event.target : null;
     if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey ||
-      target.closest('input, select, textarea, [contenteditable]')) return;
+      target?.closest('input, select, textarea, [contenteditable]')) return;
+    const openDialog = document.querySelector('[role="dialog"][aria-modal="true"]');
+    if (openDialog && !shellRef.current?.contains(openDialog)) return;
     const key = event.key.toLowerCase();
     if (key === 'escape' && drawerTab) { event.preventDefault(); setDrawerTab(null); return; }
+    if (openDialog && key !== 'g' && key !== 's') return;
     if (key === 'f') { event.preventDefault(); void toggleFullscreen(); return; }
     if (key === 'm' || key === 'x') { event.preventDefault(); toggleHud(); return; }
     if (key === 'g') { event.preventDefault(); setDrawerTab(current => current === 'chapters' ? null : 'chapters'); return; }
@@ -474,6 +479,15 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
       else stepBackward();
     }
   };
+
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => shortcutsRef.current(event);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.clearTimeout(zoneClickTimerRef.current);
+    };
+  }, []);
 
   const markLoaded = (num: number) => {
     setLoaded(current => current.has(num) ? current : new Set([...current, num]));
@@ -516,7 +530,7 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
 
   const activeSet = useMemo(() => new Set(visiblePages), [visiblePages]);
 
-  return <section className="af-comic-reader" data-layout={layout} data-oled={oledMode || undefined} onKeyDown={shortcuts}>
+  return <section className="af-comic-reader" data-layout={layout} data-oled={oledMode || undefined}>
     <div className={`af-reader-shell ${hudShown ? '' : 'is-hud-hidden'}`} data-layout={layout} ref={shellRef} tabIndex={0} aria-label="Chapter reader">
 
       {/* Subtle Floating Top-Left Back Pill */}
@@ -667,7 +681,7 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
           {visiblePages.map(num => {
             const text = transcript?.pages?.[num - 1];
             return <ReaderImage key={num} page={num} src={pages[num - 1]}
-              visible={num === page || visiblePages.includes(num)}
+              visible={layout === 'scroll' ? Math.abs(num - page) <= 2 : visiblePages.includes(num)}
               described={typeof text === 'string' && Boolean(text.trim())}
               onLoad={markLoaded} />;
           })}
@@ -684,7 +698,15 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
             onClick={direction === 'rtl' ? stepForward : stepBackward} />
           <button type="button" tabIndex={-1} className="af-reader-zone af-reader-zone-center"
             aria-label={hudShown ? 'Tap zone: hide reader controls' : 'Tap zone: show reader controls'}
-            onClick={toggleHud} />
+            onClick={() => {
+              window.clearTimeout(zoneClickTimerRef.current);
+              zoneClickTimerRef.current = window.setTimeout(() => { toggleHud(); }, 220);
+            }}
+            onDoubleClick={event => {
+              event.stopPropagation();
+              window.clearTimeout(zoneClickTimerRef.current);
+              adjustZoom(2);
+            }} />
           <button type="button" tabIndex={-1} className="af-reader-zone af-reader-zone-next"
             aria-label={direction === 'rtl' ? 'Tap zone: previous page' : 'Tap zone: next page'}
             onClick={direction === 'rtl' ? stepBackward : stepForward} />
@@ -694,7 +716,7 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
       {/* Subtle Floating Bottom Scrubber Pill (unmounted when hidden so mobile browsers have zero bottom-fixed blockers on scroll) */}
       {hudShown && <div className="af-reader-float af-reader-float-bottom" role="region" aria-label="Reading progress">
         <div className="af-reader-bottom-pill">
-          <button type="button" className="af-reader-cap-arrow" aria-label="Previous page" disabled={page <= 1 && !neighbors?.previous} onClick={stepBackward}>
+          <button type="button" className="af-reader-cap-arrow" aria-label="Previous page" disabled={(visiblePages[0] ?? page) <= 1 && !neighbors?.previous} onClick={stepBackward}>
             <Icon name="left" />
           </button>
           <input
@@ -710,7 +732,7 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
             onChange={event => jump(Number(event.currentTarget.value))}
           />
           <span className="af-reader-page-badge">{pageIndicator}</span>
-          <button type="button" className="af-reader-cap-arrow" aria-label="Next page" disabled={page >= total && !neighbors?.next} onClick={stepForward}>
+          <button type="button" className="af-reader-cap-arrow" aria-label="Next page" disabled={(visiblePages[visiblePages.length - 1] ?? page) >= total && !neighbors?.next} onClick={stepForward}>
             <Icon name="right" />
           </button>
         </div>

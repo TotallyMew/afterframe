@@ -9,6 +9,7 @@ import { FilterPopover } from './UiControls';
 const seasons = [['WINTER', 'Winter'], ['SPRING', 'Spring'], ['SUMMER', 'Summer'], ['FALL', 'Fall']] as const;
 const formats = [['TV', 'TV'], ['TV_SHORT', 'TV short'], ['MOVIE', 'Movie'], ['OVA', 'OVA'], ['ONA', 'ONA'], ['SPECIAL', 'Special']] as const;
 const statuses = [['RELEASING', 'Currently airing'], ['NOT_YET_RELEASED', 'Upcoming'], ['FINISHED', 'Finished'], ['CANCELLED', 'Cancelled'], ['HIATUS', 'On hiatus']] as const;
+const audioOptions = [['dub', 'Dubbed'], ['dub-airing', 'Dub airing'], ['sub-airing', 'Sub airing'], ['sub', 'Sub only']] as const;
 const sorts = [['POPULARITY_DESC', 'Popularity'], ['START_DATE_DESC', 'Newest first'], ['START_DATE', 'Oldest first']] as const;
 
 const genreSuggestions = ['Action', 'Adventure', 'Comedy', 'Drama', 'Fantasy', 'Horror', 'Mecha', 'Mystery', 'Romance', 'Sci-Fi', 'Slice of Life', 'Sports', 'Supernatural', 'Thriller'];
@@ -27,6 +28,9 @@ type AnimeEntry = {
   startDate?: { year?: number };
   episodes?: number;
   mal?: number;
+  hasDub?: boolean;
+  subAiring?: boolean;
+  dubAiring?: boolean;
   nextAiringEpisode?: { episode: number; airingAt: number };
 };
 type AnimeResults = { results: AnimeEntry[]; nextPage?: number | null };
@@ -125,6 +129,7 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
         <InputField label="Year" type="number" name="year" min="1900" max="2100" defaultValue={params.get('year') || ''} />
         <SelectField label="Format" name="format" empty="Any format" value={params.get('format') || ''} options={formats} />
         <SelectField label="Status" name="status" empty="Any status" value={params.get('status') || ''} options={statuses} />
+        <SelectField label="Audio" name="audio" empty="Any audio" value={params.get('audio') || ''} options={audioOptions} />
         <FilterPopover activeCount={moreAnimeCount}>
           <SelectField
             label="Genre"
@@ -152,6 +157,7 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
       year: value => value,
       format: value => formats.find(([key]) => key === value)?.[1] ?? '',
       status: value => statuses.find(([key]) => key === value)?.[1] ?? '',
+      audio: value => audioOptions.find(([key]) => key === value)?.[1] ?? '',
       theme: value => value,
       min: value => `At least ${value} episodes`,
       max: value => `At most ${value} episodes`,
@@ -172,10 +178,20 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
       const cover = /^https:\/\/s4\.anilist\.co\//.test(entry.coverImage?.large || '') ? entry.coverImage?.large : undefined;
       const saveTarget = animeToSavedTitle(entry, cover);
       const formatLabel = formats.find(([key]) => key === entry.format)?.[1];
+      const audioLabel = entry.subAiring && entry.dubAiring
+        ? 'Sub & Dub airing'
+        : entry.dubAiring
+          ? 'Dub airing'
+          : entry.subAiring
+            ? 'Sub airing'
+            : entry.hasDub
+              ? 'Sub / Dub'
+              : (entry.status && entry.status !== 'NOT_YET_RELEASED' ? 'Sub' : '');
       const meta = [
         formatLabel,
         isSeasonal && entry.catalogSeason && entry.catalogSeason > 1 ? `S${entry.catalogSeason}` : '',
         entry.episodes ? `${entry.episodes} ep` : entry.startDate?.year,
+        audioLabel,
       ].filter(Boolean).join(' · ');
       const next = entry.nextAiringEpisode;
       const nextDate = next && new Date(next.airingAt * 1000);
@@ -188,11 +204,13 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
               <span aria-hidden="true">★</span> {entry.mal.toFixed(1)}
             </span>
           )}
-          {hasUpcoming && next && nextDate && (
-            <time className="af-poster-airing" dateTime={nextDate.toISOString()} title={`Episode ${next.episode} airs ${fullAirDate.format(nextDate)}`}>
-              Ep {next.episode} · {compactAirDate.format(nextDate)}
+          {hasUpcoming && next && nextDate ? (
+            <time className="af-poster-airing" dateTime={nextDate.toISOString()} title={`Sub Episode ${next.episode} airs ${fullAirDate.format(nextDate)}${entry.dubAiring ? ' · Dub airing' : ''}`}>
+              Sub Ep {next.episode} · {compactAirDate.format(nextDate)}{entry.dubAiring ? ' · Dub' : ''}
             </time>
-          )}
+          ) : entry.dubAiring ? (
+            <span className="af-poster-airing">Dub airing</span>
+          ) : null}
         </span>
         <strong title={title}>{title}</strong>
         <span className="af-card-meta">

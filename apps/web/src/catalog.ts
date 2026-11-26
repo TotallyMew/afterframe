@@ -58,6 +58,7 @@ export interface Comic {
   poster?: string;
   status?: string;
   lastChapter?: string;
+  chapterCount?: string;
   updated?: number;
   malId?: number | null;
   mal?: number;
@@ -69,6 +70,9 @@ export interface Episode {
   episode_number: number;
   name: string;
   air_date?: string;
+  dub_air_date?: string;
+  dub_aired?: boolean;
+  dub_estimated?: boolean;
   runtime?: number;
   overview?: string;
   still_path?: string | null;
@@ -132,6 +136,10 @@ export interface Details extends RawTitle {
   seasons?: Season[];
   next_episode_to_air?: Episode | null;
   last_episode_to_air?: Episode | null;
+  anime_dub?: {
+    available: boolean;
+    next_episode_to_air?: { season_number: number; episode_number: number; name?: string; air_date: string } | null;
+  };
   created_by?: { name: string }[];
   credits?: {
     cast?: { id: number; name: string; character?: string; profile_path?: string | null }[];

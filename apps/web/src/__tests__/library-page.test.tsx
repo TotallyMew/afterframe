@@ -54,24 +54,24 @@ function makeControls(overrides: Partial<LibraryControls> = {}): LibraryControls
     problems: {},
     error: '',
     refresh: async () => {},
-    toggleSaved: async () => {},
+    toggleSaved: async () => true,
     toggleWatched: async () => {},
-    rate: async () => {},
-    setStatus: async () => {},
+    rate: async () => true,
+    setStatus: async () => true,
     setComicStatus: () => undefined,
-    setPreference: async () => {},
+    setPreference: async () => true,
     recordReading: () => undefined,
-    removeReading: async () => {},
+    removeReading: async () => true,
     recordProgress: () => {},
     recordHistory: () => {},
     removeHistory: vi.fn(),
-    clearHistory: vi.fn(async () => {}),
-    markNotification: async () => {},
-    markAllNotificationsRead: vi.fn(async () => {}),
-    createFolder: vi.fn(),
-    renameFolder: vi.fn(),
-    deleteFolder: vi.fn(),
-    toggleFolderItem: vi.fn(),
+    clearHistory: vi.fn(async () => true),
+    markNotification: async () => true,
+    markAllNotificationsRead: vi.fn(async () => true),
+    createFolder: vi.fn(async () => undefined),
+    renameFolder: vi.fn(async () => true),
+    deleteFolder: vi.fn(async () => true),
+    toggleFolderItem: vi.fn(async () => true),
     importLibrary: async () => ({ totalImported: 0, skipped: 0 }),
     updateAccount: () => {},
     libraryBusy: false,
@@ -83,7 +83,7 @@ function makeControls(overrides: Partial<LibraryControls> = {}): LibraryControls
     recoveryStatus: '',
     recoveryError: '',
     undoable: undefined,
-    undo: () => undefined,
+    undo: async () => {},
     mutationMessage: '',
     ...overrides,
   };
@@ -138,11 +138,15 @@ describe('Reworked Library stats, folders, views, ratings, and history', () => {
     fireEvent.click(screen.getByRole('button', { name: 'List view' }));
     expect(screen.getByRole('list', { name: 'Library items' })).toBeTruthy();
     expect(localStorage.getItem('afterframe.library.viewMode')).toBe('list');
+    // TV show Play link must point to an episode route (not /tv/:id/watch)
+    expect(screen.getByRole('link', { name: 'Play Severance' }).getAttribute('href')).toContain('/tv/2/s1e1');
+    expect(screen.getByRole('link', { name: 'Play Dune' }).getAttribute('href')).toContain('/movie/1/watch');
   });
 
-  it('renders Ratings distribution and History day groups with delete action', () => {
+  it('renders Ratings distribution and History day groups with delete and fresh-timestamp undo', () => {
     const removeHistory = vi.fn();
-    const controls = makeControls({ removeHistory });
+    const recordHistory = vi.fn();
+    const controls = makeControls({ removeHistory, recordHistory });
 
     const { unmount } = render(
       <ConfirmProvider>
@@ -165,5 +169,10 @@ describe('Reworked Library stats, folders, views, ratings, and history', () => {
     expect(screen.getByText('Today')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Remove Dune from history' }));
     expect(removeHistory).toHaveBeenCalledWith('h-1');
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(recordHistory).toHaveBeenCalledTimes(1);
+    const [restoredId, restoredEntry, restoredAt] = recordHistory.mock.calls[0];
+    expect(restoredId).toBe('h-1');
+    expect(restoredAt).toBeGreaterThan(restoredEntry.updated);
   });
 });

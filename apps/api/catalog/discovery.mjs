@@ -1,5 +1,5 @@
 import { cacheMetadata } from './metadata.mjs';
-import { animeCatalogTitles } from './anime.mjs';
+import { animeCatalogTitles, animeDubInfo } from './anime.mjs';
 import { recommendationProfile } from '@afterframe/shared/library';
 import { malRating } from './mal.mjs';
 
@@ -192,18 +192,61 @@ export async function seasonalAnime(params, tmdb = null, tmdbEnabled = false) {
     if (value?.length > 60) throw invalid(`Invalid anime ${key}.`);
     if (value) variables[key] = value;
   }
-  const data = await cacheMetadata(`anime-season:${JSON.stringify(variables)}`, 20 * 60000, async () => {
+  const audio = params.get('audio') || '';
+  if (audio && !['dub', 'sub', 'dub-airing', 'sub-airing'].includes(audio)) throw invalid('Invalid anime audio filter.');
+  if (audio === 'sub-airing' && !variables.status) variables.status = 'RELEASING';
+  if (audio === 'dub-airing' && !variables.status && !variables.season && !variables.year && !variables.yearPattern) {
+    variables.status = 'RELEASING';
+  }
+  const dubInfo = await animeDubInfo().catch(() => ({ dubbed: new Set(), incomplete: new Set() }));
+  const currentYear = new Date().getFullYear();
+  const fetchAnilistPage = async pageNum => cacheMetadata(`anime-season:v3:${JSON.stringify({ ...variables, page: pageNum })}`, 20 * 60000, async () => {
     const response = await fetch('https://graphql.anilist.co', {
       method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify({ query: seasonalQuery, variables }), signal: AbortSignal.timeout(9000),
+      body: JSON.stringify({ query: seasonalQuery, variables: { ...variables, page: pageNum } }), signal: AbortSignal.timeout(9000),
     });
-    if (!response.ok) throw new Error('Anime schedules are temporarily unavailable.');
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error('Anime schedules are temporarily unavailable.');
+    }
     const result = (await response.json()).data?.Page;
     if (!Array.isArray(result?.media)) throw new Error('Anime schedules are temporarily unavailable.');
     return result;
   });
-  const mapped = await animeCatalogTitles(data.media.map(item => item.id)).catch(() => new Map());
-  const results = data.media.map(item => {
+  let currentPage = variables.page;
+  let lastFetchedPage = variables.page;
+  let hasNextPage = false;
+  const collected = [];
+  const needsClientFilter = audio === 'dub' || audio === 'sub' || audio === 'dub-airing';
+  const maxScanPages = needsClientFilter ? 4 : 1;
+  for (let scan = 0; scan < maxScanPages && currentPage <= 100; scan++) {
+    const pageData = await fetchAnilistPage(currentPage);
+    lastFetchedPage = currentPage;
+    hasNextPage = Boolean(pageData.pageInfo?.hasNextPage);
+    const tagged = pageData.media.map(entry => {
+      const inDubbed = Boolean(entry.idMal && dubInfo.dubbed.has(entry.idMal));
+      const inIncomplete = Boolean(entry.idMal && dubInfo.incomplete.has(entry.idMal));
+      const hasDub = inDubbed || inIncomplete;
+      const subAiring = entry.status === 'RELEASING';
+      const recentYear = Number(entry.seasonYear || entry.startDate?.year || 0);
+      const dubAiring = (subAiring && hasDub) || (inIncomplete && (subAiring || recentYear >= currentYear - 1));
+      return { ...entry, hasDub, subAiring, dubAiring };
+    });
+    const filtered = audio === 'dub'
+      ? tagged.filter(item => item.hasDub)
+      : audio === 'sub'
+        ? tagged.filter(item => !item.hasDub)
+        : audio === 'dub-airing'
+          ? tagged.filter(item => item.dubAiring)
+          : audio === 'sub-airing'
+            ? tagged.filter(item => item.subAiring)
+            : tagged;
+    collected.push(...filtered);
+    if (!needsClientFilter || collected.length >= 18 || !hasNextPage) break;
+    currentPage++;
+  }
+  const mapped = await animeCatalogTitles(collected.map(item => item.id)).catch(() => new Map());
+  const results = collected.map(item => {
     const match = mapped.get(item.id);
     return { ...item, catalog: match?.catalog ?? undefined, catalogSeason: match?.season ?? undefined, mal: null };
   });
@@ -222,5 +265,5 @@ export async function seasonalAnime(params, tmdb = null, tmdbEnabled = false) {
   for (let start = 0; start < results.length; start += 6) {
     await Promise.all(results.slice(start, start + 6).map(async item => { item.mal = await malRating('anime', item.idMal); }));
   }
-  return { results, nextPage: data.pageInfo.hasNextPage && variables.page < 100 ? variables.page + 1 : null };
+  return { results, nextPage: hasNextPage && lastFetchedPage < 100 ? lastFetchedPage + 1 : null };
 }

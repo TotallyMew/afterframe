@@ -9,7 +9,7 @@ import { recommendations, seasonalAnime } from './catalog/discovery.mjs';
 import { monitorReleases } from './catalog/releases.mjs';
 import { catalogAnimeRating, malRating } from './catalog/mal.mjs';
 import { comicCoverResponse, comicPageResponse, comicsApi } from './comics/comics.mjs';
-import { animeSource, enrichAnimeDetails } from './catalog/anime.mjs';
+import { animeStreamSource, emnexEpisode, emnexServers, enrichAnimeDetails, hasEmnexKey } from './catalog/anime.mjs';
 import { cacheMetadata, cachedRatings, closeMetadataPool, imdbRating, refreshMetadataPeriodically, setOmdbKey, validateOmdbKey } from './catalog/metadata.mjs';
 import { basicTitle, catalogFacts, connectionStatus, discover, hasTmdbCredential, loadInitialCredentials, rawTitleMetadata, setTmdbCredential, titleMetadata, tmdb, tvRatingsMap } from './catalog/tmdb.mjs';
 import { loadSegments } from './catalog/segments.mjs';
@@ -24,7 +24,23 @@ const localHosts = new Set([`localhost:${localPort}`, `127.0.0.1:${localPort}`])
 
 function siteJsonRequest(request) {
   return request.headers.origin === (publicOrigin?.origin || `http://${request.headers.host}`)
-    && request.headers['content-type']?.split(';')[0].trim() === 'application/json';
+    && request.headers['content-type']?.split(';')[0].trim().toLowerCase() === 'application/json';
+}
+
+async function readJsonBody(request, maxBytes) {
+  const chunks = [];
+  let totalBytes = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += buffer.length;
+    if (totalBytes > maxBytes) return { tooLarge: true };
+    chunks.push(buffer);
+  }
+  try {
+    return { value: JSON.parse(Buffer.concat(chunks).toString('utf8')) };
+  } catch {
+    return { invalid: true };
+  }
 }
 
 function json(response, status, body, extraHeaders = {}) {
@@ -59,13 +75,11 @@ export async function handleApi(request, response, url) {
       if (!siteJsonRequest(request)) {
         return json(response, 403, { error: 'Open Afterframe on its configured address to use accounts.' });
       }
-      let raw = '';
       const maxAccountBytes = pathname === '/api/account/import' ? 2_097_152 : pathname === '/api/account/complete-series' ? 500000 : 16384;
-      for await (const chunk of request) {
-        raw += chunk;
-        if (raw.length > maxAccountBytes) return json(response, 413, { error: 'This account request is too large.' });
-      }
-      try { body = JSON.parse(raw); } catch { return json(response, 400, { error: 'Invalid account request.' }); }
+      const parsed = await readJsonBody(request, maxAccountBytes);
+      if (parsed.tooLarge) return json(response, 413, { error: 'This account request is too large.' });
+      if (parsed.invalid) return json(response, 400, { error: 'Invalid account request.' });
+      body = parsed.value;
     }
     const result = await accountApi(request, response, pathname, body);
     return json(response, result.code, result.body);
@@ -75,13 +89,10 @@ export async function handleApi(request, response, url) {
     if (publicOrigin || !siteJsonRequest(request)) {
       return json(response, 403, { error: 'This installation manages integration keys on the server.' });
     }
-    let body = '';
-    for await (const chunk of request) {
-      body += chunk;
-      if (body.length > 4096) return json(response, 413, { error: 'The supplied credential is too long.' });
-    }
-    let submitted;
-    try { submitted = JSON.parse(body); } catch { return json(response, 400, { error: 'Invalid request.' }); }
+    const parsed = await readJsonBody(request, 4096);
+    if (parsed.tooLarge) return json(response, 413, { error: 'The supplied credential is too long.' });
+    if (parsed.invalid) return json(response, 400, { error: 'Invalid request.' });
+    const submitted = parsed.value;
     const provider = submitted?.provider ?? 'tmdb';
     const value = submitted?.credential ?? submitted?.token;
     const candidate = typeof value === 'string' ? value.trim() : '';
@@ -131,12 +142,10 @@ export async function handleApi(request, response, url) {
     let library = account ? await readLibrary(account.id) : undefined;
     if (!account && request.method === 'POST') {
       if (!siteJsonRequest(request)) return json(response, 403, { error: 'Open recommendations from Afterframe.' });
-      let raw = '';
-      for await (const chunk of request) {
-        raw += chunk;
-        if (raw.length > 64000) return json(response, 413, { error: 'Recommendation request is too large.' });
-      }
-      try { library = JSON.parse(raw); } catch { return json(response, 400, { error: 'Invalid recommendation request.' }); }
+      const parsed = await readJsonBody(request, 64000);
+      if (parsed.tooLarge) return json(response, 413, { error: 'Recommendation request is too large.' });
+      if (parsed.invalid) return json(response, 400, { error: 'Invalid recommendation request.' });
+      library = parsed.value;
     }
     return json(response, 200, await recommendations(library || undefined, tmdb, hasTmdbCredential()));
   }
@@ -144,6 +153,46 @@ export async function handleApi(request, response, url) {
   if (pathname === '/api/comics' || pathname.startsWith('/api/comics/')) {
     const result = await comicsApi(pathname, searchParams);
     return json(response, result.status, result.body);
+  }
+  const emnexStreamRoute = pathname.match(/^\/api\/anime\/stream\/([1-9]\d{0,9})\/([1-9]\d{0,4})$/);
+  if (emnexStreamRoute) {
+    if (!hasEmnexKey()) return json(response, 503, { error: 'EmnexAnime is not configured on this server.' });
+    const [, animeId, episode] = emnexStreamRoute;
+    const rawType = searchParams.get('type') || 'sub';
+    if (rawType !== 'sub' && rawType !== 'dub') return json(response, 400, { error: 'Invalid anime audio type.' });
+    const idType = searchParams.get('idType') || 'anilist';
+    if (idType !== 'anilist' && idType !== 'mal') return json(response, 400, { error: 'Invalid anime identifier type.' });
+    const provider = searchParams.get('provider')?.trim() || '';
+    if (provider && !/^[A-Za-z0-9._-]{1,32}$/.test(provider)) return json(response, 400, { error: 'Invalid anime server.' });
+    try {
+      const stream = await emnexEpisode(Number(animeId), Number(episode), {
+        type: rawType,
+        provider,
+        refresh: searchParams.get('refresh') === '1',
+        idType,
+      });
+      return json(response, 200, stream);
+    } catch (error) {
+      const status = error?.upstreamStatus;
+      if (status === 404) return json(response, 404, { error: 'No EmnexAnime stream is available for this episode.' });
+      if (status === 429) return json(response, 429, { error: 'EmnexAnime is temporarily limiting requests. Try again shortly.' });
+      return json(response, 502, { error: 'EmnexAnime stream is temporarily unavailable.' });
+    }
+  }
+  const emnexServersRoute = pathname.match(/^\/api\/anime\/servers\/([1-9]\d{0,9})\/([1-9]\d{0,4})$/);
+  if (emnexServersRoute) {
+    if (!hasEmnexKey()) return json(response, 503, { error: 'EmnexAnime is not configured on this server.' });
+    const [, animeId, episode] = emnexServersRoute;
+    const idType = searchParams.get('idType') || 'anilist';
+    if (idType !== 'anilist' && idType !== 'mal') return json(response, 400, { error: 'Invalid anime identifier type.' });
+    try {
+      return json(response, 200, await emnexServers(Number(animeId), Number(episode), idType));
+    } catch (error) {
+      const status = error?.upstreamStatus;
+      if (status === 404) return json(response, 404, { error: 'No EmnexAnime servers were found for this episode.' });
+      if (status === 429) return json(response, 429, { error: 'EmnexAnime is temporarily limiting requests. Try again shortly.' });
+      return json(response, 502, { error: 'EmnexAnime servers are temporarily unavailable.' });
+    }
   }
   const anime = pathname.match(/^\/api\/anime\/(movie|tv)\/([1-9]\d{0,9})$/);
   if (anime) {
@@ -153,9 +202,9 @@ export async function handleApi(request, response, url) {
     if (type === 'tv' && (!/^\d{1,4}$/.test(season) || !/^[1-9]\d{0,3}$/.test(episode))) return json(response, 400, { error: 'Invalid episode coordinates.' });
     if (!hasTmdbCredential()) return json(response, 503, { error: 'Connect the catalog in Settings.' });
     const title = await titleMetadata(type, id);
-    if (!isAnime(title.original_language, title.genres?.map(genre => genre.id))) return json(response, 200, { source: null });
+    if (!isAnime(title.original_language, title.genres?.map(genre => genre.id))) return json(response, 200, { source: null, emnex: hasEmnexKey() });
     try {
-      return json(response, 200, { source: await animeSource(type, id, Number(season), type === 'tv' ? Number(episode) : 1) });
+      return json(response, 200, { source: await animeStreamSource(type, id, Number(season), type === 'tv' ? Number(episode) : 1), emnex: hasEmnexKey() });
     } catch {
       return json(response, 502, { error: 'The anime player is temporarily unavailable.' });
     }

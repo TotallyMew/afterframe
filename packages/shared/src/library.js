@@ -26,6 +26,7 @@ export function titleProgress({ key, type, totalEpisodes }, progress, watched) {
 export function recommendationProfile(library = {}) {
   const activity = new Map();
   const excluded = new Set();
+  const disliked = new Set();
   const add = (item, weight, updated = 0) => {
     if (!item?.key || !['movie', 'tv'].includes(item.type)) return;
     const previous = activity.get(item.key);
@@ -54,8 +55,12 @@ export function recommendationProfile(library = {}) {
     }
   }
   for (const entry of Object.values(library.ratings || {})) {
-    if (entry?.score >= 7) add(entry.item, (entry.score - 6) * 2);
-    if (entry?.score <= 3 && entry.item?.key) excluded.add(entry.item.key);
+    const score = entry?.score != null ? ratingOnTen(entry).score : 0;
+    if (score >= 7) add(entry.item, (score - 6) * 2);
+    if (score > 0 && score <= 3 && entry.item?.key) {
+      excluded.add(entry.item.key);
+      disliked.add(entry.item.key);
+    }
   }
   for (const entry of Object.values(library.saved || {})) {
     const status = watchStatus(entry);
@@ -66,7 +71,7 @@ export function recommendationProfile(library = {}) {
     }
     if (['completed', 'dropped'].includes(status)) excluded.add(entry.key);
   }
-  const seeds = [...activity.values()].filter(({ item }) => !excluded.has(item.key) || watchStatus(library.saved?.[item.key]) !== 'dropped')
+  const seeds = [...activity.values()].filter(({ item }) => watchStatus(library.saved?.[item.key]) !== 'dropped' && !disliked.has(item.key))
     .sort((a, b) => b.weight - a.weight || b.updated - a.updated);
   return { personalized: meaningful.size >= 3 || completedSeries.size >= 2, seeds, excluded, completedSeries };
 }

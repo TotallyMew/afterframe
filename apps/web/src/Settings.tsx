@@ -64,13 +64,10 @@ function SegmentedTabs<T extends string>({
   );
 }
 
-const sections = ['Playback', 'Spoilers', 'Interface', 'Availability', 'Notifications'] as const;
+const sections = ['Playback', 'Spoilers', 'Interface', 'Notifications'] as const;
 type Section = typeof sections[number];
 const settingsTabs = [['general', 'General'], ['integrations', 'Integrations']] as const;
 const languages = ['English', 'French', 'German', 'Italian', 'Japanese', 'Korean', 'Lithuanian', 'Portuguese', 'Spanish'];
-const regionNames = new Intl.DisplayNames(['en'], { type: 'region' });
-const regions = 'AE AR AT AU BE BG BR CA CH CL CO CZ DE DK EE ES FI FR GB GR HK HR HU ID IE IL IN IS IT JP KR LT LU LV MX MY NL NO NZ PE PH PL PT RO RS SE SG SI SK TH TR TW UA US ZA'
-  .split(' ').map(code => ({ code, name: regionNames.of(code) ?? code })).sort((a, b) => a.name.localeCompare(b.name));
 
 function Toggle({ name, label, description, controls }: { name: BooleanPreference; label: string; description?: string; controls: LibraryControls }) {
   const value = controls.library.preferences[name] ?? preferenceDefaults[name];
@@ -136,29 +133,6 @@ function PlaybackSettings({ controls }: { controls: LibraryControls }) {
   </>;
 }
 
-function AvailabilitySettings() {
-  const [region, setRegion] = useState(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('afterframe.region') || 'null');
-      if (regions.some(({ code }) => code === saved)) return saved as string;
-    } catch { /* Use the catalog default. */ }
-    return 'LT';
-  });
-  const [error, setError] = useState(false);
-  return <div className="af-settings-row">
-    <SettingSelect label="Region" description="Used for JustWatch listings." value={region}
-      options={regions.map(({ code, name }) => ({ value: code, label: name }))}
-      onChange={value => {
-        try {
-          localStorage.setItem('afterframe.region', JSON.stringify(value));
-          setRegion(value);
-          setError(false);
-        } catch { setError(true); }
-      }} />
-    {error && <p role="alert">Could not save the region. Try again.</p>}
-  </div>;
-}
-
 function Credits() {
   const [expanded, setExpanded] = useState(false);
   return <div className={`af-settings-credits ${expanded ? 'is-open' : ''}`}>
@@ -177,8 +151,7 @@ function Credits() {
       <div className="af-settings-credits-body">
         <a href="https://www.themoviedb.org/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}><img src="/art/tmdb.svg" width="83" height="26" alt="TMDB" /></a>
         <p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
-        <p>Regional streaming, rental, and purchase availability is provided by <a href="https://www.justwatch.com/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>JustWatch</a>.</p>
-        <p>Catalog playback uses CineSrc, <a href="https://animeembed.com/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>AnimeEmbed</a>, and <a href="https://ani.pm/developers" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>Ani.pm</a>. Anime episode mappings come from <a href="https://github.com/anibridge/anibridge-mappings" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>AniBridge</a>.</p>
+        <p>Catalog playback uses CineSrc and <a href="https://emnexanime.site/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>EmnexAnime</a>. Anime episode mappings come from <a href="https://github.com/anibridge/anibridge-mappings" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>AniBridge</a>.</p>
         <p>Manga is provided by <a href="https://mangadex.org/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>MangaDex</a>. Chapter pages credit their scanlation groups where listed.</p>
         <p>Public-domain and Creative Commons editions stream from the <a href="https://archive.org/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>Internet Archive</a> and <a href="https://commons.wikimedia.org/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>Wikimedia Commons</a>. The player shows the source and rights label for each edition.</p>
         <p>Skip timestamps are supplied by <a href="https://skipdb.tv/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>SkipDB</a>, <a href="https://introdb.app/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>IntroDB</a>, <a href="https://theintrodb.org/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>TheIntroDB</a>, and <a href="https://aniskip.com/" target="_blank" rel="noopener noreferrer" tabIndex={expanded ? 0 : -1}>AniSkip</a>.</p>
@@ -204,7 +177,7 @@ function GeneralSettings({ controls, onSectionChange }: { controls: LibraryContr
     />
     <section id="af-settings-options" key={section} className="af-settings-panel-enter" aria-labelledby="af-settings-section">
       <h3 ref={heading} tabIndex={-1} id="af-settings-section">{section === 'Spoilers' ? 'Spoiler protection' : section}</h3>
-      {!controls.ready && section !== 'Availability' && <p className="af-meta" role="status">{controls.state === 'loading' ? 'Loading preferences…' : 'Reconnect your library to change preferences.'}</p>}
+      {!controls.ready && <p className="af-meta" role="status">{controls.state === 'loading' ? 'Loading preferences…' : 'Reconnect your library to change preferences.'}</p>}
       {section === 'Playback' && <PlaybackSettings controls={controls} />}
       {section === 'Spoilers' && <>
         <p className="af-meta af-settings-help">These preferences apply to unwatched episodes. You can reveal each item individually.</p>
@@ -216,7 +189,6 @@ function GeneralSettings({ controls, onSectionChange }: { controls: LibraryContr
         <Toggle controls={controls} name="compact" label="Compact episode list" />
         <Toggle controls={controls} name="confirmRemoval" label="Confirm removals and resets in Library" />
       </>}
-      {section === 'Availability' && <AvailabilitySettings />}
       {section === 'Notifications' && <>
         {!controls.account && (
           <div className="af-settings-signin-note">

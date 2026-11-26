@@ -1,8 +1,9 @@
 import { Dialog } from '@base-ui/react/dialog';
 import { isAnime } from '@afterframe/shared/discover';
+import { samePlaybackLanguage } from '@afterframe/shared/subtitles';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  episodeKey, episodeLabel, episodePosition, formatDate, imagePath, isAired, navigate, normalizeTitle,
+  episodeKey, episodeLabel, episodePosition, formatDate, imagePath, isAired, normalizeTitle,
   normalizeTitles, playHref, previousBrowse, request, timeCode, today,
   type CatalogRating, type Details as TitleDetails, type DetailsImage, type DetailsVideo,
   type Episode, type MediaType, type Season, type Title, type TitleResults,
@@ -10,6 +11,7 @@ import {
 import { Artwork, HeroBackdrop, Icon, Loading, MediaCard, MutationStatus, RatingProblem, SaveButton, Score, Shelf, useOptionalRating } from './components';
 import { effectiveWatchStatus, getSeason, progressPercent, resumeFor, savedRating, watchStatuses, type Library, type LibraryControls, type WatchStatus } from './library';
 import { FolderPickerPopover } from './library/FolderPickerPopover';
+import { readAnimeAudioPreference, writeAnimeAudioPreference } from './player/types';
 import { currentSearchParams } from './router';
 import { AfSelect } from './UiControls';
 
@@ -61,12 +63,20 @@ function pickTrailer(videos?: DetailsVideo[]): DetailsVideo | undefined {
 
 function upcoming(details: TitleDetails) {
   const next = details.next_episode_to_air;
-  const episode = next?.air_date && next.air_date >= today() ? `${episodeLabel(next)} airs ${formatDate(next.air_date)}` : '';
+  const nextDub = details.anime_dub?.next_episode_to_air;
+  const hasSubNext = Boolean(next?.air_date && next.air_date >= today());
+  const hasDubNext = Boolean(nextDub?.air_date && nextDub.air_date >= today());
+  const episode = hasSubNext && next
+    ? `${hasDubNext ? 'Sub ' : ''}${episodeLabel(next)} airs ${formatDate(next.air_date)}`
+    : '';
+  const dubEpisode = hasDubNext && nextDub
+    ? `Dub S${nextDub.season_number} E${nextDub.episode_number} airs ${formatDate(nextDub.air_date)}`
+    : '';
   const season = (details.seasons ?? []).filter(item => item.season_number > 0 && item.air_date && item.air_date > today())
     .sort((a, b) => (a.air_date ?? '').localeCompare(b.air_date ?? ''))[0];
   const seasonNote = season && (!episode || season.season_number !== next?.season_number)
     ? `Season ${season.season_number} premieres ${formatDate(season.air_date)}` : '';
-  return [episode, seasonNote].filter(Boolean).join(' · ');
+  return [episode, dubEpisode, seasonNote].filter(Boolean).join(' · ');
 }
 
 function TrailerModal({ video, title, open, onOpenChange }: {
@@ -225,12 +235,14 @@ function EpisodeRatingsHeatmap({ item }: { item: Title }) {
 }
 
 function EpisodeRow({
-  item, episode, controls, isResumeTarget,
+  item, episode, controls, isResumeTarget, animeAudio, onSelectPlay,
 }: {
   item: Title;
   episode: Episode;
   controls: LibraryControls;
   isResumeTarget: boolean;
+  animeAudio?: 'sub' | 'dub';
+  onSelectPlay?: () => void;
 }) {
   const key = episodeKey(item, episode);
   const marked = Boolean(controls.library.watched[key]);
@@ -238,11 +250,19 @@ function EpisodeRow({
   const [revealed, setRevealed] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const image = imagePath(episode.still_path, 'w300');
-  const available = isAired(episode);
+  const isDubMode = animeAudio === 'dub';
+  const available = isDubMode ? episode.dub_aired === true : isAired(episode);
   const progress = !marked ? controls.library.progress[key] : undefined;
   const hasProgress = Boolean(progress && progress.time > 5 && progress.time < progress.duration);
   const runtimeLabel = episodeDurationText(key, episode.runtime, controls.library);
-  const status = [`Episode ${episode.episode_number}`, runtimeLabel, !available && episode.air_date ? `Airs ${formatDate(episode.air_date)}` : ''].filter(Boolean).join(' · ');
+  const dateLabel = isDubMode
+    ? (episode.dub_air_date
+      ? (available ? formatDate(episode.dub_air_date) : `${episode.dub_estimated ? 'Est.' : 'Airs'} ${formatDate(episode.dub_air_date)}`)
+      : (available ? 'Dub available' : 'Dub TBA'))
+    : animeAudio === 'sub'
+      ? (episode.air_date ? (available ? formatDate(episode.air_date) : `Airs ${formatDate(episode.air_date)}`) : '')
+      : (!available && episode.air_date ? `Airs ${formatDate(episode.air_date)}` : '');
+  const status = [`Episode ${episode.episode_number}`, runtimeLabel, dateLabel].filter(Boolean).join(' · ');
   const showPreview = marked || controls.library.preferences.hideSynopsis === false;
   const href = playHref(item, episodePosition(episode));
 
@@ -252,7 +272,7 @@ function EpisodeRow({
         aria-pressed={revealed} onClick={() => setRevealed(value => !value)}>
         <Artwork src={image} className={revealed ? undefined : 'af-blurred'} loading="lazy" fallback={<span className="af-still-fallback" aria-hidden="true"><Icon name="film" /></span>} />
         <span className="af-eye"><Icon name="eye" /><span>{revealed ? 'Hide' : 'Reveal'}</span></span>
-      </button> : available ? <a className="af-still af-still-link" href={href} tabIndex={-1} aria-hidden="true">
+      </button> : available ? <a className="af-still af-still-link" href={href} onClick={onSelectPlay} tabIndex={-1} aria-hidden="true">
         <Artwork src={image} loading="lazy" fallback={<span className="af-still-fallback" aria-hidden="true"><Icon name="film" /></span>} />
         <span className="af-still-play"><Icon name="play" /></span>
       </a> : <span className="af-still"><Artwork src={image} loading="lazy" fallback={<span className="af-still-fallback" aria-hidden="true"><Icon name="film" /></span>} /></span>}
@@ -272,7 +292,7 @@ function EpisodeRow({
           <span>{marked && <Icon name="check" />}</span>
         </button>
       </div>
-      {available ? <a className="af-episode-title" href={href}>{episode.name}</a>
+      {available ? <a className="af-episode-title" href={href} onClick={onSelectPlay}>{episode.name}</a>
         : <span className="af-episode-title af-upcoming">{episode.name}</span>}
       {episode.overview && <details open={expanded} onToggle={event => setExpanded(event.currentTarget.open)}>
         <summary>{expanded ? 'Hide description' : showPreview ? <span className="af-synopsis-preview">{episode.overview}</span> : 'Show description'}</summary>
@@ -286,13 +306,15 @@ function EpisodeRow({
   </article>;
 }
 
-function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readSeason }: {
+function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readSeason, isAnimeTitle, showHasDub }: {
   item: Title;
   seasons: Season[];
   initialSeason: number | undefined;
   resumeEpisode?: { season: number; number: number };
   controls: LibraryControls;
   readSeason: (season: number) => Promise<Episode[]>;
+  isAnimeTitle: boolean;
+  showHasDub: boolean;
 }) {
   const [selected, setSelected] = useState<number>();
   const season = selected ?? initialSeason ?? seasons[0]?.season_number;
@@ -300,9 +322,14 @@ function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readS
   const [error, setError] = useState('');
   const [range, setRange] = useState(0);
   const [attempt, setAttempt] = useState(0);
-  const [shuffling, setShuffling] = useState(false);
   const [markingSeason, setMarkingSeason] = useState(false);
   const [showAllMobile, setShowAllMobile] = useState(false);
+  const [audioMode, setAudioMode] = useState<'sub' | 'dub'>(() => {
+    if (!isAnimeTitle) return 'sub';
+    const saved = readAnimeAudioPreference(item.key);
+    if (saved) return saved;
+    return samePlaybackLanguage(controls.library.preferences.audioLanguage, 'English') ? 'dub' : 'sub';
+  });
 
   useEffect(() => {
     if (season == null) return;
@@ -315,7 +342,11 @@ function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readS
 
   const currentSeasonObj = seasons.find(entry => entry.season_number === season);
   const episodes = results?.season === season ? (results?.episodes ?? []) : [];
-  const aired = episodes.filter(isAired);
+  const seasonHasDub = episodes.some(ep => ep.dub_aired !== undefined || Boolean(ep.dub_air_date));
+  const dubAvailable = isAnimeTitle && (showHasDub || seasonHasDub);
+  const effectiveAudio: 'sub' | 'dub' | undefined = isAnimeTitle ? (dubAvailable ? audioMode : 'sub') : undefined;
+  const isDubView = effectiveAudio === 'dub';
+  const aired = isDubView ? episodes.filter(ep => ep.dub_aired === true) : episodes.filter(isAired);
   const watched = aired.filter(episode => controls.library.watched[episodeKey(item, episode)]).length;
   const unwatchedAired = aired.filter(episode => !controls.library.watched[episodeKey(item, episode)]);
   const count = Math.ceil(episodes.length / episodeRangeSize);
@@ -326,24 +357,13 @@ function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readS
   const seasonFacts = [
     currentSeasonObj?.name,
     seasonYear,
+    isDubView && seasonHasDub ? `${aired.length} of ${episodes.length} dubbed` : '',
     aired.length > 0 ? `${watched} of ${aired.length} watched` : episodes.length > 0 ? `${episodes.length} episodes` : '',
   ].filter(Boolean).join(' · ');
 
-  const regularSeasons = useMemo(() => seasons.filter(s => s.season_number > 0), [seasons]);
-
-  async function handleShuffle() {
-    const poolSeasons = regularSeasons.length ? regularSeasons : seasons;
-    if (!poolSeasons.length || shuffling) return;
-    setShuffling(true);
-    try {
-      const pickSeason = poolSeasons[Math.floor(Math.random() * poolSeasons.length)];
-      const eps = (await readSeason(pickSeason.season_number)).filter(isAired);
-      if (eps.length) {
-        const chosen = eps[Math.floor(Math.random() * eps.length)];
-        navigate(playHref(item, episodePosition(chosen)));
-      }
-    } catch { /* ignore */ }
-    finally { setShuffling(false); }
+  function handleAudioMode(next: 'sub' | 'dub') {
+    setAudioMode(next);
+    writeAnimeAudioPreference(item.key, next);
   }
 
   async function handleMarkSeasonWatched() {
@@ -365,9 +385,20 @@ function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readS
         {seasonFacts && <p className="af-meta af-tabular">{seasonFacts}</p>}
       </div>
       <div className="af-episode-tools">
-        {seasons.length > 0 && <button type="button" className="af-button af-secondary af-tool-btn" disabled={shuffling} onClick={() => void handleShuffle()}>
-          <Icon name="shuffle" /><span>{shuffling ? 'Picking…' : 'Shuffle'}</span>
-        </button>}
+        {dubAvailable && <div className="af-audio-switch" role="group" aria-label="Episode audio">
+          <button
+            type="button"
+            className="af-audio-switch-btn"
+            aria-pressed={effectiveAudio === 'sub'}
+            onClick={() => handleAudioMode('sub')}
+          >Sub</button>
+          <button
+            type="button"
+            className="af-audio-switch-btn"
+            aria-pressed={effectiveAudio === 'dub'}
+            onClick={() => handleAudioMode('dub')}
+          >Dub</button>
+        </div>}
         {unwatchedAired.length > 0 && <button type="button" className="af-button af-secondary af-tool-btn" disabled={!controls.ready || markingSeason} onClick={() => void handleMarkSeasonWatched()}>
           <Icon name="check" /><span>{markingSeason ? 'Marking…' : 'Mark season watched'}</span>
         </button>}
@@ -409,6 +440,10 @@ function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readS
     {season == null ? <p className="af-state">No seasons are listed.</p> : error ? <p className="af-state" role="alert">{error} <button className="af-text-link" type="button" onClick={() => { setError(''); setAttempt(value => value + 1); }}>Retry</button></p>
       : results?.season !== season ? <Loading label="Loading episodes…" shape="rows" />
       : episodes.length === 0 ? <p className="af-state">No episodes are listed for this season.</p>
+      : isDubView && !seasonHasDub ? <p className="af-state" role="status">
+          English dub is not available for {currentSeasonObj?.name || 'this season'} yet.{' '}
+          <button type="button" className="af-text-link" onClick={() => handleAudioMode('sub')}>Switch to Sub</button>
+        </p>
       : <>
         <div className={`af-episode-grid ${controls.library.preferences.compact ? 'af-compact' : ''} ${showAllMobile ? 'is-mobile-expanded' : ''}`}>
           {pageEpisodes.map((episode, index) => (
@@ -418,6 +453,8 @@ function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readS
                 episode={episode}
                 controls={controls}
                 isResumeTarget={Boolean(resumeEpisode && resumeEpisode.season === episode.season_number && resumeEpisode.number === episode.episode_number)}
+                animeAudio={effectiveAudio}
+                onSelectPlay={effectiveAudio ? () => writeAnimeAudioPreference(item.key, effectiveAudio) : undefined}
               />
             </div>
           ))}
@@ -441,11 +478,14 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
   const [relatedError, setRelatedError] = useState(false);
   const [relatedAttempt, setRelatedAttempt] = useState(0);
   const [selection, setSelection] = useState<{ episode: Episode; replay: boolean }>();
+  const [selectionResolved, setSelectionResolved] = useState(false);
   const [logoFailed, setLogoFailed] = useState(false);
   const [trailerOpen, setTrailerOpen] = useState(false);
   const seasonCache = useRef(new Map<number, Promise<Episode[]>>());
 
   useEffect(() => {
+    setSelection(undefined);
+    setSelectionResolved(false);
     setLogoFailed(false);
     setTrailerOpen(false);
     const controller = new AbortController();
@@ -501,6 +541,7 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
     if (type !== 'tv' || !item || !controls.ready || resume?.episode) return;
     const title = item;
     let active = true;
+    setSelectionResolved(false);
     async function chooseEpisode() {
       let first: Episode | undefined;
       for (const season of regular) {
@@ -508,11 +549,16 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
         if (!active) return;
         first ??= episodes[0];
         const next = episodes.find(episode => !watched[episodeKey(title, episode)]);
-        if (next) { setSelection({ episode: next, replay: false }); return; }
+        if (next) { setSelection({ episode: next, replay: false }); setSelectionResolved(true); return; }
       }
-      if (active) setSelection(first ? { episode: first, replay: true } : undefined);
+      if (active) {
+        setSelection(first ? { episode: first, replay: true } : undefined);
+        setSelectionResolved(true);
+      }
     }
-    void chooseEpisode().catch(() => { if (active) setSelection(undefined); });
+    void chooseEpisode().catch(() => {
+      if (active) { setSelection(undefined); setSelectionResolved(true); }
+    });
     return () => { active = false; };
   }, [type, item, controls.ready, regular, readSeason, resume, watched]);
 
@@ -550,7 +596,7 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
 
   const count = Object.keys(watched).filter(key => key.startsWith(`${item.key}/cinesrc-s`) && !key.startsWith(`${item.key}/cinesrc-s0e`)).length;
   const resumeEpisode = resume?.episode;
-  const optimisticEpisode = regular.length > 0
+  const optimisticEpisode = !selectionResolved && regular.length > 0 && (!item.date || item.date <= today())
     ? { season: regular[0].season_number, number: 1, title: 'Episode 1' }
     : undefined;
   const startingEpisode = resumeEpisode ?? (selection ? episodePosition(selection.episode) : optimisticEpisode);
@@ -666,6 +712,8 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
         resumeEpisode={resumeEpisode}
         controls={controls}
         readSeason={readSeason}
+        isAnimeTitle={isAnime(item.originalLanguage, item.genreIds)}
+        showHasDub={Boolean(details.anime_dub?.available)}
       />}
 
       {type === 'tv' && orderedSeasons.some(s => s.season_number > 0) && <EpisodeRatingsHeatmap item={item} />}

@@ -14,23 +14,23 @@ function makeControls(overrides: Partial<LibraryControls> = {}): LibraryControls
     problems: {},
     error: '',
     refresh: async () => {},
-    toggleSaved: async () => {},
+    toggleSaved: async () => true,
     toggleWatched: vi.fn(async () => {}),
-    rate: async () => {},
-    setStatus: async () => {},
+    rate: async () => true,
+    setStatus: async () => true,
     setComicStatus: () => undefined,
-    setPreference: vi.fn(async () => {}),
+    setPreference: vi.fn(async () => true),
     recordReading: () => undefined,
-    removeReading: async () => {},
+    removeReading: async () => true,
     recordProgress: vi.fn(),
     recordHistory: vi.fn(),
     removeHistory: () => undefined,
-    clearHistory: async () => {},
-    markNotification: async () => {},
-    markAllNotificationsRead: async () => {},
-    createFolder: () => undefined,
+    clearHistory: async () => true,
+    markNotification: async () => true,
+    markAllNotificationsRead: async () => true,
+    createFolder: async () => undefined,
     renameFolder: () => undefined,
-    deleteFolder: () => undefined,
+    deleteFolder: async () => true,
     toggleFolderItem: () => undefined,
     importLibrary: async () => ({ totalImported: 0, skipped: 0 }),
     updateAccount: () => {},
@@ -43,7 +43,7 @@ function makeControls(overrides: Partial<LibraryControls> = {}): LibraryControls
     recoveryStatus: '',
     recoveryError: '',
     undoable: undefined,
-    undo: () => undefined,
+    undo: async () => {},
     mutationMessage: '',
     ...overrides,
   };
@@ -182,7 +182,8 @@ describe('PlayerPage regressions', () => {
     expect(new URL(reloaded.src).searchParams.get('t')).toBe('11');
   });
 
-  it('keeps anime player iframes uncovered, falls back to Ani.pm on error, and sends hello on Ani.pm load', async () => {
+  it('plays anime via EmnexAnime HLS video and falls back to CineSrc when EmnexAnime fails', async () => {
+    let failStream = false;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/api/tv/95479/playback' || url === '/api/tv/95479') {
@@ -192,7 +193,21 @@ describe('PlayerPage regressions', () => {
         }), { status: 200 });
       }
       if (url.startsWith('/api/anime/tv/95479')) {
-        return new Response(JSON.stringify({ source: { id: 113415, episode: 1 } }), { status: 200 });
+        return new Response(JSON.stringify({ source: { id: 113415, episode: 1 }, emnex: true }), { status: 200 });
+      }
+      if (url.startsWith('/api/anime/stream/113415/1')) {
+        if (failStream) return new Response(JSON.stringify({ error: 'Unavailable' }), { status: 502 });
+        return new Response(JSON.stringify({
+          provider: 'HD-2',
+          type: 'sub',
+          hls: 'https://api.emnexanime.site/hls?u=test',
+          subtitles: [{ lang: 'English', url: 'https://api.emnexanime.site/sub?u=en', default: true }],
+          intro: { start: 10, end: 90 },
+          outro: { start: 1325, end: 1414 },
+        }), { status: 200 });
+      }
+      if (url === 'https://api.emnexanime.site/sub?u=en') {
+        return new Response('WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nHello', { status: 200 });
       }
       if (url === '/api/tv/95479/season/1') {
         return new Response(JSON.stringify({
@@ -206,39 +221,24 @@ describe('PlayerPage regressions', () => {
     });
 
     const route = parsePlayerRoute('tv/95479/s1e1')!;
-    const { container } = render(<PlayerPage route={route} controls={makeControls()} />);
+    const { container, unmount } = render(<PlayerPage route={route} controls={makeControls()} />);
 
-    const animeFrame = await waitFor(() => {
-      const node = container.querySelector('iframe');
-      expect(node?.src).toContain('https://animeembed.com/embed/ani/113415/1');
+    await waitFor(() => {
+      expect(container.querySelector('video')).not.toBeNull();
+      expect(screen.getByText(/EmnexAnime · HD-2 · SUB/)).toBeTruthy();
+    });
+    expect(container.querySelector('iframe')).toBeNull();
+    unmount();
+
+    // When EmnexAnime stream resolution fails, automatically falls back to CineSrc iframe
+    failStream = true;
+    const { container: fallbackContainer } = render(<PlayerPage route={route} controls={makeControls()} />);
+    const cineFrame = await waitFor(() => {
+      const node = fallbackContainer.querySelector('iframe');
+      expect(node?.src).toContain('https://cinesrc.st/embed/tv/95479');
       return node!;
     });
-    // Anime iframes must never be covered by .af-embed-loading
-    await waitFor(() => expect(container.querySelector('.af-embed-loading')).toBeNull());
-
-    // AnimeEmbed error before ready automatically falls back to Ani.pm
-    const animeWin = { postMessage: vi.fn() };
-    Object.defineProperty(animeFrame, 'contentWindow', { value: animeWin, configurable: true });
-    await act(async () => {
-      window.dispatchEvent(new MessageEvent('message', {
-        origin: 'https://animeembed.com',
-        source: animeWin as unknown as Window,
-        data: { channel: 'animeembed', version: 1, event: 'error' },
-      }));
-    });
-
-    const anipmFrame = await waitFor(() => {
-      const node = container.querySelector('iframe');
-      expect(node?.src).toContain('https://ani.pm/embed/ani/113415/1/sub');
-      return node!;
-    });
-    const anipmPost = vi.fn();
-    Object.defineProperty(anipmFrame, 'contentWindow', { value: { postMessage: anipmPost }, configurable: true });
-    fireEvent.load(anipmFrame);
-    expect(anipmPost).toHaveBeenCalledWith(
-      { ns: 'anipm.player', v: 1, cmd: 'hello', args: {} },
-      'https://ani.pm',
-    );
+    expect(cineFrame.getAttribute('sandbox')).toBe('allow-scripts allow-same-origin allow-presentation');
   });
 
   it('preserves the watch stage element across episode switches on the same TV show', async () => {
@@ -282,7 +282,7 @@ describe('PlayerPage regressions', () => {
     expect(container.querySelector('.af-watch-stage')).toBe(stage1);
   });
 
-  it('initializes fullscreen as false, enforces strict sandbox on embeds, and supports Theatre mode & Episodes drawer', async () => {
+  it('initializes fullscreen as false, supports EmnexAnime video, and supports Theatre mode & Episodes drawer', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input);
       if (url === '/api/tv/95479/playback' || url === '/api/tv/95479') {
@@ -292,7 +292,17 @@ describe('PlayerPage regressions', () => {
         }), { status: 200 });
       }
       if (url.startsWith('/api/anime/tv/95479')) {
-        return new Response(JSON.stringify({ source: { id: 113415, episode: 1 } }), { status: 200 });
+        return new Response(JSON.stringify({ source: { id: 113415, episode: 1 }, emnex: true }), { status: 200 });
+      }
+      if (url.startsWith('/api/anime/stream/113415/1')) {
+        return new Response(JSON.stringify({
+          provider: 'HD-1',
+          type: 'sub',
+          hls: 'https://api.emnexanime.site/hls?u=test',
+          subtitles: [],
+          intro: null,
+          outro: null,
+        }), { status: 200 });
       }
       if (url === '/api/tv/95479/season/1') {
         return new Response(JSON.stringify({
@@ -308,21 +318,17 @@ describe('PlayerPage regressions', () => {
     const route = parsePlayerRoute('tv/95479/s1e1')!;
     const { container } = render(<PlayerPage route={route} controls={makeControls()} />);
 
-    const animeFrame = await waitFor(() => {
-      const node = container.querySelector('iframe');
-      expect(node?.src).toContain('https://animeembed.com/embed/ani/113415/1');
-      return node!;
+    await waitFor(() => {
+      expect(container.querySelector('video')).not.toBeNull();
     });
-    expect(animeFrame.getAttribute('sandbox')).toBeNull();
-    expect(animeFrame.getAttribute('referrerpolicy')).toBe('no-referrer');
 
     // Theatre mode toggle in persistent topbar
-    const theatreBtn = screen.getByRole('button', { name: /Theatre/i });
+    const theatreBtn = screen.getAllByRole('button', { name: /Theatre/i })[0];
     fireEvent.click(theatreBtn);
     expect(container.querySelector('.af-player-page')?.classList.contains('is-theatre')).toBe(true);
 
     // Slide-over Episodes drawer opens inside stage
-    const episodesBtn = screen.getByRole('button', { name: /Episodes/i });
+    const episodesBtn = screen.getAllByRole('button', { name: /Episodes/i })[0];
     fireEvent.click(episodesBtn);
     expect(container.querySelector('.af-player-drawer')).not.toBeNull();
   });
@@ -409,6 +415,99 @@ describe('PlayerPage regressions', () => {
       expect(screen.getByText('Speed')).toBeTruthy();
     } finally {
       Object.defineProperty(window, 'matchMedia', { configurable: true, writable: true, value: originalMatchMedia });
+    }
+  });
+
+  it('persists Dub across episodes, disables unavailable Dub, and preserves fullscreen stage on next episode', async () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'canPlayType').mockReturnValue('maybe');
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+    vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {});
+    const requestedStreams: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/api/tv/95479/playback' || url === '/api/tv/95479') {
+        return new Response(JSON.stringify({
+          id: 95479, name: 'Jujutsu Kaisen', original_language: 'ja', genres: [{ id: 16, name: 'Animation' }],
+          seasons: [{ season_number: 1, name: 'Season 1', episode_count: 2 }],
+        }), { status: 200 });
+      }
+      if (url.startsWith('/api/anime/tv/95479')) {
+        const ep = new URL(url, 'http://localhost').searchParams.get('e') || '1';
+        return new Response(JSON.stringify({ source: { id: 113415, episode: Number(ep), idType: 'anilist' }, emnex: true }), { status: 200 });
+      }
+      if (url.startsWith('/api/anime/stream/113415/')) {
+        requestedStreams.push(url);
+        const isEp2 = url.includes('/113415/2');
+        const wantDub = url.includes('type=dub');
+        if (isEp2) {
+          // Simulate E2 having Sub only -> server returns sub + fallbackFrom: 'dub' + availableTypes.dub = false
+          return new Response(JSON.stringify({
+            provider: 'HD-1',
+            type: 'sub',
+            hls: 'https://api.emnexanime.site/hls?u=ep2sub',
+            subtitles: [],
+            intro: null,
+            outro: null,
+            servers: [{ provider: 'HD-1', type: 'sub' }, { provider: 'HD-2', type: 'sub' }],
+            availableTypes: { sub: true, dub: false },
+            fallbackFrom: wantDub ? 'dub' : undefined,
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify({
+          provider: 'HD-1',
+          type: wantDub ? 'dub' : 'sub',
+          hls: `https://api.emnexanime.site/hls?u=ep1${wantDub ? 'dub' : 'sub'}`,
+          subtitles: [],
+          intro: null,
+          outro: null,
+          servers: [{ provider: 'HD-1', type: 'sub' }, { provider: 'HD-1', type: 'dub' }],
+          availableTypes: { sub: true, dub: true },
+        }), { status: 200 });
+      }
+      if (url === '/api/tv/95479/season/1') {
+        return new Response(JSON.stringify({
+          episodes: [
+            { season_number: 1, episode_number: 1, name: 'Ryomen Sukuna', air_date: '2020-10-03' },
+            { season_number: 1, episode_number: 2, name: 'For Myself', air_date: '2020-10-10' },
+          ],
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ segments: [] }), { status: 200 });
+    });
+
+    const ep1 = parsePlayerRoute('tv/95479/s1e1')!;
+    const ep2 = parsePlayerRoute('tv/95479/s1e2')!;
+    const controls = makeControls();
+    const { container, rerender } = render(<PlayerPage route={ep1} controls={controls} />);
+
+    await waitFor(() => expect(screen.getByText(/EmnexAnime · HD-1 · SUB/)).toBeTruthy());
+
+    // Select Dub in E1
+    fireEvent.click(screen.getByRole('button', { name: 'Dub' }));
+    await waitFor(() => expect(screen.getByText(/EmnexAnime · HD-1 · DUB/)).toBeTruthy());
+
+    // Simulate active fullscreen on .af-watch-stage before advancing to E2
+    const stage = container.querySelector('.af-watch-stage')!;
+    const origFsEl = Object.getOwnPropertyDescriptor(document, 'fullscreenElement');
+    Object.defineProperty(document, 'fullscreenElement', { value: stage, configurable: true });
+    try {
+      rerender(<PlayerPage route={ep2} controls={controls} />);
+      // E2 must carry over Dub preference and request type=dub
+      await waitFor(() => expect(requestedStreams.some(u => u.includes('/113415/2') && u.includes('type=dub'))).toBe(true));
+      // E2 is Sub-only -> displays fallback notice and disables Dub (N/A)
+      await waitFor(() => expect(screen.getByText(/Dub unavailable for this episode/i)).toBeTruthy());
+      const dubBtn = screen.getByRole('button', { name: /Dub \(N\/A\)/i }) as HTMLButtonElement;
+      expect(dubBtn.disabled).toBe(true);
+      // Switching to another server after Dub->Sub fallback must request type=sub, not type=dub
+      fireEvent.click(screen.getByRole('button', { name: 'HD-2' }));
+      await waitFor(() => expect(requestedStreams.some(u => u.includes('/113415/2') && u.includes('provider=HD-2') && u.includes('type=sub'))).toBe(true));
+      // Same stage stays mounted and fullscreen state carries over into E2
+      expect(container.querySelector('.af-watch-stage')).toBe(stage);
+      expect(screen.getByRole('button', { name: 'Exit fullscreen' })).toBeTruthy();
+    } finally {
+      if (origFsEl) Object.defineProperty(document, 'fullscreenElement', origFsEl);
+      else Object.defineProperty(document, 'fullscreenElement', { value: null, configurable: true });
     }
   });
 });

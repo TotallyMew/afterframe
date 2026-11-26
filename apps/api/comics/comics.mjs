@@ -1,11 +1,12 @@
 import { readFile, stat } from 'node:fs/promises';
-import { cacheMetadata } from '../catalog/metadata.mjs';
+import { cacheMetadata, peekMetadata } from '../catalog/metadata.mjs';
 import { fetchWithRetry } from '../http-client.mjs';
 import { lectorChapters, lectorPageList } from './lectormanga.mjs';
 import { scansChapters, scansPageList } from './mangascans.mjs';
 import { comicChapterIdPattern, comicChapterIdSource, comicIdSource } from '@afterframe/shared/comic-ids';
 import { weebChapters, weebPageList } from './weebcentral.mjs';
 
+const comicIdPattern = new RegExp(`^${comicIdSource}$`, 'i');
 const mangaRoute = new RegExp(`^/api/comics/(${comicIdSource})(?:/(chapters|related)(?:/(${comicChapterIdSource}))?)?$`, 'i');
 const comicPagePath = new RegExp(`^/comic-page/(${comicIdSource})/(${comicChapterIdSource})/([1-9]\\d{0,3})$`);
 const chapterSources = [
@@ -37,6 +38,7 @@ function failure(status, message) {
 async function mangaDex(path, params = new URLSearchParams()) {
   const now = Date.now();
   const startAt = Math.max(now, nextRequestAt);
+  if (startAt - now > 10_000) throw failure(503, 'MangaDex is busy. Try again shortly.');
   nextRequestAt = startAt + 260;
   if (startAt > now) await new Promise(resolve => setTimeout(resolve, startAt - now));
   const url = new URL(`https://api.mangadex.org${path}`);
@@ -69,12 +71,15 @@ function comic({ id, attributes, relationships }) {
   const tags = (attributes.tags || []).filter(tag => tag.attributes.name.en);
   const rawLastChapter = typeof attributes.lastChapter === 'string' ? attributes.lastChapter.trim() : '';
   const lastChapter = /^\d+(?:\.\d+)?$/.test(rawLastChapter) ? rawLastChapter : undefined;
+  const cachedChapterCount = !lastChapter ? peekMetadata(`comics:chcount:v1:${id}`) : undefined;
+  const chapterCount = typeof cachedChapterCount === 'string' && cachedChapterCount ? cachedChapterCount : undefined;
   return {
     id, key: `comic-${id}`, type: 'comic', format, poster,
     malId: /^[1-9]\d{0,9}$/.test(attributes.links?.mal) ? Number(attributes.links.mal) : null,
     title: attributes.title.en || attributes.altTitles?.find(title => title.en)?.en || englishText(attributes.title, original),
     year: attributes.year, status: attributes.status, author,
     ...(lastChapter ? { lastChapter } : {}),
+    ...(chapterCount ? { chapterCount } : {}),
     synopsis: englishText(attributes.description, original), longStrip: tags.some(tag => tag.attributes.name.en === 'Long Strip'),
     genres: tags.filter(tag => tag.attributes.group === 'genre').map(tag => ({ id: tag.id, name: tag.attributes.name.en })),
     languages: [...new Set((attributes.availableTranslatedLanguages || []).filter(language => languagePattern.test(language)))],
@@ -193,7 +198,8 @@ function chapterNumber(value) {
   if (!number) return value;
   const [, whole, fraction] = number;
   const integer = whole.replace(/^0+(?=\d)/, '');
-  return fraction && /[1-9]/.test(fraction) ? `${integer}.${fraction}` : integer;
+  const trimmedFraction = fraction ? fraction.replace(/0+$/, '') : '';
+  return trimmedFraction ? `${integer}.${trimmedFraction}` : integer;
 }
 
 function chapter({ id, attributes, relationships }) {
@@ -244,7 +250,7 @@ function combineChapters(native, extra) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push({ ...entry, number });
   }
-  const order = number => number != null && Number.isFinite(Number(number)) ? Number(number) : Infinity;
+  const order = number => number != null && number !== '' && Number.isFinite(Number(number)) ? Number(number) : Infinity;
   return [...groups.values()].sort(([a], [b]) => order(a.number) - order(b.number)).slice(0, maxFeed);
 }
 
@@ -334,12 +340,12 @@ export async function comicPageResponse(pathname, signal) {
   const source = chapterSource(chapterId);
   const key = `${id}/${chapterId}`;
   const entry = await pageManifest(id, chapterId, async () => {
-    if (!source) return nativePages(id, chapterId);
     const item = await details(id).catch(error => {
       if (error.status === 404) return null;
       throw error;
     });
     if (!item) return null;
+    if (!source) return nativePages(id, chapterId);
     return alternateChapter(item, chapterId, source);
   });
   const url = entry?.pages[Number(page) - 1];
@@ -350,7 +356,8 @@ export async function comicPageResponse(pathname, signal) {
       headers: { Accept: 'image/*', 'User-Agent': 'Afterframe/1.0' },
       redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
     });
-    valid = response.ok && imageTypes.has(response.headers.get('content-type')?.split(';')[0]);
+    const contentType = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase();
+    valid = response.ok && imageTypes.has(contentType);
     if (valid) return response;
     await response.body?.cancel();
     return null;
@@ -454,11 +461,56 @@ async function relatedComics(item) {
   });
 }
 
+function extractAggregateChapterCount(aggregate) {
+  const volumes = aggregate?.volumes && typeof aggregate.volumes === 'object' ? Object.values(aggregate.volumes) : [];
+  let maxChapter = 0;
+  let chapterEntries = 0;
+  for (const volume of volumes) {
+    const chapterMap = volume?.chapters && typeof volume.chapters === 'object' ? volume.chapters : null;
+    if (!chapterMap) continue;
+    for (const [key, entry] of Object.entries(chapterMap)) {
+      chapterEntries++;
+      const candidate = typeof entry?.chapter === 'string' ? entry.chapter.trim() : key.trim();
+      if (!/^\d+(?:\.\d+)?$/.test(candidate)) continue;
+      const numeric = Number(candidate);
+      if (Number.isFinite(numeric) && numeric > maxChapter) maxChapter = numeric;
+    }
+  }
+  if (maxChapter >= 1) return String(Math.floor(maxChapter));
+  return chapterEntries > 0 ? String(chapterEntries) : null;
+}
+
+function mangaChapterCount(id) {
+  return cacheMetadata(`comics:chcount:v1:${id}`, 12 * 60 * minute, async () => {
+    const result = await mangaDex(`/manga/${id}/aggregate`).catch(error => {
+      if (error.status === 404) return null;
+      throw error;
+    });
+    return result ? extractAggregateChapterCount(result) : null;
+  });
+}
+
+async function chapterCounts(search) {
+  const raw = (search.get('ids') || '').split(',').map(value => value.trim().toLowerCase());
+  const ids = [...new Set(raw.filter(id => comicIdPattern.test(id)))].slice(0, 24);
+  const counts = {};
+  for (const id of ids) {
+    try {
+      const count = await mangaChapterCount(id);
+      if (count) counts[id] = count;
+    } catch (error) {
+      if (error?.status === 429) break;
+    }
+  }
+  return { counts };
+}
+
 export async function comicsApi(pathname, search) {
   try {
     if (pathname === '/api/comics') return { status: 200, body: await browse(search) };
     if (pathname === '/api/comics/genres') return { status: 200, body: { genres: await genres() } };
     if (pathname === '/api/comics/updates') return { status: 200, body: { results: await cacheMetadata(`comics:readable-updates:${blockedGroupKey}`, 5 * minute, recentComics) } };
+    if (pathname === '/api/comics/counts') return { status: 200, body: await chapterCounts(search) };
     const match = pathname.match(mangaRoute);
     if (!match) throw failure(404, 'Comics route unavailable.');
     const [, id, subroute, chapterId] = match.map(value => value?.toLowerCase());
@@ -492,7 +544,7 @@ export async function comicCoverResponse(pathname) {
     headers: { Accept: 'image/jpeg', 'User-Agent': 'Afterframe/1.0' },
     redirect: 'error', signal: AbortSignal.timeout(10_000),
   });
-  if (response.ok && response.headers.get('content-type') === 'image/jpeg') return response;
+  if (response.ok && response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() === 'image/jpeg') return response;
   await response.body?.cancel();
   return null;
 }

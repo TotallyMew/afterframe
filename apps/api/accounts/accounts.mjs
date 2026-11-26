@@ -21,6 +21,12 @@ const maxQueuedHashes = 16;
 let activeHashes = 0;
 const hashQueue = [];
 const attempts = new Map();
+const MAX_ATTEMPT_KEYS = 10_000;
+
+function safeTimestamp(value, fallback, ceiling) {
+  const numeric = typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : fallback;
+  return Math.min(Math.max(0, numeric), ceiling);
+}
 
 export function clientAddress(request) {
   const remote = request.socket?.remoteAddress || 'local';
@@ -289,13 +295,14 @@ export async function accountApi(request, response, path, body) {
     if (entry === undefined) return status(400, 'Invalid library entry.');
     if (expectedAt != null && !Number.isSafeInteger(expectedAt)) return status(400, 'Invalid library revision.');
     const now = Date.now();
-    const timestamp = Math.min(Number.isSafeInteger(at) ? at : entry?.updated || now, now + 60000);
+    const timestamp = safeTimestamp(Number.isSafeInteger(at) ? at : entry?.updated, now, now + 60000);
     return db.transaction(async () => {
       await db.lockAccount(account.id);
       const entryBefore = await getEntry.get(account.id, kind, key);
       const prior = JSON.parse(entryBefore?.value || 'null');
       const version = await getVersion.get(account.id, kind, key);
-      const previous = version ? Number(version.updated) : prior?.updated ?? prior?.added ?? 0;
+      const rawPrevious = version ? Number(version.updated) : Number(prior?.updated ?? prior?.added ?? 0);
+      const previous = Number.isFinite(rawPrevious) ? Math.trunc(rawPrevious) : 0;
       if (timestamp < previous || expectedAt != null && expectedAt !== previous) {
         return { code: 200, body: { ok: true, stale: true } };
       }
@@ -346,9 +353,10 @@ export async function accountApi(request, response, path, body) {
           totalImported++;
           continue;
         }
-        const incomingTs = Math.min(Number(entry?.updated ?? entry?.added ?? now) || now, now + 60000);
+        const incomingTs = safeTimestamp(entry?.updated ?? entry?.added, now, now + 60000);
         const version = await getVersion.get(account.id, kind, key);
-        const existingTs = version ? Number(version.updated) : Number(existing?.updated ?? existing?.added ?? 0);
+        const rawExistingTs = version ? Number(version.updated) : Number(existing?.updated ?? existing?.added ?? 0);
+        const existingTs = Number.isFinite(rawExistingTs) ? Math.trunc(rawExistingTs) : 0;
         if (existing !== null && incomingTs <= existingTs) {
           skipped++;
           continue;
@@ -365,9 +373,13 @@ export async function accountApi(request, response, path, body) {
   if (path === '/api/account/complete-series') {
     if (!account) return status(401, 'Sign in first.');
     const { accountId, item, episodes } = body || {};
+    if (accountId !== account.id) return status(409, 'The signed-in account changed. Reload to update the library.');
     const key = item?.key;
-    if (accountId !== account.id || item?.type !== 'tv' || typeof key !== 'string' || !/^[\w.-]{1,100}$/.test(key)
+    if (item?.type !== 'tv' || typeof key !== 'string' || !/^[\w.-]{1,100}$/.test(key)
       || !Array.isArray(episodes) || episodes.length > 10000 || !episodes.every(episode => typeof episode === 'string' && /^[\w-]{1,40}$/.test(episode))) return status(400, 'Invalid series completion.');
+    const validTotalEpisodes = Number.isSafeInteger(item.totalEpisodes) && item.totalEpisodes > 0 && item.totalEpisodes <= 100_000
+      ? item.totalEpisodes
+      : undefined;
     return db.transaction(async () => {
       await db.lockAccount(account.id);
       const existing = await getEntry.get(account.id, 'saved', key);
@@ -376,7 +388,7 @@ export async function accountApi(request, response, path, body) {
       if (previous.type !== 'tv') return status(400, 'This title is not a series.');
       const version = await getVersion.get(account.id, 'saved', key);
       const updated = Math.max(Date.now(), Number(version?.updated ?? 0) + 1);
-      const saved = { ...previous, totalEpisodes: item.totalEpisodes || previous.totalEpisodes, watchStatus: 'completed', completedAt: updated };
+      const saved = { ...previous, totalEpisodes: validTotalEpisodes ?? previous.totalEpisodes, watchStatus: 'completed', completedAt: updated };
       const entry = JSON.stringify({ item: saved, updated });
       await setEntry.run(account.id, 'saved', key, JSON.stringify(saved));
       await setVersion.run(account.id, 'saved', key, updated);
@@ -398,10 +410,18 @@ export async function accountApi(request, response, path, body) {
   }
   const now = Date.now();
   for (const [key, entry] of attempts) if (now >= entry.expires) attempts.delete(key);
-  const limitKey = `${path}:${username.toLowerCase()}`;
-  const addressKey = `${path}:ip:${clientAddress(request)}`;
-  if ((attempts.get(limitKey)?.count || 0) >= 8 || (attempts.get(addressKey)?.count || 0) >= 60) return status(429, 'Too many attempts. Try again in 15 minutes.');
-  for (const key of [limitKey, addressKey]) {
+  const ip = clientAddress(request);
+  const limitKey = `${path}:${ip}:${username.toLowerCase()}`;
+  const addressKey = `${path}:ip:${ip}`;
+  const globalUserKey = `${path}:user:${username.toLowerCase()}`;
+  if ((attempts.get(limitKey)?.count || 0) >= 8 || (attempts.get(addressKey)?.count || 0) >= 60 || (attempts.get(globalUserKey)?.count || 0) >= 40) {
+    return status(429, 'Too many attempts. Try again in 15 minutes.');
+  }
+  for (const key of [limitKey, addressKey, globalUserKey]) {
+    if (!attempts.has(key) && attempts.size >= MAX_ATTEMPT_KEYS) {
+      const oldest = attempts.keys().next().value;
+      if (oldest) attempts.delete(oldest);
+    }
     const entry = attempts.get(key) || { count: 0, expires: now + 15 * 60000 };
     entry.count++;
     attempts.set(key, entry);
@@ -411,21 +431,23 @@ export async function accountApi(request, response, path, body) {
   const resetting = path.endsWith('/reset');
   if (creating && process.env.AFTERFRAME_REGISTRATION === 'closed') return status(403, 'Registration is closed on this installation.');
   if (creating && existing) return status(409, 'That username is already in use.');
+  const resetCode = resetting && typeof body.code === 'string' && /^[a-f0-9]{48}$/i.test(body.code) ? body.code.toLowerCase() : '';
+  if (resetting && !resetCode) return status(400, 'The username or recovery code is invalid.');
   const salt = creating || resetting ? randomBytes(24).toString('hex') : existing?.salt || guestSalt;
   const passwordHash = await derivePasswordHash(password, salt);
   if (!passwordHash) return status(429, 'Too many account requests are in progress. Try again in a moment.');
   if (resetting) {
-    const code = typeof body.code === 'string' && /^[a-f0-9]{48}$/i.test(body.code) ? body.code.toLowerCase() : '';
-    if (!existing || !code) return status(400, 'The username or recovery code is invalid.');
+    if (!existing) return status(400, 'The username or recovery code is invalid.');
     const reset = await db.transaction(async () => {
       await db.lockAccount(existing.id);
-      if (!(await consumeRecovery.run(existing.id, hashToken(code))).changes) return false;
+      if (!(await consumeRecovery.run(existing.id, hashToken(resetCode))).changes) return false;
       await updatePassword.run(salt, passwordHash.toString('hex'), existing.id);
       await removeAccountSessions.run(existing.id);
       return true;
     });
     if (!reset) return status(400, 'The username or recovery code is invalid.');
     attempts.delete(limitKey);
+    attempts.delete(globalUserKey);
     return { code: 200, body: { ok: true } };
   }
   if (!creating && (!existing || !timingSafeEqual(passwordHash, Buffer.from(existing.password_hash, 'hex')))) return status(401, 'Username or password is incorrect.');
@@ -449,6 +471,7 @@ export async function accountApi(request, response, path, body) {
   });
   if (!user) return creating ? status(409, 'That username is already in use.') : status(401, 'Username or password is incorrect.');
   attempts.delete(limitKey);
+  attempts.delete(globalUserKey);
   response.setHeader('Set-Cookie', `${cookie}=${token}; ${cookieFlags}; Max-Age=${maxAge}`);
   return { code: creating ? 201 : 200, body: { account: user, library: await readLibrary(user.id) } };
 }

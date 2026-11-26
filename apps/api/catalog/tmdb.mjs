@@ -1,5 +1,5 @@
 import { discoverParams, isAnime } from '@afterframe/shared/discover';
-import { enrichAnimeDetails, enrichAnimeSeason } from './anime.mjs';
+import { animeVirtualSeasonPlan, enrichAnimeDetails, enrichAnimeSeason, sliceVirtualSeason } from './anime.mjs';
 import { catalogAnimeRating } from './mal.mjs';
 import { cacheMetadata, cachedRatings, hasOmdbKey, imdbRating, peekMetadata, setOmdbKey } from './metadata.mjs';
 import { providerCredential } from '../accounts/accounts.mjs';
@@ -52,14 +52,14 @@ export function rawTitleMetadata(type, id, season, refresh = false) {
     ? tmdb(`${path}/season/${season}`, { language: 'en-US' })
     : tmdb(path, {
       language: 'en-US',
-      append_to_response: 'watch/providers,external_ids,credits,images,videos',
+      append_to_response: 'external_ids,credits,images,videos',
       include_image_language: 'en,null',
     }), refresh);
 }
 
 export async function tvRatingsMap(id) {
-  return cacheMetadata(`ratings-map:tv:${id}`, 12 * 3600000, async () => {
-    const details = await rawTitleMetadata('tv', id);
+  return cacheMetadata(`ratings-map:v2:tv:${id}`, 12 * 3600000, async () => {
+    const details = await titleMetadata('tv', id);
     const regular = (details?.seasons ?? [])
       .filter(entry => entry.season_number > 0 && entry.episode_count > 0)
       .sort((a, b) => a.season_number - b.season_number)
@@ -71,7 +71,7 @@ export async function tvRatingsMap(id) {
         const idx = cursor++;
         const entry = regular[idx];
         try {
-          const data = await rawTitleMetadata('tv', id, String(entry.season_number));
+          const data = await titleMetadata('tv', id, String(entry.season_number));
           const episodes = (data?.episodes ?? []).map(ep => ({
             episode_number: ep.episode_number,
             name: ep.name || `Episode ${ep.episode_number}`,
@@ -91,17 +91,34 @@ export async function tvRatingsMap(id) {
 }
 
 export async function titleMetadata(type, id, season, refresh = false) {
+  const hasSeason = season !== undefined && season !== null && season !== '';
+  if (type === 'tv' && hasSeason) {
+    const seasonNumber = Number(season);
+    if (Number.isSafeInteger(seasonNumber) && seasonNumber >= 1) {
+      const parent = peekMetadata(`title:v2:tv:${id}:`) ?? peekMetadata(`basic:tv:${id}:`)
+        ?? await basicTitle('tv', id).catch(() => null);
+      if (isAnime(parent?.original_language, parent?.genres?.map(genre => genre.id))) {
+        const rawRegular = (parent?.seasons ?? []).filter(entry => entry.season_number > 0);
+        if (rawRegular.length === 1 && rawRegular[0].season_number === 1) {
+          const vPlan = await animeVirtualSeasonPlan(id).catch(() => null);
+          const vSeason = vPlan?.find(entry => entry.season === seasonNumber);
+          if (vSeason) {
+            const rawS1 = await rawTitleMetadata('tv', id, '1', refresh);
+            const sliced = sliceVirtualSeason(rawS1, vSeason);
+            return enrichAnimeSeason(id, seasonNumber, sliced, new Date(), {
+              sourceSeason: 1,
+              episodeOffset: vSeason.start - 1,
+            }).catch(() => sliced);
+          }
+        }
+        const data = await rawTitleMetadata(type, id, season, refresh);
+        return enrichAnimeSeason(id, seasonNumber, data).catch(() => data);
+      }
+    }
+    return rawTitleMetadata(type, id, season, refresh);
+  }
   const data = await rawTitleMetadata(type, id, season, refresh);
   if (type !== 'tv') return data;
-  const hasSeason = season !== undefined && season !== null && season !== '';
-  if (hasSeason) {
-    const seasonNumber = Number(season);
-    if (!Number.isSafeInteger(seasonNumber) || seasonNumber < 1) return data;
-    const parent = peekMetadata(`title:v2:tv:${id}:`) ?? peekMetadata(`basic:tv:${id}:`)
-      ?? await basicTitle('tv', id).catch(() => null);
-    if (!isAnime(parent?.original_language, parent?.genres?.map(genre => genre.id))) return data;
-    return enrichAnimeSeason(id, seasonNumber, data).catch(() => data);
-  }
   if (!isAnime(data?.original_language, data?.genres?.map(genre => genre.id))) return data;
   return enrichAnimeDetails(id, data, seasonNumber => rawTitleMetadata('tv', id, String(seasonNumber))).catch(() => data);
 }
@@ -126,14 +143,18 @@ export async function catalogFacts(keys) {
         const details = needDetails ? await basicTitle(type, id) : null;
         const external = details?.external_ids?.imdb_id || details?.imdb_id;
         const anime = details && isAnime(details.original_language, details.genres?.map(genre => genre.id));
-        const [rating, mal] = await Promise.all([
+        const [rating, mal, vPlan] = await Promise.all([
           cached[cardKey] ? Promise.resolve(cached[cardKey]) : imdbRating(external),
           anime && hasMal ? catalogAnimeRating(type, id, 1).catch(() => null) : Promise.resolve(null),
+          anime && type === 'tv' && details?.number_of_seasons === 1 ? animeVirtualSeasonPlan(id).catch(() => null) : Promise.resolve(null),
         ]);
+        const virtualCount = vPlan && details?.number_of_episodes
+          ? vPlan.filter(entry => details.number_of_episodes >= entry.start).length
+          : 0;
         facts[cardKey] = {
           rating,
           ...(mal ? { mal } : {}),
-          seasons: details?.number_of_seasons, status: details?.status,
+          seasons: virtualCount >= 2 ? virtualCount : details?.number_of_seasons, status: details?.status,
         };
       } catch {
         if (cached[cardKey]) facts[cardKey] = { rating: cached[cardKey] };
