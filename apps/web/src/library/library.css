@@ -81,25 +81,26 @@
   cursor: pointer;
   transition: width 320ms var(--af-ease-out), opacity var(--af-duration-fast) var(--af-ease-out), filter var(--af-duration-fast) var(--af-ease-out);
 }
-.af-lib-bar-seg:hover { filter: brightness(1.15); }
-.af-lib-bar-seg.is-watching { background: #3fa66c; }
-.af-lib-bar-seg.is-completed { background: #4a7db3; }
+.af-lib-bar-seg:hover { filter: brightness(1.12); }
+.af-lib-bar.has-selection .af-lib-bar-seg:not(.is-active) { opacity: 0.32; }
+.af-lib-bar-seg.is-watching { background: var(--af-info); }
+.af-lib-bar-seg.is-completed { background: var(--af-success); }
 .af-lib-bar-seg.is-hold { background: var(--af-gold); }
-.af-lib-bar-seg.is-dropped { background: #c54d42; }
-.af-lib-bar-seg.is-planned { background: #7b8289; }
+.af-lib-bar-seg.is-dropped { background: var(--af-danger); }
+.af-lib-bar-seg.is-planned { background: var(--af-secondary-ink); }
 
 .af-status-dot {
-  inline-size: 10px;
-  block-size: 10px;
+  inline-size: 9px;
+  block-size: 9px;
   border-radius: 50%;
   flex: none;
   display: inline-block;
 }
-.af-status-dot.is-watching { background: #3fa66c; }
-.af-status-dot.is-completed { background: #4a7db3; }
+.af-status-dot.is-watching { background: var(--af-info); }
+.af-status-dot.is-completed { background: var(--af-success); }
 .af-status-dot.is-hold { background: var(--af-gold); }
-.af-status-dot.is-dropped { background: #c54d42; }
-.af-status-dot.is-planned { background: #7b8289; }
+.af-status-dot.is-dropped { background: var(--af-danger); }
+.af-status-dot.is-planned { background: var(--af-secondary-ink); }
 
 .af-lib-stats-body {
   display: grid;
@@ -211,8 +212,8 @@
 }
 .af-folder-dot.is-ember, .af-folder-swatch.is-ember { background: var(--af-action); }
 .af-folder-dot.is-gold, .af-folder-swatch.is-gold { background: var(--af-gold); }
-.af-folder-dot.is-sage, .af-folder-swatch.is-sage { background: #3fa66c; }
-.af-folder-dot.is-steel, .af-folder-swatch.is-steel { background: #4a7db3; }
+.af-folder-dot.is-sage, .af-folder-swatch.is-sage { background: var(--af-success); }
+.af-folder-dot.is-steel, .af-folder-swatch.is-steel { background: var(--af-info); }
 .af-folder-dot.is-slate, .af-folder-swatch.is-slate { background: #9b8fb8; }
 
 .af-folder-active-actions {

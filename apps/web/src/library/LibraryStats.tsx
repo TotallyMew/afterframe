@@ -66,7 +66,7 @@ export function LibraryStats({
         </div>
       </div>
 
-      <div className="af-lib-bar" role="img" aria-label="Status distribution bar">
+      <div className={`af-lib-bar ${activeStatus ? 'has-selection' : ''}`} role="img" aria-label="Status distribution bar">
         {statusOrder.map(status => {
           const count = stats.counts[status];
           if (!count) return null;

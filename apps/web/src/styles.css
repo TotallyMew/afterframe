@@ -1032,8 +1032,8 @@ a.af-episode-title:hover { color: var(--af-selection); }
 .af-notif-trigger { position: relative; }
 .af-notif-badge {
   position: absolute;
-  top: 5px;
-  right: 5px;
+  top: 2px;
+  right: 2px;
   min-inline-size: 1.05rem;
   block-size: 1.05rem;
   padding-inline: 3px;
@@ -1271,8 +1271,99 @@ h3:focus:not(:focus-visible) {
   }
 }
 
+/* Refined Header Tools Alignment & Grouping */
+.af-tools {
+  gap: clamp(6px, .8vw, 10px);
+}
+.af-tools .af-icon-button {
+  min-width: 2.25rem;
+  min-height: 2.25rem;
+  border: 1px solid transparent;
+  transition: background-color var(--af-duration-fast) var(--af-ease-out), border-color var(--af-duration-fast) var(--af-ease-out), color var(--af-duration-fast) var(--af-ease-out);
+}
+.af-tools .af-icon-button:hover {
+  background: var(--af-panel);
+  color: var(--af-ink);
+}
+.af-tools .af-icon { width: 18px; height: 18px; }
+.af-tools .af-search-trigger {
+  padding-inline: 11px;
+  border-color: var(--af-divider);
+  background: var(--af-panel);
+}
+.af-tools .af-search-trigger:hover {
+  border-color: var(--af-control-edge);
+  color: var(--af-ink);
+}
+.af-tools .af-header-library-link {
+  padding-inline: 10px;
+}
+.af-tools .af-header-library-link[aria-current="page"] {
+  border-color: var(--af-control-edge);
+  background: var(--af-panel);
+  color: var(--af-ink);
+}
+.af-tools-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--af-divider);
+  margin-inline: 2px;
+  flex: none;
+}
+.af-tool-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.af-account {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 2.25rem;
+  padding-inline: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--af-radius);
+  max-width: clamp(64px, 14vw, 150px);
+  overflow: visible;
+  transition: background-color var(--af-duration-fast) var(--af-ease-out), border-color var(--af-duration-fast) var(--af-ease-out), color var(--af-duration-fast) var(--af-ease-out);
+}
+.af-account:not(.is-signed-in) {
+  padding-inline: 10px;
+}
+.af-account:hover {
+  background: var(--af-panel);
+  border-color: var(--af-divider);
+  color: var(--af-ink);
+}
+.af-account-avatar {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--af-selection-fill);
+  border: 1px solid color-mix(in srgb, var(--af-selection) 42%, transparent);
+  color: var(--af-selection);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+  flex: none;
+}
+.af-account-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1050px) {
+  .af-tools .af-header-library-link,
+  .af-tools .af-search-trigger { padding-inline: 0; }
+}
+
 @media (max-width: 45rem) {
-  .af-header-library-link { display: none; }
+  .af-tools { gap: 4px; }
+  .af-header-library-link,
+  .af-tools-divider { display: none; }
 }
 
 /* Settings Modal Animations, Segmented Tabs, Smooth Switches & Custom Scrollbar */

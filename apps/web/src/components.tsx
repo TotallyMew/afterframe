@@ -651,6 +651,8 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
       window.removeEventListener('afterframe-open-browse', openBrowseEvent);
     };
   }, [search]);
+  const isLibraryActive = ['watchlist', 'watched', 'ratings', 'reading', 'history', 'notifications'].includes(path);
+  const accountName = controls.account?.username;
   return <header className="af-header">
     <a className="af-brand" href={webHref('home')}><img src="/art/favicon.svg" alt="" />afterframe</a>
     <nav ref={navRef} className={`af-nav ${pill.ready ? 'has-indicator' : ''}`} aria-label="Main navigation">
@@ -671,11 +673,26 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
         <Search open={search} controls={controls} close={() => { searchNavigated.current = true; setSearch(false); }}
           finalFocus={() => searchNavigated.current ? false : searchReturn.current?.isConnected ? searchReturn.current : searchTrigger.current} />
       </Dialog.Root>
-      <NotificationsBell controls={controls} />
-      <a className="af-icon-button af-header-library-link" href={webHref('watchlist')} aria-label="Library"><Icon name="bookmark" /><span>Library</span></a>
-      <button type="button" className="af-icon-button af-settings" aria-label="Settings" aria-haspopup="dialog"
-        onClick={event => openSettings('general', event.currentTarget)}><Icon name="settings" /></button>
-      <AccountButton className="af-account">{controls.account?.username ?? 'Sign in'}</AccountButton>
+      <a
+        className="af-icon-button af-header-library-link"
+        href={webHref('watchlist')}
+        aria-label="Library"
+        aria-current={isLibraryActive ? 'page' : undefined}
+      >
+        <Icon name="bookmark" /><span>Library</span>
+      </a>
+      <span className="af-tools-divider" aria-hidden="true" />
+      <div className="af-tool-icons">
+        <NotificationsBell controls={controls} />
+        <button type="button" className="af-icon-button af-settings" aria-label="Settings" aria-haspopup="dialog" title="Settings"
+          onClick={event => openSettings('general', event.currentTarget)}><Icon name="settings" /></button>
+      </div>
+      <AccountButton className={`af-account ${accountName ? 'is-signed-in' : ''}`}>
+        {accountName ? <>
+          <span className="af-account-avatar" aria-hidden="true">{accountName.slice(0, 1).toUpperCase()}</span>
+          <span className="af-account-name">{accountName}</span>
+        </> : 'Sign in'}
+      </AccountButton>
       <Dialog.Root open={browse} onOpenChange={open => { if (open) browseOpeningSettings.current = false; setBrowse(open); }}>
         <Dialog.Trigger ref={browseTrigger} className="af-icon-button af-menu-trigger" aria-label="Browse"><Icon name="menu" /></Dialog.Trigger>
         <Dialog.Portal>
