@@ -510,4 +510,64 @@ describe('PlayerPage regressions', () => {
       else Object.defineProperty(document, 'fullscreenElement', { value: null, configurable: true });
     }
   });
+
+  it('marks Forced and SDH subtitle tracks in the menu and lets users filter to Forced tracks', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === '/api/movie/273481/playback' || url === '/api/movie/273481') {
+        return new Response(JSON.stringify({
+          id: 273481, title: 'Sicario', runtime: 121, original_language: 'en', imdb_id: 'tt3397884',
+          genres: [{ id: 80, name: 'Crime' }],
+        }), { status: 200 });
+      }
+      if (url.startsWith('https://opensubtitles-v3.strem.io/subtitles/movie/tt3397884.json')) {
+        return new Response(JSON.stringify({
+          subtitles: [
+            {
+              id: '1',
+              url: 'https://subs5.strem.io/en/download/subencoding-stremio-utf8/src-api/file/1001',
+              lang: 'eng',
+              subtitleFileName: 'Sicario.2015.BluRay.SPARKS.srt',
+              movieReleaseName: 'Sicario.2015.BluRay.SPARKS',
+            },
+            {
+              id: '2',
+              url: 'https://subs5.strem.io/en/download/subencoding-stremio-utf8/src-api/file/1002',
+              lang: 'eng',
+              subtitleFileName: 'Sicario.2015.BluRay.SPARKS.HI.srt',
+              movieReleaseName: 'Sicario.2015.BluRay.SPARKS.HI',
+            },
+            {
+              id: '3',
+              url: 'https://subs5.strem.io/en/download/subencoding-stremio-utf8/src-api/file/1003',
+              lang: 'eng',
+              subtitleFileName: 'Sicario.2015.Non English Parts Only.srt',
+              movieReleaseName: 'Sicario.2015 (Foreign parts only)',
+            },
+          ],
+        }), { status: 200 });
+      }
+      if (url.startsWith('https://subs.bright67.online/search')) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      return new Response(JSON.stringify({ segments: [] }), { status: 200 });
+    });
+
+    const route = parsePlayerRoute('movie/273481/watch')!;
+    const { container } = render(<PlayerPage route={route} controls={makeControls()} />);
+    await waitFor(() => expect(container.querySelector('iframe')).not.toBeNull());
+
+    const subDetails = container.querySelector<HTMLDetailsElement>('.af-player-subtitles')!;
+    subDetails.open = true;
+    fireEvent(subDetails, new Event('toggle'));
+
+    await waitFor(() => expect(screen.getByText('Sicario.2015 (Foreign parts only)')).toBeTruthy());
+    expect(screen.getByText('Forced')).toBeTruthy();
+    expect(screen.getByText('SDH')).toBeTruthy();
+
+    // Filter down to Forced tracks only
+    fireEvent.click(screen.getByRole('button', { name: 'Forced (1)' }));
+    expect(screen.queryByText('Sicario.2015.BluRay.SPARKS')).toBeNull();
+    expect(screen.getByText('Sicario.2015 (Foreign parts only)')).toBeTruthy();
+  });
 });

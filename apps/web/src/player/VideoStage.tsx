@@ -4,7 +4,7 @@ import {
   activeSkipSegment, bufferedIntervals, completionReached, mergeRanges, movieDurationMismatch,
   preferenceDefaults, samplePlayback, viewingSession, watchedSeconds, type PlaybackPosition, type SkipSegment, type ViewingSession,
 } from '@afterframe/shared/playback';
-import { findSubtitles, loadSubtitle, playbackLanguage, samePlaybackLanguage, type SubtitleCue, type SubtitleTrack } from '@afterframe/shared/subtitles';
+import { findSubtitles, isForcedSubtitle, isHearingImpairedSubtitle, loadSubtitle, playbackLanguage, samePlaybackLanguage, type SubtitleCue, type SubtitleTrack } from '@afterframe/shared/subtitles';
 import type Hls from 'hls.js';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { imagePath, navigate, request, type EpisodePosition, type Title } from '../catalog';
@@ -55,7 +55,15 @@ function formatEmnexSubtitleTrack(entry: { lang: string; url: string }): Subtitl
   const parenIdx = cleaned.indexOf('(');
   const base = (parenIdx > 0 ? cleaned.slice(0, parenIdx) : cleaned).trim();
   const language = playbackLanguage(base) || cleaned;
-  return { url: entry.url, language, release: cleaned !== language ? cleaned : '' };
+  const forced = isForcedSubtitle(cleaned);
+  const hearingImpaired = isHearingImpairedSubtitle(cleaned);
+  return {
+    url: entry.url,
+    language,
+    release: cleaned !== language ? cleaned : '',
+    ...(forced ? { forced: true } : {}),
+    ...(hearingImpaired ? { hearingImpaired: true } : {}),
+  };
 }
 
 export function VideoStage({
@@ -580,7 +588,8 @@ export function VideoStage({
         setSubLang(initialLang);
         setSubStatus('');
         if (wantedLang && tracks.length) {
-          const match = tracks.find(t => samePlaybackLanguage(t.language, wantedLang))
+          const langTracks = tracks.filter(t => samePlaybackLanguage(t.language, wantedLang));
+          const match = langTracks.find(t => !t.forced) || langTracks[0]
             || (data.type === 'sub' && defaultEntry ? tracks.find(t => t.url === defaultEntry.url) : undefined);
           if (match) {
             subDownloadRef.current?.abort();
@@ -1475,9 +1484,13 @@ export function VideoStage({
   }, []);
 
   const loadEmbedSubtitles = useCallback(async (autoSelectLang?: string) => {
+    const orderAutoCandidates = (list: SubtitleTrack[], lang: string) => list
+      .filter(t => samePlaybackLanguage(t.language, lang))
+      .sort((a, b) => Number(Boolean(a.forced)) - Number(Boolean(b.forced)));
+
     if (subTracksRef.current !== null) {
       if (autoSelectLang) {
-        const candidates = subTracksRef.current.filter(t => samePlaybackLanguage(t.language, autoSelectLang));
+        const candidates = orderAutoCandidates(subTracksRef.current, autoSelectLang);
         for (const candidate of candidates) {
           if (await chooseSubtitleTrack(candidate, false)) return;
         }
@@ -1500,7 +1513,7 @@ export function VideoStage({
       setSubLang(initial);
       setSubStatus(tracks.length ? '' : 'No subtitle tracks available.');
       if (autoSelectLang) {
-        const candidates = tracks.filter(t => samePlaybackLanguage(t.language, autoSelectLang));
+        const candidates = orderAutoCandidates(tracks, autoSelectLang);
         for (const candidate of candidates) {
           if (await chooseSubtitleTrack(candidate, false)) return;
         }

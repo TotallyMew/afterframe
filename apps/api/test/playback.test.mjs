@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { activeSkipSegment, bufferedIntervals, completionReached, movieDurationMismatch, samplePlayback, viewingSession } from '@afterframe/shared/playback';
-import { playbackLanguage, samePlaybackLanguage } from '@afterframe/shared/subtitles';
+import { findSubtitles, isForcedSubtitle, isHearingImpairedSubtitle, playbackLanguage, samePlaybackLanguage } from '@afterframe/shared/subtitles';
 import {
   isReasonableSegment,
   mergeSkipCandidates,
@@ -55,6 +55,97 @@ test('remembered subtitle language matches provider names and language codes', (
   assert.equal(samePlaybackLanguage('ENGLISH', 'en'), true);
   assert.equal(samePlaybackLanguage('Spanish', 'English'), false);
   assert.equal(samePlaybackLanguage('English', ''), false);
+});
+
+test('forced and SDH subtitle detection handles release names without false positives on titles', () => {
+  assert.equal(isForcedSubtitle('Sicario.2015.HD-TS.Non English Parts Only.srt', 'Sicario'), true);
+  assert.equal(isForcedSubtitle('HD-TS.XVID.AC3 (Foreign parts only)', 'Sicario'), true);
+  assert.equal(isForcedSubtitle('Narcos.S01E01.English.Forced.srt', 'Narcos'), true);
+  assert.equal(isForcedSubtitle('Narcos.S01E01.Spanish.Parts.Only.srt', 'Narcos'), true);
+  assert.equal(isForcedSubtitle('English (Signs & Songs)'), true);
+  assert.equal(isForcedSubtitle('Forced.Vengeance.1982.1080p.BluRay.srt', 'Forced Vengeance'), false);
+  assert.equal(isForcedSubtitle('Forced.Vengeance.1982.1080p.BluRay.Forced.srt', 'Forced Vengeance'), true);
+  assert.equal(isForcedSubtitle('Sicario.2015.720p.BluRay.x264-SPARKS.srt', 'Sicario'), false);
+
+  assert.equal(isHearingImpairedSubtitle('Sicario.2015.720p.BluRay.x264-SPARKS.HI.srt'), true);
+  assert.equal(isHearingImpairedSubtitle('Sicario.2015.1080p.SDH.srt'), true);
+  assert.equal(isHearingImpairedSubtitle('Say.Hi.2020.1080p.BluRay.srt'), false);
+});
+
+test('findSubtitles enriches OpenSubtitles tracks with explicit isForced/isHearingImpaired flags and appends missing forced tracks', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.startsWith('https://opensubtitles-v3.strem.io/subtitles/movie/tt3397884.json')) {
+      return new Response(JSON.stringify({
+        subtitles: [
+          {
+            id: '1',
+            url: 'https://subs5.strem.io/en/download/subencoding-stremio-utf8/src-api/file/1001',
+            lang: 'eng',
+            subtitleFileName: 'Sicario.2015.720p.BluRay.x264-SPARKS.srt',
+            movieReleaseName: 'Sicario.2015.720p.BluRay.x264-SPARKS',
+          },
+          {
+            id: '2',
+            url: 'https://subs5.strem.io/en/download/subencoding-stremio-utf8/src-api/file/1002',
+            lang: 'eng',
+            subtitleFileName: 'Sicario.2015.BluRay.srt',
+            movieReleaseName: 'Sicario.2015.BluRay',
+          },
+        ],
+      }), { status: 200 });
+    }
+    if (url.startsWith('https://subs.bright67.online/search')) {
+      return new Response(JSON.stringify([
+        {
+          id: '1002',
+          url: 'https://subs.bright67.online/c/abc/id/1002?format=srt',
+          format: 'srt',
+          display: 'English',
+          isForced: true,
+          isHearingImpaired: false,
+          release: 'Sicario.2015.BluRay',
+        },
+        {
+          id: '1003',
+          url: 'https://subs.bright67.online/c/abc/id/1003?format=srt',
+          format: 'srt',
+          display: 'English',
+          isForced: true,
+          isHearingImpaired: true,
+          release: 'Sicario.2015.Foreign.Parts.Only',
+        },
+        {
+          id: '1004',
+          url: 'https://subs.bright67.online/c/abc/id/1004?format=srt',
+          format: 'srt',
+          display: 'English',
+          isForced: true,
+          qualityWarnings: ['no-timed-cues-detected'],
+          release: 'Broken.Forced',
+        },
+      ]), { status: 200 });
+    }
+    return new Response('{}', { status: 404 });
+  };
+
+  try {
+    const tracks = await findSubtitles({ id: 273481, type: 'movie', imdb: 'tt3397884', title: 'Sicario' }, null, AbortSignal.timeout(5000));
+    assert.equal(tracks.length, 3);
+    // Non-forced full track comes first
+    assert.equal(tracks[0].url, 'https://subs5.strem.io/en/download/subencoding-stremio-utf8/src-api/file/1001');
+    assert.equal(tracks[0].forced, undefined);
+    // OpenSubtitles track with plain filename inherits isForced: true from secondary match on file ID 1002
+    assert.equal(tracks[1].url, 'https://subs5.strem.io/en/download/subencoding-stremio-utf8/src-api/file/1002');
+    assert.equal(tracks[1].forced, true);
+    // Extra forced track (1003) is appended while broken cue track (1004) is skipped
+    assert.equal(tracks[2].url, 'https://subs.bright67.online/c/abc/id/1003?format=srt');
+    assert.equal(tracks[2].forced, true);
+    assert.equal(tracks[2].hearingImpaired, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('a new signed-in session receives the account’s playback language settings', async () => {

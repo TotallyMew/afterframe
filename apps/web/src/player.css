@@ -738,10 +738,48 @@
   color: var(--af-ink);
   text-overflow: ellipsis;
 }
-.af-subtitle-tracks { display: grid; gap: 3px; max-height: 168px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--af-divider) transparent; }
+.af-subtitle-filter { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+.af-subtitle-filter button {
+  min-height: 28px;
+  padding: 2px 8px;
+  border: 1px solid var(--af-hairline-strong);
+  border-radius: var(--af-radius);
+  background: var(--af-canvas);
+  color: var(--af-secondary-ink);
+  font-size: var(--af-type-caption);
+  font-weight: 500;
+}
+.af-subtitle-filter button:hover { border-color: var(--af-control-edge); color: var(--af-ink); background: var(--af-raised); }
+.af-subtitle-filter button[aria-pressed='true'] {
+  border-color: color-mix(in srgb, var(--af-selection) 50%, transparent);
+  background: var(--af-selection-fill);
+  color: var(--af-selection);
+}
+.af-subtitle-tracks { display: grid; gap: 3px; max-height: 204px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--af-divider) transparent; }
 .af-subtitle-tracks:empty { display: none; }
 .af-subtitle-choice { display: grid; grid-template-columns: minmax(0, 1fr) 16px; align-items: center; gap: 8px; min-height: 34px; padding: 6px 8px; border: 1px solid transparent; border-radius: var(--af-radius); text-align: left; font-size: var(--af-type-caption); }
-.af-subtitle-choice span { overflow-wrap: anywhere; }
+.af-subtitle-choice-main { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.af-subtitle-choice-label { overflow-wrap: anywhere; }
+.af-subtitle-badges { display: inline-flex; flex-wrap: wrap; gap: 4px; flex: none; }
+.af-subtitle-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border: 1px solid var(--af-hairline-strong);
+  border-radius: 999px;
+  background: var(--af-raised);
+  color: var(--af-secondary-ink);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+.af-subtitle-badge.is-forced {
+  border-color: color-mix(in srgb, var(--af-selection) 48%, transparent);
+  background: var(--af-selection-fill);
+  color: var(--af-selection);
+}
 .af-subtitle-choice:hover { background: var(--af-raised); }
 .af-subtitle-choice[aria-pressed='true'] { border-color: color-mix(in srgb, var(--af-selection) 40%, transparent); background: var(--af-selection-fill); }
 .af-subtitle-choice[aria-pressed='true'] .af-icon { color: var(--af-selection); width: 15px; height: 15px; }

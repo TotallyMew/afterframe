@@ -78,6 +78,7 @@ export function SubtitleMenu({
 }) {
   const [tab, setTab] = useState<'tracks' | 'style'>('tracks');
   const [langFilter, setLangFilter] = useState('');
+  const [forcedOnly, setForcedOnly] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const active = Boolean(activeCues || nativeCaptionsOn);
 
@@ -98,6 +99,19 @@ export function SubtitleMenu({
     const matches = orderedLanguages.filter(lang => lang.toLowerCase().includes(q));
     return matches.length ? matches : orderedLanguages;
   }, [orderedLanguages, langFilter]);
+
+  const tracksForLang = useMemo(
+    () => (subTracks ?? []).filter(t => t.language === subLang),
+    [subTracks, subLang],
+  );
+  const forcedCount = useMemo(
+    () => tracksForLang.filter(t => t.forced).length,
+    [tracksForLang],
+  );
+  const showForcedFilter = forcedCount > 0 && forcedCount < tracksForLang.length;
+  const visibleTracks = showForcedFilter && forcedOnly
+    ? tracksForLang.filter(t => t.forced)
+    : tracksForLang;
 
   const formattedOffset = `${captionStyle.offset > 0 ? '+' : ''}${captionStyle.offset.toFixed(1)}s`;
 
@@ -137,15 +151,34 @@ export function SubtitleMenu({
         )}
         {orderedLanguages.length > 0 && <label className="af-player-language">
           <span>Language</span>
-          <select className="af-player-select" aria-label="Subtitle language" value={subLang} onChange={event => onSelectLanguage(event.target.value)}>
+          <select className="af-player-select" aria-label="Subtitle language" value={subLang} onChange={event => {
+            setForcedOnly(false);
+            onSelectLanguage(event.target.value);
+          }}>
             {filteredLanguages.map(lang => <option key={lang} value={lang}>{lang}</option>)}
           </select>
         </label>}
+        {showForcedFilter && <div className="af-subtitle-filter" role="group" aria-label="Filter subtitle type">
+          <button type="button" aria-pressed={!forcedOnly} onClick={() => setForcedOnly(false)}>
+            All ({tracksForLang.length})
+          </button>
+          <button type="button" aria-pressed={forcedOnly} onClick={() => setForcedOnly(true)}>
+            Forced ({forcedCount})
+          </button>
+        </div>}
         <div className="af-subtitle-tracks" role="group" aria-label="Subtitle versions">
-          {(subTracks ?? []).filter(t => t.language === subLang).map((track, idx) => (
+          {visibleTracks.map((track, idx) => (
             <button key={track.url} type="button" className="af-subtitle-choice" aria-pressed={activeCues?.url === track.url}
               onClick={() => onChooseTrack(track)}>
-              <span>{track.release || `${track.language} · Track ${idx + 1}`}</span>
+              <span className="af-subtitle-choice-main">
+                <span className="af-subtitle-choice-label">{track.release || `${track.language} · Track ${idx + 1}`}</span>
+                {(track.forced || track.hearingImpaired) && (
+                  <span className="af-subtitle-badges">
+                    {track.forced && <span className="af-subtitle-badge is-forced" title="Foreign dialogue only">Forced</span>}
+                    {track.hearingImpaired && <span className="af-subtitle-badge" title="Subtitles for the deaf and hard of hearing">SDH</span>}
+                  </span>
+                )}
+              </span>
               {activeCues?.url === track.url && <Icon name="check" />}
             </button>
           ))}
