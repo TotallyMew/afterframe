@@ -1094,7 +1094,7 @@ function ReaderStageCanvas({
   total: number;
   pages: string[];
   visiblePages: number[];
-  transcript?: ChapterContent['transcript'];
+  transcript: ChapterContent['transcript'];
   zoom: number;
   pan: { x: number; y: number };
   pageStyle: CSSProperties;

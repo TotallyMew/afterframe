@@ -508,7 +508,7 @@ function EpisodesBody({
               item={item}
               episode={episode}
               controls={controls}
-              isResumeTarget={Boolean(resumeEpisode && resumeEpisode.season === episode.season_number && resumeEpisode.number === episode.episode_number)}
+              isResumeTarget={resumeEpisode?.season === episode.season_number && resumeEpisode.number === episode.episode_number}
               animeAudio={effectiveAudio}
               onSelectPlay={effectiveAudio ? () => writeAnimeAudioPreference(item.key, effectiveAudio) : undefined}
             />
@@ -929,42 +929,11 @@ function DetailsCastSection({
   );
 }
 
-export function DetailsPage({ type, id, controls }: Readonly<{ type: MediaType; id: number; controls: LibraryControls }>) {
-  const [details, setDetails] = useState<TitleDetails>();
-  const [error, setError] = useState('');
-  const [attempt, setAttempt] = useState(0);
+function useRelatedTitles(type: MediaType, id: number) {
   const [related, setRelated] = useState<Title[]>([]);
   const [relatedError, setRelatedError] = useState(false);
   const [relatedAttempt, setRelatedAttempt] = useState(0);
-  const [logoFailed, setLogoFailed] = useState(false);
-  const [trailerOpen, setTrailerOpen] = useState(false);
-  const seasonCache = useRef(new Map<number, Promise<Episode[]>>());
 
-  useEffect(() => {
-    setLogoFailed(false);
-    setTrailerOpen(false);
-    const controller = new AbortController();
-    const { signal } = controller;
-    const path = `/api/${type}/${id}`;
-    request<TitleDetails>(path, { signal }).then(value => {
-      if (signal.aborted) return;
-      setDetails(value);
-      const item = normalizeTitle(value, type);
-      document.title = `${item.title} · Afterframe`;
-    }).catch(error_ => { if (!signal.aborted) setError(error_.message); });
-    return () => controller.abort();
-  }, [type, id, attempt]);
-
-  const item = useMemo(() => details && { ...normalizeTitle(details, type), totalEpisodes: details.number_of_episodes }, [details, type]);
-  useEffect(() => {
-    if (item && isAnime(item.originalLanguage, item.genreIds)) {
-      window.dispatchEvent(new CustomEvent('afterframe-section', { detail: 'anime' }));
-    }
-  }, [item]);
-  const imdb = useOptionalRating<CatalogRating>(item?.imdb ? `/api/imdb?id=${encodeURIComponent(item.imdb)}&status=1` : undefined);
-  const mal = useOptionalRating<number>(item?.originalLanguage === 'ja' && item.genreIds?.includes(16)
-    ? `/api/mal/catalog/${type}/${id}?season=${details?.seasons?.find(entry => entry.season_number > 0)?.season_number ?? 1}&status=1`
-    : undefined);
   useEffect(() => {
     const task = new AbortController();
     request<TitleResults>(`/api/${type}/${id}/related`, { signal: task.signal })
@@ -974,6 +943,102 @@ export function DetailsPage({ type, id, controls }: Readonly<{ type: MediaType; 
       }).catch(() => { if (!task.signal.aborted) setRelatedError(true); });
     return () => task.abort();
   }, [type, id, relatedAttempt]);
+
+  const retryRelated = () => setRelatedAttempt(value => value + 1);
+  return { related, relatedError, retryRelated };
+}
+
+function useTitleDetailsData(type: MediaType, id: number) {
+  const [details, setDetails] = useState<TitleDetails>();
+  const [error, setError] = useState('');
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
+    request<TitleDetails>(`/api/${type}/${id}`, { signal }).then(value => {
+      if (signal.aborted) return;
+      setDetails(value);
+      document.title = `${normalizeTitle(value, type).title} · Afterframe`;
+    }).catch(error_ => { if (!signal.aborted) setError(error_.message); });
+    return () => controller.abort();
+  }, [type, id, attempt]);
+
+  const item = useMemo(() => details && { ...normalizeTitle(details, type), totalEpisodes: details.number_of_episodes }, [details, type]);
+
+  useEffect(() => {
+    if (item && isAnime(item.originalLanguage, item.genreIds)) {
+      window.dispatchEvent(new CustomEvent('afterframe-section', { detail: 'anime' }));
+    }
+  }, [item]);
+
+  const imdb = useOptionalRating<CatalogRating>(item?.imdb ? `/api/imdb?id=${encodeURIComponent(item.imdb)}&status=1` : undefined);
+  const isJaAnime = item?.originalLanguage === 'ja' && item.genreIds?.includes(16);
+  const firstSeasonNum = details?.seasons?.find(entry => entry.season_number > 0)?.season_number ?? 1;
+  const mal = useOptionalRating<number>(isJaAnime ? `/api/mal/catalog/${type}/${id}?season=${firstSeasonNum}&status=1` : undefined);
+  const { related, relatedError, retryRelated } = useRelatedTitles(type, id);
+  const retryDetails = () => { setError(''); setAttempt(value => value + 1); };
+
+  return { details, item, error, related, relatedError, imdb, mal, retryDetails, retryRelated };
+}
+
+function buildDetailsViewModel(options: {
+  type: MediaType;
+  details: TitleDetails;
+  item: Title;
+  watched: LibraryControls['library']['watched'];
+  resume: ReturnType<typeof resumeFor>;
+  selection: { episode: Episode; replay: boolean } | undefined;
+  selectionResolved: boolean;
+  orderedSeasons: Season[];
+  regular: Season[];
+  logoFailed: boolean;
+}) {
+  const { type, details, item, watched, resume, selection, selectionResolved, orderedSeasons, regular, logoFailed } = options;
+  const cast = details.credits?.cast?.slice(0, 8) ?? [];
+  const starring = cast.slice(0, 4).map(person => person.name);
+  const crewJobs = new Set(['Director', 'Writer', 'Screenplay', 'Director of Photography', 'Original Music Composer', 'Editor']);
+  const crew = details.credits?.crew?.filter(person => crewJobs.has(person.job)).slice(0, 10) ?? [];
+  const directors = [...new Set(crew.filter(person => person.job === 'Director').map(person => person.name))];
+  const creators = details.created_by?.map(person => person.name) ?? [];
+  const { role: creditRole, names: creditNames } = resolveCreditSummary(directors, creators);
+  const genres = details.genres?.slice(0, 3).map(genre => genre.name).join(', ') || item.genre;
+  const scheduling = type === 'tv' ? upcoming(details) : '';
+  const status = showStatusLabels[details.status ?? ''];
+  const facts = [
+    genres,
+    formatDetailsYearRange(type, item, details),
+    formatTitleLengthFact(type, details, item),
+    type === 'tv' ? status : '',
+  ].filter((value): value is string => Boolean(value));
+
+  const count = Object.keys(watched).filter(key => key.startsWith(`${item.key}/cinesrc-s`) && !key.startsWith(`${item.key}/cinesrc-s0e`)).length;
+  const resumeEpisode = resume?.episode;
+  const canShowOptimistic = !selectionResolved && regular.length > 0 && (!item.date || item.date <= today());
+  const optimisticEpisode = canShowOptimistic ? { season: regular[0].season_number, number: 1, title: 'Episode 1' } : undefined;
+  const startingEpisode = resumeEpisode ?? (selection ? episodePosition(selection.episode) : optimisticEpisode);
+  const playLabel = formatTvPlayLabel(resumeEpisode, selection, regular);
+  const initialSeason = resolveInitialSeason(orderedSeasons, resumeEpisode, regular);
+  const logo = logoFailed ? undefined : pickTitleLogo(details.images?.logos);
+  const trailer = pickTrailer(details.videos?.results);
+  const resumePct = resume && resume.duration > 0 ? progressPercent(resume) : 0;
+
+  return {
+    cast, starring, crew, creditRole, creditNames, facts, scheduling, count,
+    resumeEpisode, startingEpisode, playLabel, initialSeason, logo, trailer, resumePct,
+  };
+}
+
+export function DetailsPage({ type, id, controls }: Readonly<{ type: MediaType; id: number; controls: LibraryControls }>) {
+  const { details, item, error, related, relatedError, imdb, mal, retryDetails, retryRelated } = useTitleDetailsData(type, id);
+  const [logoFailed, setLogoFailed] = useState(false);
+  const [trailerOpen, setTrailerOpen] = useState(false);
+  const seasonCache = useRef(new Map<number, Promise<Episode[]>>());
+
+  useEffect(() => {
+    setLogoFailed(false);
+    setTrailerOpen(false);
+  }, [type, id]);
 
   const orderedSeasons = useMemo(() => orderSeasons(details?.seasons), [details]);
   const regular = useMemo(() => {
@@ -989,6 +1054,7 @@ export function DetailsPage({ type, id, controls }: Readonly<{ type: MediaType; 
     }
     return response;
   }, [id]);
+
   const resume = item && controls.ready ? resumeFor(controls.library, item) : undefined;
   const watched = controls.library.watched;
   const { selection, selectionResolved } = useInitialEpisodeSelection({
@@ -1002,41 +1068,21 @@ export function DetailsPage({ type, id, controls }: Readonly<{ type: MediaType; 
     watched,
   });
 
-  if (!details || !item) return <div className="af-wrap af-title-page">
-    <a className="af-text-link af-back" href={previousBrowse(type === 'movie' ? 'movies' : 'tv')}><Icon name="left" /> Back to browse</a>
-    {error ? <div className="af-state" role="alert"><h1>Title unavailable</h1><p>{error}</p>
-      <button className="af-text-link" type="button" onClick={() => { setError(''); setAttempt(value => value + 1); }}>Retry</button></div>
-      : <Loading label="Loading title…" shape="hero" />}
-  </div>;
+  if (!details || !item) {
+    return (
+      <div className="af-wrap af-title-page">
+        <a className="af-text-link af-back" href={previousBrowse(type === 'movie' ? 'movies' : 'tv')}><Icon name="left" /> Back to browse</a>
+        {error ? <div className="af-state" role="alert"><h1>Title unavailable</h1><p>{error}</p>
+          <button className="af-text-link" type="button" onClick={retryDetails}>Retry</button></div>
+          : <Loading label="Loading title…" shape="hero" />}
+      </div>
+    );
+  }
 
-  const cast = details.credits?.cast?.slice(0, 8) ?? [];
-  const starring = cast.slice(0, 4).map(person => person.name);
-  const crew = details.credits?.crew?.filter(person => ['Director', 'Writer', 'Screenplay', 'Director of Photography', 'Original Music Composer', 'Editor'].includes(person.job)).slice(0, 10) ?? [];
-  const directors = [...new Set(crew.filter(person => person.job === 'Director').map(person => person.name))];
-  const creators = details.created_by?.map(person => person.name) ?? [];
-  const { role: creditRole, names: creditNames } = resolveCreditSummary(directors, creators);
-  const genres = details.genres?.slice(0, 3).map(genre => genre.name).join(', ') || item.genre;
-  const scheduling = type === 'tv' ? upcoming(details) : '';
-  const status = showStatusLabels[details.status ?? ''];
-  const yearRange = formatDetailsYearRange(type, item, details);
-  const facts = [
-    genres,
-    yearRange,
-    formatTitleLengthFact(type, details, item),
-    type === 'tv' ? status : '',
-  ].filter((value): value is string => Boolean(value));
-
-  const count = Object.keys(watched).filter(key => key.startsWith(`${item.key}/cinesrc-s`) && !key.startsWith(`${item.key}/cinesrc-s0e`)).length;
-  const resumeEpisode = resume?.episode;
-  const optimisticEpisode = !selectionResolved && regular.length > 0 && (!item.date || item.date <= today())
-    ? { season: regular[0].season_number, number: 1, title: 'Episode 1' }
-    : undefined;
-  const startingEpisode = resumeEpisode ?? (selection ? episodePosition(selection.episode) : optimisticEpisode);
-  const playLabel = formatTvPlayLabel(resumeEpisode, selection, regular);
-  const initialSeason = resolveInitialSeason(orderedSeasons, resumeEpisode, regular);
-  const logo = logoFailed ? undefined : pickTitleLogo(details.images?.logos);
-  const trailer = pickTrailer(details.videos?.results);
-  const resumePct = resume && resume.duration > 0 ? progressPercent(resume) : 0;
+  const view = buildDetailsViewModel({
+    type, details, item, watched, resume, selection, selectionResolved, orderedSeasons, regular, logoFailed,
+  });
+  const showHeatmap = type === 'tv' && orderedSeasons.some(s => s.season_number > 0);
 
   return <>
     <DetailsHeroSection
@@ -1046,41 +1092,41 @@ export function DetailsPage({ type, id, controls }: Readonly<{ type: MediaType; 
       controls={controls}
       imdb={imdb}
       mal={mal}
-      logo={logo}
-      trailer={trailer}
-      startingEpisode={startingEpisode}
-      playLabel={playLabel}
+      logo={view.logo}
+      trailer={view.trailer}
+      startingEpisode={view.startingEpisode}
+      playLabel={view.playLabel}
       resume={resume}
-      resumePct={resumePct}
-      watchedEpisodeCount={count}
-      starring={starring}
-      creditRole={creditRole}
-      creditNames={creditNames}
-      facts={facts}
-      scheduling={scheduling}
+      resumePct={view.resumePct}
+      watchedEpisodeCount={view.count}
+      starring={view.starring}
+      creditRole={view.creditRole}
+      creditNames={view.creditNames}
+      facts={view.facts}
+      scheduling={view.scheduling}
       onLogoError={() => setLogoFailed(true)}
       onOpenTrailer={() => setTrailerOpen(true)}
     />
 
-    {trailer && <TrailerModal video={trailer} title={item.title} open={trailerOpen} onOpenChange={setTrailerOpen} />}
+    {view.trailer && <TrailerModal video={view.trailer} title={item.title} open={trailerOpen} onOpenChange={setTrailerOpen} />}
 
     <div className="af-wrap af-content">
       {type === 'tv' && <Episodes
         item={item}
         seasons={orderedSeasons}
-        initialSeason={initialSeason}
-        resumeEpisode={resumeEpisode}
+        initialSeason={view.initialSeason}
+        resumeEpisode={view.resumeEpisode}
         controls={controls}
         readSeason={readSeason}
         isAnimeTitle={isAnime(item.originalLanguage, item.genreIds)}
         showHasDub={Boolean(details.anime_dub?.available)}
       />}
 
-      {type === 'tv' && orderedSeasons.some(s => s.season_number > 0) && <EpisodeRatingsHeatmap item={item} />}
+      {showHeatmap && <EpisodeRatingsHeatmap item={item} />}
 
-      <DetailsCastSection cast={cast} crew={crew} />
+      <DetailsCastSection cast={view.cast} crew={view.crew} />
 
-      {relatedError && <output className="af-state">Related titles could not load. <button className="af-text-link" type="button" onClick={() => setRelatedAttempt(value => value + 1)}>Retry related titles</button></output>}
+      {relatedError && <output className="af-state">Related titles could not load. <button className="af-text-link" type="button" onClick={retryRelated}>Retry related titles</button></output>}
       {related.length > 0 && <div id="related" tabIndex={-1}><Shelf title={type === 'tv' ? 'Related series' : 'Related films'}>
         {related.map(other => <MediaCard item={other} controls={controls} key={other.key} />)}
       </Shelf></div>}

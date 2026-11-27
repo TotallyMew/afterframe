@@ -944,6 +944,160 @@ function LibraryItemsDisplay({
   );
 }
 
+function useLibraryStatusMutation(
+  controls: LibraryControls,
+  clearProblem: () => void,
+) {
+  const [saving, setSaving] = useState<string[]>([]);
+  const [completionError, setCompletionError] = useState<Record<string, string>>({});
+
+  async function handleStatusChange(item: SavedTitle, nextStatus: WatchStatus) {
+    if (item.type === 'comic') {
+      void controls.setComicStatus(item, nextStatus);
+      return;
+    }
+    setCompletionError(current => ({ ...current, [item.key]: '' }));
+    setSaving(current => [...current, item.key]);
+    clearProblem();
+    try {
+      const details = item.type === 'tv' && nextStatus === 'completed'
+        ? await request<Details>(`/api/tv/${item.id}`)
+        : { id: item.id };
+      await controls.setStatus({ ...item, totalEpisodes: details.number_of_episodes ?? item.totalEpisodes }, nextStatus, details);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not update this title.';
+      setCompletionError(current => ({ ...current, [item.key]: message }));
+    } finally {
+      setSaving(current => current.filter(key => key !== item.key));
+    }
+  }
+
+  return { saving, completionError, handleStatusChange };
+}
+
+function LibraryEmptyState({ mode }: Readonly<{ mode: 'video' | 'reading' }>) {
+  const reading = mode === 'reading';
+  return (
+    <EmptyState
+      icon={reading ? 'book' : 'bookmark'}
+      title={reading ? 'Your reading list is empty' : 'Your library is empty'}
+      description={reading
+        ? 'Save manga, manhwa, or manhua to track your reading status, ratings, and custom folders.'
+        : 'Save movies, TV shows, and anime to track what you watch, organize folders, and view your stats.'}
+      actions={<ActionLink primary href={webHref(reading ? 'comics' : 'movies')}>
+        {reading ? 'Browse manga' : 'Browse movies'}
+      </ActionLink>}
+    />
+  );
+}
+
+function buildResultsSummaryLabels(
+  labels: Record<WatchStatus, string>,
+  folders: NonNullable<LibraryControls['library']['folders']>,
+) {
+  const allSortings = [...videoSorting, ...readingSorting];
+  return {
+    status: (value: string) => labels[value as WatchStatus] ?? '',
+    folder: (value: string) => folders[value]?.name ? `Folder: ${folders[value].name}` : '',
+    type: formatVideoTypeLabel,
+    format: (value: string) => comicFormats.find(([key]) => key === value)?.[1] ?? '',
+    sort: (value: string) => value === 'recent' ? '' : (allSortings.find(([key]) => key === value)?.[1] ?? ''),
+  };
+}
+
+function resolveVideoTypeFilter(mode: 'video' | 'reading', type: string): '' | 'movie' | 'tv' | 'anime' {
+  if (mode !== 'video') return '';
+  if (type === 'movie' || type === 'tv' || type === 'anime') return type;
+  return '';
+}
+
+function persistViewMode(next: 'grid' | 'list') {
+  try { localStorage.setItem(viewModeKey, next); } catch { /* ignore */ }
+}
+
+function hasInvalidDateRange(params: URLSearchParams): boolean {
+  const afterVal = params.get('after');
+  const beforeVal = params.get('before');
+  return Boolean(afterVal && beforeVal && afterVal > beforeVal);
+}
+
+function extractGenreNames(saved: SavedTitle[]): string[] {
+  const names = saved.flatMap(item => item.type !== 'comic' && item.genre ? [item.genre] : []);
+  return [...new Set(names)].sort((a, b) => a.localeCompare(b));
+}
+
+function buildLibraryData(
+  library: LibraryControls['library'],
+  mode: 'video' | 'reading',
+  filters: URLSearchParams,
+) {
+  const lookup = (name: string) => filters.get(name) || '';
+  const allSaved = Object.values(library.saved);
+  const saved: SavedTitle[] = mode === 'reading' ? allSaved.filter(isComic) : allSaved.filter(isVideo);
+  const folders = library.folders ?? {};
+  const activeStatus = lookup('status');
+  const activeFolderId = lookup('folder');
+  const activeFolder = activeFolderId ? folders[activeFolderId] : undefined;
+  const pool: SavedTitle[] = activeFolder
+    ? allSaved.filter(item => activeFolder.items.includes(item.key))
+    : saved;
+
+  const progressMap = new Map(pool.map(item => [item.key, item.type === 'comic' ? 0 : titleCoverage(item, library)]));
+  const statusMap = new Map(pool.map(item => [item.key, effectiveWatchStatus(item, library)]));
+  const { type, format, genre, rating, coverage, after, before, query, sort } = Object.fromEntries(
+    ['type', 'format', 'genre', 'rating', 'coverage', 'after', 'before', 'query', 'sort'].map(key => [key, lookup(key)]),
+  );
+
+  const filtered = filterLibraryItems(pool, {
+    mode,
+    requiredTitle: query.toLocaleLowerCase(),
+    activeStatus,
+    type,
+    format,
+    genre,
+    after,
+    before,
+    coverage,
+    rating,
+    ratings: library.ratings,
+    progressMap,
+    statusMap,
+  });
+  const items = sortLibraryItems(filtered, sort, library.ratings, progressMap, statusMap);
+  const moreCount = ['after', 'before', 'rating', 'coverage'].filter(key => Boolean(lookup(key))).length;
+  const resumeList = mode === 'video' ? resumeEntries(library).slice(0, 8) : [];
+  const readingList = mode === 'reading' ? Object.values(library.reading).sort((a, b) => b.updated - a.updated).slice(0, 8) : [];
+  const showActiveQueue = !activeFolderId && (!activeStatus || activeStatus === 'watching');
+  const isEmpty = !saved.length && !resumeList.length && !readingList.length && !Object.keys(folders).length;
+
+  return {
+    allSaved,
+    folders,
+    activeStatus,
+    activeFolderId,
+    activeFolder,
+    pool,
+    progressMap,
+    statusMap,
+    type,
+    format,
+    genre,
+    rating,
+    coverage,
+    after,
+    before,
+    query,
+    sort,
+    genreNames: extractGenreNames(saved),
+    items,
+    moreCount,
+    resumeList,
+    readingList,
+    showActiveQueue,
+    isEmpty,
+  };
+}
+
 export function LibraryCollection({
   mode,
   controls,
@@ -964,23 +1118,22 @@ export function LibraryCollection({
   }, [appliedQuery, forcedStatus]);
 
   const [viewMode, setViewMode] = useState<'grid' | 'list'>(readViewMode);
-  const [saving, setSaving] = useState<string[]>([]);
   const [problem, setProblem] = useState('');
   const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
-  const [completionError, setCompletionError] = useState<Record<string, string>>({});
   const formRef = useRef<HTMLFormElement>(null);
   const searchTimer = useRef<number | undefined>(undefined);
   useEffect(() => () => clearTimeout(searchTimer.current), []);
 
+  const { saving, completionError, handleStatusChange } = useLibraryStatusMutation(controls, () => setProblem(''));
+
   function updateViewMode(next: 'grid' | 'list') {
     setViewMode(next);
-    try { localStorage.setItem(viewModeKey, next); } catch { /* ignore */ }
+    persistViewMode(next);
   }
 
   function applyLiveFilter(form: HTMLFormElement | null, replace = true, overrides?: Record<string, string>) {
     const next = buildNextFilterParams(form, filters, overrides);
-    const afterVal = next.get('after'), beforeVal = next.get('before');
-    if (afterVal && beforeVal && afterVal > beforeVal) {
+    if (hasInvalidDateRange(next)) {
       setProblem('The first added date must come before the last added date.');
       setMoreFiltersOpen(true);
       requestAnimationFrame(() => formRef.current?.querySelector<HTMLInputElement>('[name=after]')?.focus());
@@ -993,146 +1146,63 @@ export function LibraryCollection({
   const { library } = controls;
   const labels = mode === 'reading' ? readingStatuses : watchStatuses;
   const statusOptions = useMemo(() => statusOrder.map(value => ({ value, label: labels[value] })), [labels]);
-  const allSaved = Object.values(library.saved);
-  const saved: SavedTitle[] = mode === 'reading' ? allSaved.filter(isComic) : allSaved.filter(isVideo);
-  const folders = useMemo(() => library.folders ?? {}, [library.folders]);
-  const lookup = (name: string) => filters.get(name) || '';
-  const activeStatus = lookup('status');
-  const activeFolderId = lookup('folder');
-  const activeFolder = activeFolderId ? folders[activeFolderId] : undefined;
-
-  // Include mixed-media items when viewing a specific custom folder
-  const pool: SavedTitle[] = activeFolder
-    ? allSaved.filter(item => activeFolder.items.includes(item.key))
-    : saved;
-
-  const progressMap = useMemo(() => new Map(
-    pool.map(item => [item.key, item.type === 'comic' ? 0 : titleCoverage(item, library)]),
-  ), [pool, library]);
-
-  const statusMap = useMemo(() => new Map(
-    pool.map(item => [item.key, effectiveWatchStatus(item, library)]),
-  ), [pool, library]);
-
-  const { type, format, genre, rating, coverage, after, before, query, sort } = Object.fromEntries(
-    ['type', 'format', 'genre', 'rating', 'coverage', 'after', 'before', 'query', 'sort'].map(key => [key, lookup(key)]),
-  );
-  const genreNames = [...new Set(saved.flatMap(item => item.type !== 'comic' && item.genre ? [item.genre] : []))]
-    .sort((a, b) => a.localeCompare(b));
-
-  const filtered = filterLibraryItems(pool, {
-    mode,
-    requiredTitle: query.toLocaleLowerCase(),
-    activeStatus,
-    type,
-    format,
-    genre,
-    after,
-    before,
-    coverage,
-    rating,
-    ratings: library.ratings,
-    progressMap,
-    statusMap,
-  });
-  const items = sortLibraryItems(filtered, sort, library.ratings, progressMap, statusMap);
-
-  async function handleStatusChange(item: SavedTitle, nextStatus: WatchStatus) {
-    if (item.type === 'comic') {
-      void controls.setComicStatus(item, nextStatus);
-      return;
-    }
-    setCompletionError(current => ({ ...current, [item.key]: '' }));
-    setSaving(current => [...current, item.key]);
-    setProblem('');
-    try {
-      const details = item.type === 'tv' && nextStatus === 'completed'
-        ? await request<Details>(`/api/tv/${item.id}`)
-        : { id: item.id };
-      await controls.setStatus({ ...item, totalEpisodes: details.number_of_episodes ?? item.totalEpisodes }, nextStatus, details);
-    } catch (error) {
-      setCompletionError(current => ({ ...current, [item.key]: error instanceof Error ? error.message : 'Could not update this title.' }));
-    } finally {
-      setSaving(current => current.filter(key => key !== item.key));
-    }
-  }
-
+  const derived = buildLibraryData(library, mode, filters);
+  const allSavedKeys = useMemo(() => new Set(derived.allSaved.map(item => item.key)), [derived.allSaved]);
+  const foldersByItem = useMemo(() => indexFoldersByItem(derived.folders), [derived.folders]);
+  const foldersForItem = (itemKey: string) => foldersByItem.get(itemKey) ?? [];
   const onSelectFilter = (name: string) => (value: string) => {
     applyLiveFilter(formRef.current, true, { [name]: value });
   };
-  const moreCount = ['after', 'before', 'rating', 'coverage'].filter(key => Boolean(lookup(key))).length;
 
-  const resumeList = mode === 'video' ? resumeEntries(library).slice(0, 8) : [];
-  const readingList = mode === 'reading' ? Object.values(library.reading).sort((a, b) => b.updated - a.updated).slice(0, 8) : [];
-  const showActiveQueue = !activeFolderId && (!activeStatus || activeStatus === 'watching');
-  const allSavedKeys = useMemo(() => new Set(allSaved.map(item => item.key)), [allSaved]);
-  const foldersByItem = useMemo(() => indexFoldersByItem(folders), [folders]);
-  const foldersForItem = (itemKey: string) => foldersByItem.get(itemKey) ?? [];
-
-  if (!saved.length && !resumeList.length && !readingList.length && !Object.keys(folders).length) {
-    return (
-      <EmptyState
-        icon={mode === 'reading' ? 'book' : 'bookmark'}
-        title={mode === 'reading' ? 'Your reading list is empty' : 'Your library is empty'}
-        description={mode === 'reading'
-          ? 'Save manga, manhwa, or manhua to track your reading status, ratings, and custom folders.'
-          : 'Save movies, TV shows, and anime to track what you watch, organize folders, and view your stats.'}
-        actions={<ActionLink primary href={webHref(mode === 'reading' ? 'comics' : 'movies')}>
-          {mode === 'reading' ? 'Browse manga' : 'Browse movies'}
-        </ActionLink>}
-      />
-    );
-  }
-
-  const videoTypeFilter = mode === 'video' && (type === 'movie' || type === 'tv' || type === 'anime') ? type : '';
+  if (derived.isEmpty) return <LibraryEmptyState mode={mode} />;
 
   return (
     <div className="af-lib-section">
       <LibraryStats
         library={library}
         mode={mode}
-        mediaType={videoTypeFilter}
-        activeStatus={activeStatus}
+        mediaType={resolveVideoTypeFilter(mode, derived.type)}
+        activeStatus={derived.activeStatus}
         onSelectStatus={status => applyLiveFilter(formRef.current, true, { status })}
         onSelectType={mode === 'video' ? nextType => applyLiveFilter(formRef.current, true, { type: nextType }) : undefined}
       />
 
       <FolderBar
         controls={controls}
-        activeFolderId={activeFolderId}
+        activeFolderId={derived.activeFolderId}
         onSelectFolder={folder => applyLiveFilter(formRef.current, true, { folder })}
         itemKeys={allSavedKeys}
       />
 
       <LibraryActiveQueue
-        showActiveQueue={showActiveQueue}
+        showActiveQueue={derived.showActiveQueue}
         mode={mode}
-        resumeList={resumeList}
-        readingList={readingList}
+        resumeList={derived.resumeList}
+        readingList={derived.readingList}
         controls={controls}
         notify={notify}
       />
 
       <LibraryControlsToolbar
         mode={mode}
-        pool={pool}
-        statusMap={statusMap}
-        activeStatus={activeStatus}
+        pool={derived.pool}
+        statusMap={derived.statusMap}
+        activeStatus={derived.activeStatus}
         labels={labels}
         viewMode={viewMode}
         formRef={formRef}
         searchTimer={searchTimer}
-        query={query}
-        type={type}
-        genre={genre}
-        genreNames={genreNames}
-        format={format}
-        rating={rating}
-        coverage={coverage}
-        after={after}
-        before={before}
-        sort={sort}
-        moreCount={moreCount}
+        query={derived.query}
+        type={derived.type}
+        genre={derived.genre}
+        genreNames={derived.genreNames}
+        format={derived.format}
+        rating={derived.rating}
+        coverage={derived.coverage}
+        after={derived.after}
+        before={derived.before}
+        sort={derived.sort}
+        moreCount={derived.moreCount}
         moreFiltersOpen={moreFiltersOpen}
         problem={problem}
         onMoreFiltersOpenChange={setMoreFiltersOpen}
@@ -1144,26 +1214,20 @@ export function LibraryCollection({
       {problem && <p className="af-state" id="library-error" role="alert">{problem}</p>}
 
       <ResultsSummary
-        count={items.length}
+        count={derived.items.length}
         route={route}
         filters={filters}
         clear={webHref(route)}
-        labels={{
-          status: value => labels[value as WatchStatus] ?? '',
-          folder: value => folders[value]?.name ? `Folder: ${folders[value].name}` : '',
-          type: formatVideoTypeLabel,
-          format: value => comicFormats.find(([key]) => key === value)?.[1] ?? '',
-          sort: value => value !== 'recent' ? [...videoSorting, ...readingSorting].find(([key]) => key === value)?.[1] ?? '' : '',
-        }}
+        labels={buildResultsSummaryLabels(labels, derived.folders)}
       />
 
       <LibraryItemsDisplay
-        items={items}
+        items={derived.items}
         viewMode={viewMode}
         mode={mode}
-        activeFolderName={activeFolder?.name}
-        statusMap={statusMap}
-        progressMap={progressMap}
+        activeFolderName={derived.activeFolder?.name}
+        statusMap={derived.statusMap}
+        progressMap={derived.progressMap}
         library={library}
         labels={labels}
         statusOptions={statusOptions}

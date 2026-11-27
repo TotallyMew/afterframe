@@ -38,6 +38,12 @@ const spaDynamicRoutes = [
 const staticBuildPath = /^\/(?:assets\/[a-z0-9][\w.-]*|icons\/[a-z0-9][\w.-]*\.png|manifest\.webmanifest|sw\.js)$/i;
 const allowedReadMethods = new Set(['GET', 'HEAD']);
 const proxyPrefixes = ['/api/', '/art/', '/stream/', '/comic-cover/', '/comic-page/'];
+const allowedResponseHeaders = [
+  'accept-ranges', 'cache-control', 'content-disposition', 'content-encoding',
+  'content-length', 'content-range', 'content-type', 'cross-origin-resource-policy',
+  'date', 'etag', 'expires', 'last-modified', 'retry-after', 'set-cookie',
+  'vary', 'x-request-id',
+];
 const hopHeaders = ['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
 
 function isSpaRoute(path) {
@@ -92,6 +98,13 @@ function sanitizeUpstreamPath(rawUrl) {
   }
 }
 
+function copyAllowedResponseHeaders(incomingHeaders, response) {
+  for (const name of allowedResponseHeaders) {
+    const value = incomingHeaders[name];
+    if (value !== undefined) response.setHeader(name, value);
+  }
+}
+
 function forward(request, response, host, isStream = false) {
   const safePath = sanitizeUpstreamPath(request.url);
   if (!safePath) return reply(response, 400, 'Invalid request path.');
@@ -107,7 +120,10 @@ function forward(request, response, host, isStream = false) {
     headers,
     ...(isStream ? {} : { timeout: 30_000 }),
   }, incoming => {
-    response.writeHead(incoming.statusCode, withoutHopHeaders(incoming.headers));
+    const rawStatus = incoming.statusCode ?? 502;
+    const statusCode = rawStatus >= 300 && rawStatus < 400 && rawStatus !== 304 ? 502 : rawStatus;
+    copyAllowedResponseHeaders(incoming.headers, response);
+    response.writeHead(statusCode);
     pipeline(incoming, response).catch(() => response.destroy());
   });
   proxy.once('timeout', () => proxy.destroy(new Error('Upstream timeout')));
