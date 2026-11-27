@@ -75,32 +75,32 @@ function SubtitleStylePanel({
   return <div className="af-sub-style-panel" role="tabpanel" id="af-sub-panel-style" aria-labelledby="af-sub-tab-style">
     <div>
       <p className="af-meta">Text size</p>
-      <fieldset className="af-player-choice-group" aria-label="Subtitle size">
+      <div className="af-player-choice-group">
         {captionSizeOptions.map(([val, label]) => (
           <button key={val} type="button" aria-pressed={captionStyle.size === val}
             onClick={() => onChangeCaptionStyle({ ...captionStyle, size: val })}>{label}</button>
         ))}
-      </fieldset>
+      </div>
     </div>
     <div>
       <p className="af-meta">Background</p>
-      <fieldset className="af-player-choice-group" aria-label="Subtitle background">
+      <div className="af-player-choice-group">
         {captionBgOptions.map(([val, label]) => (
           <button key={val} type="button" aria-pressed={captionStyle.bg === val}
             onClick={() => onChangeCaptionStyle({ ...captionStyle, bg: val })}>{label}</button>
         ))}
-      </fieldset>
+      </div>
     </div>
     <div>
       <div className="af-sub-sync-head">
         <span className="af-meta">Timing offset</span>
         <output className="af-tabular af-sub-sync-val">{formattedOffset}</output>
       </div>
-      <fieldset className="af-player-choice-group af-sub-sync-row" aria-label="Subtitle timing offset">
+      <div className="af-player-choice-group af-sub-sync-row">
         <button type="button" onClick={() => stepOffset(-0.5)}>−0.5s</button>
         <button type="button" disabled={captionStyle.offset === 0} onClick={() => onChangeCaptionStyle({ ...captionStyle, offset: 0 })}>Reset</button>
         <button type="button" onClick={() => stepOffset(0.5)}>+0.5s</button>
-      </fieldset>
+      </div>
     </div>
   </div>;
 }
@@ -253,15 +253,15 @@ function SubtitleTracksPanel({
         {filteredLanguages.map(lang => <option key={lang} value={lang}>{lang}</option>)}
       </select>
     </label>}
-    {showForcedFilter && <fieldset className="af-subtitle-filter" aria-label="Filter subtitle type">
+    {showForcedFilter && <div className="af-subtitle-filter">
       <button type="button" aria-pressed={!forcedOnly} onClick={() => onForcedOnlyChange(false)}>
         All ({tracksForLangCount})
       </button>
       <button type="button" aria-pressed={forcedOnly} onClick={() => onForcedOnlyChange(true)}>
         Forced ({forcedCount})
       </button>
-    </fieldset>}
-    <fieldset className="af-subtitle-tracks" aria-label="Subtitle versions">
+    </div>}
+    <section className="af-subtitle-tracks" aria-label="Subtitle versions">
       {visibleTracks.map((track, idx) => (
         <SubtitleTrackOption
           key={track.url}
@@ -271,7 +271,7 @@ function SubtitleTracksPanel({
           onChooseTrack={onChooseTrack}
         />
       ))}
-    </fieldset>
+    </section>
     {subStatus && <output className="af-meta">{subStatus}</output>}
   </div>;
 }

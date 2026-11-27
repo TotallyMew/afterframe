@@ -144,7 +144,9 @@ export async function titleMetadata(type, id, season, refresh = false) {
 }
 
 export function basicTitle(type, id) {
-  return peekMetadata(`title:v2:${type}:${id}:`) ?? cacheMetadata(`basic:${type}:${id}:`, 12 * 3600000,
+  const cached = peekMetadata(`title:v2:${type}:${id}:`);
+  if (cached) return Promise.resolve(cached);
+  return cacheMetadata(`basic:${type}:${id}:`, 12 * 3600000,
     () => tmdb(`/${type}/${id}`, { language: 'en-US', ...(type === 'tv' ? { append_to_response: 'external_ids' } : {}) }));
 }
 

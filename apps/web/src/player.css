@@ -759,7 +759,7 @@
   background: var(--af-selection-fill);
   color: var(--af-selection);
 }
-.af-subtitle-tracks { display: grid; gap: 3px; max-height: 204px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--af-divider) transparent; }
+.af-subtitle-tracks { display: grid; align-content: start; grid-auto-rows: max-content; gap: 3px; max-height: 204px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--af-divider) transparent; }
 .af-subtitle-tracks:empty { display: none; }
 .af-subtitle-choice { display: grid; grid-template-columns: minmax(0, 1fr) 16px; align-items: center; gap: 8px; min-height: 34px; padding: 6px 8px; border: 1px solid transparent; border-radius: var(--af-radius); text-align: left; font-size: var(--af-type-caption); }
 .af-subtitle-choice-main { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }

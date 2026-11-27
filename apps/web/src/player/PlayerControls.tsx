@@ -49,7 +49,7 @@ interface PlayerControlsProps {
   rememberSubtitles: boolean;
   preferredSubtitleLang?: string;
   captionStyle: CaptionStyle;
-  controlsBarRef: RefObject<HTMLFieldSetElement | null>;
+  controlsBarRef: RefObject<HTMLElement | null>;
   markersRef: RefObject<HTMLDivElement | null>;
   audioMenuRef: RefObject<HTMLDetailsElement | null>;
   subtitleMenuRef: RefObject<HTMLDetailsElement | null>;
@@ -161,7 +161,7 @@ function EmnexSettingsSection({
   return <>
     {onEmnexAudioChange && <div>
       <p className="af-meta">Audio</p>
-      <fieldset className="af-player-choice-group" aria-label="Anime audio">
+      <div className="af-player-choice-group">
         <button
           type="button"
           aria-pressed={emnexAudio === 'sub'}
@@ -180,24 +180,24 @@ function EmnexSettingsSection({
         >
           {dubUnavailable ? 'Dub (N/A)' : 'Dub'}
         </button>
-      </fieldset>
+      </div>
     </div>}
     {onEmnexServerChange && emnexServerChoices.length > 0 && <div>
       <p className="af-meta">Server</p>
-      <fieldset className="af-player-choice-group" aria-label="Anime server">
+      <div className="af-player-choice-group">
         {emnexServerChoices.map(srv => (
           <button key={srv} type="button" aria-pressed={emnexServer === srv} onClick={() => onEmnexServerChange(srv)}>{srv}</button>
         ))}
-      </fieldset>
+      </div>
     </div>}
     {onHlsLevelChange && hlsLevels && hlsLevels.length > 1 && <div>
       <p className="af-meta">Quality</p>
-      <fieldset className="af-player-choice-group" aria-label="Video quality">
+      <div className="af-player-choice-group">
         <button type="button" aria-pressed={hlsLevel === -1} onClick={() => onHlsLevelChange(-1)}>Auto</button>
         {hlsLevels.map(lvl => (
           <button key={lvl.index} type="button" aria-pressed={hlsLevel === lvl.index} onClick={() => onHlsLevelChange(lvl.index)}>{lvl.label}</button>
         ))}
-      </fieldset>
+      </div>
     </div>}
   </>;
 }
@@ -253,9 +253,9 @@ function PlayerSettingsBody({
   return <>
     <div>
       <p className="af-meta">Speed</p>
-      <fieldset className="af-player-choice-group" aria-label="Speed">
+      <div className="af-player-choice-group">
         {speedOptions.map(val => <button key={val} type="button" aria-pressed={speed === val} onClick={() => onSpeedChange(val)}>{`${val}×`}</button>)}
-      </fieldset>
+      </div>
     </div>
     {isEmnex && <EmnexSettingsSection
       emnexAudio={emnexAudio}
@@ -270,20 +270,20 @@ function PlayerSettingsBody({
     />}
     {isCineSrc && <div>
       <p className="af-meta">Preferred quality</p>
-      <fieldset className="af-player-choice-group" aria-label="Preferred quality">
+      <div className="af-player-choice-group">
         {qualityOptions.map(([val, lbl]) => <button key={val} type="button" aria-pressed={quality === val} onClick={() => onQualityChange(val)}>{lbl}</button>)}
-      </fieldset>
+      </div>
     </div>}
     <div>
       <p className="af-meta">Auto-skip</p>
-      <fieldset className="af-player-choice-group" aria-label="Auto-skip segments">
+      <div className="af-player-choice-group">
         <button type="button" aria-pressed={skipIntro} disabled={!controls.ready}
           onClick={() => void controls.setPreference('intro', !skipIntro, 'Automatically skip intros')}>Intro</button>
         <button type="button" aria-pressed={skipRecap} disabled={!controls.ready}
           onClick={() => void controls.setPreference('recap', !skipRecap, 'Automatically skip recaps')}>Recap</button>
         <button type="button" aria-pressed={skipCredits} disabled={!controls.ready}
           onClick={() => void controls.setPreference('credits', !skipCredits, 'Automatically skip credits')}>Credits</button>
-      </fieldset>
+      </div>
     </div>
     {!media.embed && nativeAudioTracks.length > 1 && <label className="af-player-language">
       <span>Audio track</span>
@@ -470,7 +470,7 @@ function PlayerVolumeControls({
   </>;
 
   return <>
-    <fieldset className="af-player-inline-volume" aria-label="Volume controls">
+    <div className="af-player-inline-volume">
       <button
         type="button"
         className="af-player-btn af-player-utility"
@@ -494,7 +494,7 @@ function PlayerVolumeControls({
           onChange={event => handleVolumeInput(Number(event.currentTarget.value))}
         />
       </div>
-    </fieldset>
+    </div>
 
     {useMobileSheets ? <>
       <button
@@ -670,7 +670,7 @@ export const PlayerControls = memo(function PlayerControls(props: Readonly<Playe
     onRevealControls();
   };
 
-  return <fieldset
+  return <section
     ref={controlsBarRef}
     className="af-player-controls"
     aria-label="Playback controls"
@@ -799,5 +799,5 @@ export const PlayerControls = memo(function PlayerControls(props: Readonly<Playe
         />
       </div>
     </div>
-  </fieldset>;
+  </section>;
 });

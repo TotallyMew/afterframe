@@ -21,7 +21,7 @@ function SegmentedTabs<T extends string>({
   label: string;
   className?: string;
 }>) {
-  const trackRef = useRef<HTMLFieldSetElement>(null);
+  const trackRef = useRef<HTMLElement>(null);
   const [pill, setPill] = useState<{ x: number; width: number; ready: boolean; animate: boolean }>({
     x: 0, width: 0, ready: false, animate: false,
   });
@@ -47,7 +47,7 @@ function SegmentedTabs<T extends string>({
   }, [value, options.length]);
 
   return (
-    <fieldset ref={trackRef} aria-label={label} className={`af-segmented ${pill.ready ? 'has-indicator' : ''} ${className}`.trim()}>
+    <section ref={trackRef} aria-label={label} className={`af-segmented ${pill.ready ? 'has-indicator' : ''} ${className}`.trim()}>
       {pill.ready && (
         <span
           className={`af-segmented-indicator ${pill.animate ? 'is-animated' : ''}`}
@@ -60,7 +60,7 @@ function SegmentedTabs<T extends string>({
           {text}
         </button>
       ))}
-    </fieldset>
+    </section>
   );
 }
 

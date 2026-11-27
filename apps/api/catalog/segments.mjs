@@ -209,7 +209,8 @@ async function loadAniSkipSegments(type, id, season, episode, durationSec) {
     const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(4500) });
     if (!response.ok) {
       await response.body?.cancel();
-      return null;
+      if (response.status === 404) return null;
+      throw new Error(`Segment source returned ${response.status}`);
     }
     return response.json();
   }).catch(() => null);
@@ -288,7 +289,8 @@ async function loadSkipDbSegments(type, imdbId, season, episode, durationSec) {
     const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(4500) });
     if (!response.ok) {
       await response.body?.cancel();
-      return null;
+      if (response.status === 404) return null;
+      throw new Error(`Segment source returned ${response.status}`);
     }
     return response.json();
   }).catch(() => null);
@@ -381,7 +383,8 @@ async function loadTheIntroDbSegments(type, id, season, episode, durationMs) {
     const response = await fetch(upstream, { redirect: 'error', signal: AbortSignal.timeout(5000) });
     if (!response.ok) {
       await response.body?.cancel();
-      return null;
+      if (response.status === 404) return null;
+      throw new Error(`TheIntroDB returned ${response.status}`);
     }
     return response.json();
   }).catch(() => null);
@@ -447,7 +450,8 @@ async function loadIntroDbSegments(type, imdbId, season, episode, durationSec) {
     const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(4500) });
     if (!response.ok) {
       await response.body?.cancel();
-      return null;
+      if (response.status === 404) return null;
+      throw new Error(`Segment source returned ${response.status}`);
     }
     return response.json();
   }).catch(() => null);

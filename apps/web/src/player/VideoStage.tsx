@@ -995,7 +995,7 @@ function MobileTransportControls({
 }>) {
   const noDuration = position.duration <= 0;
   const playMeta = mobilePlayMeta(ended, position.paused);
-  return <fieldset className="af-mobile-transport" aria-label="Touch playback controls">
+  return <section className="af-mobile-transport" aria-label="Touch playback controls">
     {adjacent.previous && <button type="button" className="af-mobile-touch-btn" aria-label="Previous episode" onClick={() => onNavigateEpisode(adjacent.previous!)}><PlayerGlyph name="prev" /></button>}
     <button type="button" className="af-mobile-touch-btn" aria-label="Back 10 seconds" disabled={noDuration} onClick={() => onJumpPlayback(-10)}><PlayerGlyph name="back10" /></button>
     <button type="button" className="af-mobile-touch-btn af-mobile-touch-play" aria-label={playMeta.label} onClick={onTogglePlay}>
@@ -1003,7 +1003,7 @@ function MobileTransportControls({
     </button>
     <button type="button" className="af-mobile-touch-btn" aria-label="Forward 10 seconds" disabled={noDuration} onClick={() => onJumpPlayback(10)}><PlayerGlyph name="fwd10" /></button>
     {adjacent.next && <button type="button" className="af-mobile-touch-btn" aria-label="Next episode" onClick={() => onNavigateEpisode(adjacent.next!)}><PlayerGlyph name="next" /></button>}
-  </fieldset>;
+  </section>;
 }
 
 function NextEpisodeCountdownCard({
@@ -1505,7 +1505,7 @@ export function VideoStage({
   const videoBoxRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<VideoWithAudioTracks>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
-  const controlsBarRef = useRef<HTMLFieldSetElement>(null);
+  const controlsBarRef = useRef<HTMLElement>(null);
   const markersRef = useRef<HTMLDivElement>(null);
   const audioMenuRef = useRef<HTMLDetailsElement>(null);
   const subtitleMenuRef = useRef<HTMLDetailsElement>(null);
