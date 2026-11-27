@@ -1,7 +1,7 @@
 import { Dialog } from '@base-ui/react/dialog';
 import { preferenceDefaults, type PlaybackPosition, type SkipSegment } from '@afterframe/shared/playback';
 import type { SubtitleCue, SubtitleTrack } from '@afterframe/shared/subtitles';
-import { memo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
+import { memo, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 import type { EpisodePosition } from '../catalog';
 import { Icon } from '../components';
 import type { LibraryControls } from '../library';
@@ -350,6 +350,7 @@ function PlayerTimeline({
   onSeekHover: (clientX: number) => void;
   onSeekPreviewClear: () => void;
 }>) {
+  const bufferNoticeId = useId();
   const seekHoverRafRef = useRef(0);
   const seekHoverClientXRef = useRef(0);
   const bufferNotice = useNativeVideo ? undefined : 'This video source does not report buffered ranges';
@@ -391,6 +392,7 @@ function PlayerTimeline({
       <span>{formatClock(seekPreview.time)}</span>
       {seekPreview.segment && <span className="af-player-preview-segment">{seekPreview.segment}</span>}
     </output>}
+    {bufferNotice && <span id={bufferNoticeId} className="sr-only">{bufferNotice}</span>}
     <input
       className={`af-player-seek ${bufferedCss ? 'has-buffer-data' : ''}`}
       type="range"
@@ -401,7 +403,7 @@ function PlayerTimeline({
       disabled={position.duration <= 0}
       aria-label="Seek"
       title={bufferNotice}
-      aria-description={bufferNotice}
+      aria-describedby={bufferNotice ? bufferNoticeId : undefined}
       aria-valuetext={valueText}
       style={seekStyle}
       onPointerDown={() => { onScrubStart(); onRevealControls(); }}

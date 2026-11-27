@@ -1,6 +1,6 @@
 import { Popover } from '@base-ui/react/popover';
 import { isAnime } from '@afterframe/shared/discover';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   comicCover, libraryItemHref, navigate, playerHref, playHref, request, resumeHref, routeWithParams, webHref,
   type Comic, type Details, type Title,
@@ -242,30 +242,42 @@ function CardQuickMenu({
   );
 }
 
+function shouldKeepFilterValue(key: string, value: string): boolean {
+  return Boolean(value) && !(key === 'sort' && value === 'recent');
+}
+
+function readBaseFilterParams(form: HTMLFormElement | null, filters: URLSearchParams): URLSearchParams {
+  const next = new URLSearchParams();
+  if (!form) {
+    for (const [key, value] of filters) next.set(key, value);
+    return next;
+  }
+  for (const [key, value] of new FormData(form)) {
+    const trimmed = typeof value === 'string' ? value.trim() : '';
+    if (shouldKeepFilterValue(key, trimmed)) next.set(key, trimmed);
+  }
+  return next;
+}
+
+function applyFilterOverrides(next: URLSearchParams, overrides: Record<string, string>) {
+  for (const [key, value] of Object.entries(overrides)) {
+    const trimmed = value.trim();
+    if (shouldKeepFilterValue(key, trimmed)) next.set(key, trimmed);
+    else next.delete(key);
+  }
+}
+
 function buildNextFilterParams(
   form: HTMLFormElement | null,
   filters: URLSearchParams,
   overrides?: Record<string, string>,
 ): URLSearchParams {
-  const next = new URLSearchParams();
-  if (form) {
-    for (const [key, value] of new FormData(form)) {
-      if (typeof value === 'string' && value.trim() && !(key === 'sort' && value.trim() === 'recent')) {
-        next.set(key, value.trim());
-      }
-    }
-  } else {
-    for (const [key, value] of filters) next.set(key, value);
-  }
-  const hasStatusOverride = Boolean(overrides && ('status' in overrides || overrides.status));
-  if (filters.get('status') && !hasStatusOverride) next.set('status', filters.get('status')!);
-  if (filters.get('folder') && !(overrides && 'folder' in overrides)) next.set('folder', filters.get('folder')!);
-  if (!overrides) return next;
-  for (const [key, value] of Object.entries(overrides)) {
-    const trimmed = value.trim();
-    if (trimmed && !(key === 'sort' && trimmed === 'recent')) next.set(key, trimmed);
-    else next.delete(key);
-  }
+  const next = readBaseFilterParams(form, filters);
+  const preserveStatus = filters.get('status');
+  if (preserveStatus && (!overrides || !('status' in overrides))) next.set('status', preserveStatus);
+  const preserveFolder = filters.get('folder');
+  if (preserveFolder && (!overrides || !('folder' in overrides))) next.set('folder', preserveFolder);
+  if (overrides) applyFilterOverrides(next, overrides);
   return next;
 }
 
@@ -559,6 +571,379 @@ function LibraryListRow({
   );
 }
 
+function filterLibraryItems(
+  pool: SavedTitle[],
+  options: {
+    mode: 'video' | 'reading';
+    requiredTitle: string;
+    activeStatus: string;
+    type: string;
+    format: string;
+    genre: string;
+    after: string;
+    before: string;
+    coverage: string;
+    rating: string;
+    ratings: LibraryControls['library']['ratings'];
+    progressMap: Map<string, number>;
+    statusMap: Map<string, WatchStatus>;
+  },
+): SavedTitle[] {
+  const { mode, requiredTitle, activeStatus, type, format, genre, after, before, coverage, rating, ratings, progressMap, statusMap } = options;
+  return pool.filter(item => {
+    if (requiredTitle && !item.title.toLocaleLowerCase().includes(requiredTitle)) return false;
+    if (activeStatus && statusMap.get(item.key) !== activeStatus) return false;
+    if (mode === 'video' && !matchesVideoItem(item, { type, genre, after, before, coverage }, progressMap.get(item.key) ?? 0)) return false;
+    if (mode === 'reading' && format && (item.type !== 'comic' || item.format !== format)) return false;
+    return !rating || savedRating(ratings[item.key]) >= Number(rating);
+  });
+}
+
+function sortLibraryItems(
+  items: SavedTitle[],
+  sort: string,
+  ratings: LibraryControls['library']['ratings'],
+  progressMap: Map<string, number>,
+  statusMap: Map<string, WatchStatus>,
+): SavedTitle[] {
+  return [...items].sort((a, b) => {
+    if (sort === 'title') return a.title.localeCompare(b.title);
+    if (sort === 'rating') return savedRating(ratings[b.key]) - savedRating(ratings[a.key]);
+    if (sort === 'progress') return (progressMap.get(b.key) ?? 0) - (progressMap.get(a.key) ?? 0);
+    if (sort === 'genre') return ((a.type !== 'comic' ? a.genre : '') ?? '').localeCompare((b.type !== 'comic' ? b.genre : '') ?? '');
+    if (sort === 'status') return statusOrder.indexOf(statusMap.get(a.key) ?? 'planned') - statusOrder.indexOf(statusMap.get(b.key) ?? 'planned');
+    return b.added - a.added;
+  });
+}
+
+function indexFoldersByItem(folders: NonNullable<LibraryControls['library']['folders']>) {
+  const index = new Map<string, (typeof folders)[string][]>();
+  for (const folder of Object.values(folders)) {
+    for (const key of folder.items) {
+      let list = index.get(key);
+      if (!list) { list = []; index.set(key, list); }
+      list.push(folder);
+    }
+  }
+  return index;
+}
+
+function LibraryActiveQueue({
+  showActiveQueue,
+  mode,
+  resumeList,
+  readingList,
+  controls,
+  notify,
+}: Readonly<{
+  showActiveQueue: boolean;
+  mode: 'video' | 'reading';
+  resumeList: ReturnType<typeof resumeEntries>;
+  readingList: LibraryControls['library']['reading'][string][];
+  controls: LibraryControls;
+  notify: ReturnType<typeof useToast>['notify'];
+}>) {
+  if (!showActiveQueue) return null;
+  if (mode === 'video' && resumeList.length > 0) {
+    return (
+      <Shelf title="Continue Watching" href={webHref('history')} hrefLabel="History" landscape>
+        {resumeList.map(([key, entry]) => {
+          const ep = entry.episode;
+          const rem = Math.ceil((entry.duration - entry.time) / 60);
+          const left = formatRemainingMinutes(rem);
+          return (
+            <MediaCard
+              key={key}
+              item={entry.item}
+              controls={controls}
+              href={resumeHref(entry.item, key, ep)}
+              landscape
+              context={ep ? `S${ep.season} E${ep.number} · ${left}` : left}
+              percent={progressPercent(entry)}
+              onDismiss={() => {
+                controls.recordProgress(key, null);
+                notify({
+                  message: `Removed “${entry.item.title}” from Continue Watching.`,
+                  tone: 'default',
+                  action: { label: 'Undo', onAction: () => controls.recordProgress(key, { ...entry, updated: Date.now() }) },
+                });
+              }}
+            />
+          );
+        })}
+      </Shelf>
+    );
+  }
+  if (mode === 'reading' && readingList.length > 0) {
+    return (
+      <Shelf title="Continue reading">
+        {readingList.map(entry => (
+          <ComicCard
+            item={entry.item}
+            controls={controls}
+            key={entry.item.key}
+            href={readerHref(entry.item, entry.chapter, entry.language, entry.listPage, entry.page)}
+            context={`${entry.label} · Page ${entry.page}`}
+            onDismiss={() => {
+              void controls.removeReading(entry.item.key);
+              notify({ message: `Removed “${entry.item.title}” from Continue reading.`, tone: 'default' });
+            }}
+          />
+        ))}
+      </Shelf>
+    );
+  }
+  return null;
+}
+
+function LibraryControlsToolbar({
+  mode,
+  pool,
+  statusMap,
+  activeStatus,
+  labels,
+  viewMode,
+  formRef,
+  searchTimer,
+  query,
+  type,
+  genre,
+  genreNames,
+  format,
+  rating,
+  coverage,
+  after,
+  before,
+  sort,
+  moreCount,
+  moreFiltersOpen,
+  problem,
+  onMoreFiltersOpenChange,
+  onUpdateViewMode,
+  onApplyLiveFilter,
+  onSelectFilter,
+}: Readonly<{
+  mode: 'video' | 'reading';
+  pool: SavedTitle[];
+  statusMap: Map<string, WatchStatus>;
+  activeStatus: string;
+  labels: Record<WatchStatus, string>;
+  viewMode: 'grid' | 'list';
+  formRef: RefObject<HTMLFormElement | null>;
+  searchTimer: RefObject<number | undefined>;
+  query: string;
+  type: string;
+  genre: string;
+  genreNames: string[];
+  format: string;
+  rating: string;
+  coverage: string;
+  after: string;
+  before: string;
+  sort: string;
+  moreCount: number;
+  moreFiltersOpen: boolean;
+  problem: string;
+  onMoreFiltersOpenChange: (open: boolean) => void;
+  onUpdateViewMode: (next: 'grid' | 'list') => void;
+  onApplyLiveFilter: (form: HTMLFormElement | null, replace?: boolean, overrides?: Record<string, string>) => void;
+  onSelectFilter: (name: string) => (value: string) => void;
+}>) {
+  return (
+    <>
+      <div className="af-lib-controls-row">
+        <fieldset className="af-lib-status-pills" aria-label="Filter by status">
+          <button
+            type="button"
+            className={`af-status-pill ${!activeStatus ? 'is-active' : ''}`}
+            aria-pressed={!activeStatus}
+            onClick={() => onApplyLiveFilter(formRef.current, true, { status: '' })}
+          >
+            All <span className="af-pill-count">{pool.length}</span>
+          </button>
+          {statusOrder.map(status => {
+            const count = pool.filter(item => statusMap.get(item.key) === status).length;
+            const active = activeStatus === status;
+            return (
+              <button
+                key={status}
+                type="button"
+                className={`af-status-pill is-${status} ${active ? 'is-active' : ''}`}
+                aria-pressed={active}
+                onClick={() => onApplyLiveFilter(formRef.current, true, { status: active ? '' : status })}
+              >
+                <span className={`af-status-dot is-${status}`} aria-hidden="true" />
+                <span>{labels[status]}</span>
+                <span className="af-pill-count">{count}</span>
+              </button>
+            );
+          })}
+        </fieldset>
+
+        <fieldset className="af-view-toggle" aria-label="View mode">
+          <button
+            type="button"
+            className={`af-icon-button ${viewMode === 'grid' ? 'is-active' : ''}`}
+            aria-pressed={viewMode === 'grid'}
+            aria-label="Grid view"
+            title="Grid view"
+            onClick={() => onUpdateViewMode('grid')}
+          >
+            <Icon name="grid" />
+          </button>
+          <button
+            type="button"
+            className={`af-icon-button ${viewMode === 'list' ? 'is-active' : ''}`}
+            aria-pressed={viewMode === 'list'}
+            aria-label="List view"
+            title="List view"
+            onClick={() => onUpdateViewMode('list')}
+          >
+            <Icon name="list" />
+          </button>
+        </fieldset>
+      </div>
+
+      <form
+        ref={formRef}
+        className="af-field-bar af-lib-filter-bar"
+        onSubmit={event => {
+          event.preventDefault();
+          onApplyLiveFilter(event.currentTarget, false);
+        }}
+        onChange={event => {
+          const form = event.currentTarget;
+          const target = event.target as HTMLElement;
+          if (target instanceof HTMLInputElement && target.type === 'search') {
+            clearTimeout(searchTimer.current);
+            searchTimer.current = window.setTimeout(() => onApplyLiveFilter(form, true), 150);
+          } else {
+            onApplyLiveFilter(form, true);
+          }
+        }}
+      >
+        <InputField
+          label="Search"
+          type="search"
+          name="query"
+          placeholder={mode === 'reading' ? 'Search reading list…' : 'Search titles…'}
+          defaultValue={query}
+          maxLength={180}
+        />
+        {mode === 'video' ? (
+          <>
+            <SelectField label="Type" name="type" value={type} empty="All titles" options={[['movie', 'Movies'], ['tv', 'TV Shows'], ['anime', 'Anime']]} onChange={onSelectFilter('type')} />
+            <SelectField label="Genre" name="genre" value={genre} empty="All genres" options={genreNames.map(v => [v, v])} onChange={onSelectFilter('genre')} />
+            <SelectField label="Sort by" name="sort" value={sort || 'recent'} options={videoSorting} onChange={onSelectFilter('sort')} />
+            <FilterPopover activeCount={moreCount} open={moreFiltersOpen} onOpenChange={onMoreFiltersOpenChange}>
+              <SelectField label="Personal rating" name="rating" value={rating} empty="Any rating" options={ratingFilters} onChange={onSelectFilter('rating')} />
+              <SelectField label="Progress" name="coverage" value={coverage} empty="Any progress" options={progression} onChange={onSelectFilter('coverage')} />
+              <InputField label="Added from" type="date" name="after" defaultValue={after} aria-invalid={Boolean(problem)} aria-describedby={problem ? 'library-error' : undefined} />
+              <InputField label="Added through" type="date" name="before" defaultValue={before} aria-invalid={Boolean(problem)} aria-describedby={problem ? 'library-error' : undefined} />
+            </FilterPopover>
+          </>
+        ) : (
+          <>
+            <SelectField label="Format" name="format" value={format} empty="All formats" options={comicFormats} onChange={onSelectFilter('format')} />
+            <SelectField label="Personal rating" name="rating" value={rating} empty="Any rating" options={ratingFilters} onChange={onSelectFilter('rating')} />
+            <SelectField label="Sort by" name="sort" value={sort || 'recent'} options={readingSorting} onChange={onSelectFilter('sort')} />
+          </>
+        )}
+      </form>
+    </>
+  );
+}
+
+function LibraryItemsDisplay({
+  items,
+  viewMode,
+  mode,
+  activeFolderName,
+  statusMap,
+  progressMap,
+  library,
+  labels,
+  statusOptions,
+  controls,
+  saving,
+  completionError,
+  foldersForItem,
+  onSelectFolder,
+  onStatusChange,
+}: Readonly<{
+  items: SavedTitle[];
+  viewMode: 'grid' | 'list';
+  mode: 'video' | 'reading';
+  activeFolderName?: string;
+  statusMap: Map<string, WatchStatus>;
+  progressMap: Map<string, number>;
+  library: LibraryControls['library'];
+  labels: Record<WatchStatus, string>;
+  statusOptions: { value: WatchStatus; label: string }[];
+  controls: LibraryControls;
+  saving: string[];
+  completionError: Record<string, string>;
+  foldersForItem: (itemKey: string) => NonNullable<LibraryControls['library']['folders']>[string][];
+  onSelectFolder: (folderId: string) => void;
+  onStatusChange: (target: SavedTitle, next: WatchStatus) => void;
+}>) {
+  if (items.length === 0) {
+    return (
+      <div className="af-lib-empty-filtered">
+        <p className="af-state">
+          {activeFolderName
+            ? `No titles in “${activeFolderName}” match these filters yet.`
+            : 'No titles match these filters.'}
+        </p>
+      </div>
+    );
+  }
+  if (viewMode === 'grid') {
+    return (
+      <div className="af-poster-grid">
+        {items.map(item => (
+          <LibraryGridCard
+            key={item.key}
+            item={item}
+            status={statusMap.get(item.key) ?? 'planned'}
+            score={savedRating(library.ratings[item.key])}
+            pct={progressMap.get(item.key) ?? 0}
+            epInfo={item.type === 'tv' ? watchedEpisodeCount(item, library) : null}
+            itemFolders={foldersForItem(item.key)}
+            labels={labels}
+            controls={controls}
+            isSaving={saving.includes(item.key)}
+            completionError={completionError[item.key] || ''}
+            onStatusChange={onStatusChange}
+          />
+        ))}
+      </div>
+    );
+  }
+  return (
+    <ul className="af-lib-list" aria-label="Library items">
+      {items.map(item => (
+        <LibraryListRow
+          key={item.key}
+          item={item}
+          mode={mode}
+          status={statusMap.get(item.key) ?? 'planned'}
+          score={savedRating(library.ratings[item.key])}
+          pct={progressMap.get(item.key) ?? 0}
+          epInfo={item.type === 'tv' ? watchedEpisodeCount(item, library) : null}
+          itemFolders={foldersForItem(item.key)}
+          labels={labels}
+          statusOptions={statusOptions}
+          controls={controls}
+          isSaving={saving.includes(item.key)}
+          onSelectFolder={onSelectFolder}
+          onStatusChange={onStatusChange}
+        />
+      ))}
+    </ul>
+  );
+}
+
 export function LibraryCollection({
   mode,
   controls,
@@ -632,26 +1017,25 @@ export function LibraryCollection({
   const { type, format, genre, rating, coverage, after, before, query, sort } = Object.fromEntries(
     ['type', 'format', 'genre', 'rating', 'coverage', 'after', 'before', 'query', 'sort'].map(key => [key, lookup(key)]),
   );
-  const requiredTitle = query.toLocaleLowerCase();
   const genreNames = [...new Set(saved.flatMap(item => item.type !== 'comic' && item.genre ? [item.genre] : []))]
     .sort((a, b) => a.localeCompare(b));
 
-  const items = pool.filter(item => {
-    if (requiredTitle && !item.title.toLocaleLowerCase().includes(requiredTitle)) return false;
-    if (activeStatus && statusMap.get(item.key) !== activeStatus) return false;
-    if (mode === 'video' && !matchesVideoItem(item, { type, genre, after, before, coverage }, progressMap.get(item.key) ?? 0)) return false;
-    if (mode === 'reading' && format && (item.type !== 'comic' || item.format !== format)) return false;
-    return !rating || savedRating(library.ratings[item.key]) >= Number(rating);
+  const filtered = filterLibraryItems(pool, {
+    mode,
+    requiredTitle: query.toLocaleLowerCase(),
+    activeStatus,
+    type,
+    format,
+    genre,
+    after,
+    before,
+    coverage,
+    rating,
+    ratings: library.ratings,
+    progressMap,
+    statusMap,
   });
-
-  items.sort((a, b) => {
-    if (sort === 'title') return a.title.localeCompare(b.title);
-    if (sort === 'rating') return savedRating(library.ratings[b.key]) - savedRating(library.ratings[a.key]);
-    if (sort === 'progress') return (progressMap.get(b.key) ?? 0) - (progressMap.get(a.key) ?? 0);
-    if (sort === 'genre') return ((a.type !== 'comic' ? a.genre : '') ?? '').localeCompare((b.type !== 'comic' ? b.genre : '') ?? '');
-    if (sort === 'status') return statusOrder.indexOf(statusMap.get(a.key) ?? 'planned') - statusOrder.indexOf(statusMap.get(b.key) ?? 'planned');
-    return b.added - a.added;
-  });
+  const items = sortLibraryItems(filtered, sort, library.ratings, progressMap, statusMap);
 
   async function handleStatusChange(item: SavedTitle, nextStatus: WatchStatus) {
     if (item.type === 'comic') {
@@ -682,18 +1066,7 @@ export function LibraryCollection({
   const readingList = mode === 'reading' ? Object.values(library.reading).sort((a, b) => b.updated - a.updated).slice(0, 8) : [];
   const showActiveQueue = !activeFolderId && (!activeStatus || activeStatus === 'watching');
   const allSavedKeys = useMemo(() => new Set(allSaved.map(item => item.key)), [allSaved]);
-
-  const foldersByItem = useMemo(() => {
-    const index = new Map<string, (typeof folders)[string][]>();
-    for (const folder of Object.values(folders)) {
-      for (const key of folder.items) {
-        let list = index.get(key);
-        if (!list) { list = []; index.set(key, list); }
-        list.push(folder);
-      }
-    }
-    return index;
-  }, [folders]);
+  const foldersByItem = useMemo(() => indexFoldersByItem(folders), [folders]);
   const foldersForItem = (itemKey: string) => foldersByItem.get(itemKey) ?? [];
 
   if (!saved.length && !resumeList.length && !readingList.length && !Object.keys(folders).length) {
@@ -711,69 +1084,14 @@ export function LibraryCollection({
     );
   }
 
-  let itemsContent;
-  if (items.length === 0) {
-    itemsContent = (
-      <div className="af-lib-empty-filtered">
-        <p className="af-state">
-          {activeFolder
-            ? `No titles in “${activeFolder.name}” match these filters yet.`
-            : 'No titles match these filters.'}
-        </p>
-      </div>
-    );
-  } else if (viewMode === 'grid') {
-    itemsContent = (
-      <div className="af-poster-grid">
-        {items.map(item => (
-          <LibraryGridCard
-            key={item.key}
-            item={item}
-            status={statusMap.get(item.key) ?? 'planned'}
-            score={savedRating(library.ratings[item.key])}
-            pct={progressMap.get(item.key) ?? 0}
-            epInfo={item.type === 'tv' ? watchedEpisodeCount(item, library) : null}
-            itemFolders={foldersForItem(item.key)}
-            labels={labels}
-            controls={controls}
-            isSaving={saving.includes(item.key)}
-            completionError={completionError[item.key] || ''}
-            onStatusChange={(target, next) => void handleStatusChange(target, next)}
-          />
-        ))}
-      </div>
-    );
-  } else {
-    itemsContent = (
-      <ul className="af-lib-list" aria-label="Library items">
-        {items.map(item => (
-          <LibraryListRow
-            key={item.key}
-            item={item}
-            mode={mode}
-            status={statusMap.get(item.key) ?? 'planned'}
-            score={savedRating(library.ratings[item.key])}
-            pct={progressMap.get(item.key) ?? 0}
-            epInfo={item.type === 'tv' ? watchedEpisodeCount(item, library) : null}
-            itemFolders={foldersForItem(item.key)}
-            labels={labels}
-            statusOptions={statusOptions}
-            controls={controls}
-            isSaving={saving.includes(item.key)}
-            onSelectFolder={folderId => applyLiveFilter(formRef.current, true, { folder: folderId })}
-            onStatusChange={(target, next) => void handleStatusChange(target, next)}
-          />
-        ))}
-      </ul>
-    );
-  }
+  const videoTypeFilter = mode === 'video' && (type === 'movie' || type === 'tv' || type === 'anime') ? type : '';
 
   return (
     <div className="af-lib-section">
       <LibraryStats
         library={library}
         mode={mode}
-        mediaType={mode === 'video' && (type === 'movie' || type === 'tv' || type === 'anime') ? type : ''}
+        mediaType={videoTypeFilter}
         activeStatus={activeStatus}
         onSelectStatus={status => applyLiveFilter(formRef.current, true, { status })}
         onSelectType={mode === 'video' ? nextType => applyLiveFilter(formRef.current, true, { type: nextType }) : undefined}
@@ -786,152 +1104,42 @@ export function LibraryCollection({
         itemKeys={allSavedKeys}
       />
 
-      {showActiveQueue && mode === 'video' && resumeList.length > 0 && (
-        <Shelf title="Continue Watching" href={webHref('history')} hrefLabel="History" landscape>
-          {resumeList.map(([key, entry]) => {
-            const ep = entry.episode;
-            const rem = Math.ceil((entry.duration - entry.time) / 60);
-            const left = formatRemainingMinutes(rem);
-            return (
-              <MediaCard
-                key={key}
-                item={entry.item}
-                controls={controls}
-                href={resumeHref(entry.item, key, ep)}
-                landscape
-                context={ep ? `S${ep.season} E${ep.number} · ${left}` : left}
-                percent={progressPercent(entry)}
-                onDismiss={() => {
-                  controls.recordProgress(key, null);
-                  notify({
-                    message: `Removed “${entry.item.title}” from Continue Watching.`,
-                    tone: 'default',
-                    action: { label: 'Undo', onAction: () => controls.recordProgress(key, { ...entry, updated: Date.now() }) },
-                  });
-                }}
-              />
-            );
-          })}
-        </Shelf>
-      )}
+      <LibraryActiveQueue
+        showActiveQueue={showActiveQueue}
+        mode={mode}
+        resumeList={resumeList}
+        readingList={readingList}
+        controls={controls}
+        notify={notify}
+      />
 
-      {showActiveQueue && mode === 'reading' && readingList.length > 0 && (
-        <Shelf title="Continue reading">
-          {readingList.map(entry => (
-            <ComicCard
-              item={entry.item}
-              controls={controls}
-              key={entry.item.key}
-              href={readerHref(entry.item, entry.chapter, entry.language, entry.listPage, entry.page)}
-              context={`${entry.label} · Page ${entry.page}`}
-              onDismiss={() => {
-                void controls.removeReading(entry.item.key);
-                notify({ message: `Removed “${entry.item.title}” from Continue reading.`, tone: 'default' });
-              }}
-            />
-          ))}
-        </Shelf>
-      )}
-
-      <div className="af-lib-controls-row">
-        <fieldset className="af-lib-status-pills" aria-label="Filter by status">
-          <button
-            type="button"
-            className={`af-status-pill ${!activeStatus ? 'is-active' : ''}`}
-            aria-pressed={!activeStatus}
-            onClick={() => applyLiveFilter(formRef.current, true, { status: '' })}
-          >
-            All <span className="af-pill-count">{pool.length}</span>
-          </button>
-          {statusOrder.map(status => {
-            const count = pool.filter(item => statusMap.get(item.key) === status).length;
-            const active = activeStatus === status;
-            return (
-              <button
-                key={status}
-                type="button"
-                className={`af-status-pill is-${status} ${active ? 'is-active' : ''}`}
-                aria-pressed={active}
-                onClick={() => applyLiveFilter(formRef.current, true, { status: active ? '' : status })}
-              >
-                <span className={`af-status-dot is-${status}`} aria-hidden="true" />
-                <span>{labels[status]}</span>
-                <span className="af-pill-count">{count}</span>
-              </button>
-            );
-          })}
-        </fieldset>
-
-        <fieldset className="af-view-toggle" aria-label="View mode">
-          <button
-            type="button"
-            className={`af-icon-button ${viewMode === 'grid' ? 'is-active' : ''}`}
-            aria-pressed={viewMode === 'grid'}
-            aria-label="Grid view"
-            title="Grid view"
-            onClick={() => updateViewMode('grid')}
-          >
-            <Icon name="grid" />
-          </button>
-          <button
-            type="button"
-            className={`af-icon-button ${viewMode === 'list' ? 'is-active' : ''}`}
-            aria-pressed={viewMode === 'list'}
-            aria-label="List view"
-            title="List view"
-            onClick={() => updateViewMode('list')}
-          >
-            <Icon name="list" />
-          </button>
-        </fieldset>
-      </div>
-
-      <form
-        ref={formRef}
-        className="af-field-bar af-lib-filter-bar"
-        onSubmit={event => {
-          event.preventDefault();
-          applyLiveFilter(event.currentTarget, false);
-        }}
-        onChange={event => {
-          const form = event.currentTarget;
-          const target = event.target as HTMLElement;
-          if (target instanceof HTMLInputElement && target.type === 'search') {
-            clearTimeout(searchTimer.current);
-            searchTimer.current = window.setTimeout(() => applyLiveFilter(form, true), 150);
-          } else {
-            applyLiveFilter(form, true);
-          }
-        }}
-      >
-        <InputField
-          label="Search"
-          type="search"
-          name="query"
-          placeholder={mode === 'reading' ? 'Search reading list…' : 'Search titles…'}
-          defaultValue={query}
-          maxLength={180}
-        />
-        {mode === 'video' ? (
-          <>
-            <SelectField label="Type" name="type" value={type} empty="All titles" options={[['movie', 'Movies'], ['tv', 'TV Shows'], ['anime', 'Anime']]} onChange={onSelectFilter('type')} />
-            <SelectField label="Genre" name="genre" value={genre} empty="All genres" options={genreNames.map(v => [v, v])} onChange={onSelectFilter('genre')} />
-            <SelectField label="Sort by" name="sort" value={sort || 'recent'} options={videoSorting} onChange={onSelectFilter('sort')} />
-            <FilterPopover activeCount={moreCount} open={moreFiltersOpen} onOpenChange={setMoreFiltersOpen}>
-              <SelectField label="Personal rating" name="rating" value={rating} empty="Any rating" options={ratingFilters} onChange={onSelectFilter('rating')} />
-              <SelectField label="Progress" name="coverage" value={coverage} empty="Any progress" options={progression} onChange={onSelectFilter('coverage')} />
-              <InputField label="Added from" type="date" name="after" defaultValue={after} aria-invalid={Boolean(problem)} aria-describedby={problem ? 'library-error' : undefined} />
-              <InputField label="Added through" type="date" name="before" defaultValue={before} aria-invalid={Boolean(problem)} aria-describedby={problem ? 'library-error' : undefined} />
-            </FilterPopover>
-          </>
-        ) : (
-          <>
-            <SelectField label="Format" name="format" value={format} empty="All formats" options={comicFormats} onChange={onSelectFilter('format')} />
-            <SelectField label="Personal rating" name="rating" value={rating} empty="Any rating" options={ratingFilters} onChange={onSelectFilter('rating')} />
-            <SelectField label="Sort by" name="sort" value={sort || 'recent'} options={readingSorting} onChange={onSelectFilter('sort')} />
-          </>
-        )}
-      </form>
+      <LibraryControlsToolbar
+        mode={mode}
+        pool={pool}
+        statusMap={statusMap}
+        activeStatus={activeStatus}
+        labels={labels}
+        viewMode={viewMode}
+        formRef={formRef}
+        searchTimer={searchTimer}
+        query={query}
+        type={type}
+        genre={genre}
+        genreNames={genreNames}
+        format={format}
+        rating={rating}
+        coverage={coverage}
+        after={after}
+        before={before}
+        sort={sort}
+        moreCount={moreCount}
+        moreFiltersOpen={moreFiltersOpen}
+        problem={problem}
+        onMoreFiltersOpenChange={setMoreFiltersOpen}
+        onUpdateViewMode={updateViewMode}
+        onApplyLiveFilter={applyLiveFilter}
+        onSelectFilter={onSelectFilter}
+      />
 
       {problem && <p className="af-state" id="library-error" role="alert">{problem}</p>}
 
@@ -949,7 +1157,23 @@ export function LibraryCollection({
         }}
       />
 
-      {itemsContent}
+      <LibraryItemsDisplay
+        items={items}
+        viewMode={viewMode}
+        mode={mode}
+        activeFolderName={activeFolder?.name}
+        statusMap={statusMap}
+        progressMap={progressMap}
+        library={library}
+        labels={labels}
+        statusOptions={statusOptions}
+        controls={controls}
+        saving={saving}
+        completionError={completionError}
+        foldersForItem={foldersForItem}
+        onSelectFolder={folderId => applyLiveFilter(formRef.current, true, { folder: folderId })}
+        onStatusChange={(target, next) => void handleStatusChange(target, next)}
+      />
     </div>
   );
 }

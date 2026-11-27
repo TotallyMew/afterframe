@@ -168,6 +168,158 @@ function FeaturedHero({
   );
 }
 
+function useHomeRecentComics(cached: CachedHome | null) {
+  const [recentComics, setRecentComics] = useState<Comic[]>(cached?.recentComics ?? []);
+  const [comicsError, setComicsError] = useState('');
+  const [comicsAttempt, setComicsAttempt] = useState(0);
+
+  useEffect(() => {
+    if (cached && cached.recentComics.length > 0 && comicsAttempt === 0) return;
+    const task = new AbortController();
+    request<{ results: Comic[] }>('/api/comics/updates', { signal: task.signal })
+      .then(async res => {
+        if (task.signal.aborted) return;
+        if (Array.isArray(res.results) && res.results.length) {
+          setRecentComics(res.results.slice(0, 10));
+          setComicsError('');
+          return;
+        }
+        const fallback = await request<{ results: Comic[] }>('/api/comics', { signal: task.signal });
+        if (!task.signal.aborted && Array.isArray(fallback.results)) {
+          setRecentComics(fallback.results.slice(0, 10));
+          setComicsError('');
+        }
+      })
+      .catch(error_ => {
+        if (!task.signal.aborted) setComicsError(error_ instanceof Error ? error_.message : 'Manga is temporarily unavailable.');
+      });
+    return () => task.abort();
+  }, [comicsAttempt, cached]);
+
+  const retryComics = () => {
+    setComicsError('');
+    setComicsAttempt(v => v + 1);
+  };
+
+  return { recentComics, comicsError, retryComics };
+}
+
+function HomeHeroSection({
+  featured,
+  featuredChoices,
+  featureDir,
+  featureDuration,
+  featuredResume,
+  expandedOverviewKey,
+  controls,
+  pending,
+  error,
+  allShelvesEmpty,
+  onRetry,
+  onToggleOverview,
+  onSwitchFeature,
+  onSelectFeature,
+}: Readonly<{
+  featured: Title | undefined;
+  featuredChoices: Title[];
+  featureDir: 1 | -1;
+  featureDuration: number | undefined;
+  featuredResume: ReturnType<typeof resumeFor>;
+  expandedOverviewKey: string;
+  controls: LibraryControls;
+  pending: boolean;
+  error: string;
+  allShelvesEmpty: boolean;
+  onRetry: () => void;
+  onToggleOverview: (key: string) => void;
+  onSwitchFeature: (direction: 1 | -1) => void;
+  onSelectFeature: (item: Title, index: number) => void;
+}>) {
+  if (featured) {
+    return (
+      <FeaturedHero
+        featured={featured}
+        featuredChoices={featuredChoices}
+        featureDir={featureDir}
+        featureDuration={featureDuration}
+        featuredResume={featuredResume}
+        expandedOverviewKey={expandedOverviewKey}
+        controls={controls}
+        onToggleOverview={onToggleOverview}
+        onSwitchFeature={onSwitchFeature}
+        onSelectFeature={onSelectFeature}
+      />
+    );
+  }
+  if (pending) {
+    return (
+      <div className="af-wrap af-home-hero af-home-loading" data-route-loading>
+        <div className="af-feature-artwork" aria-hidden="true" />
+        <div className="af-copy">
+          <h1 className="sr-only">Home</h1>
+          <span className="af-feature-title-placeholder" aria-hidden="true" />
+          <output className="af-meta">Loading the catalog…</output>
+        </div>
+        <div className="af-feature-choices" aria-hidden="true" />
+      </div>
+    );
+  }
+  return (
+    <div className="af-wrap af-title-page">
+      <h1>Home</h1>
+      {error ? <CatalogProblem error={error} retry={onRetry} />
+        : allShelvesEmpty && <div className="af-state">
+          <output>No featured titles are available yet.</output><ActionLink href={webHref('comics')}>Browse manga</ActionLink>
+        </div>}
+    </div>
+  );
+}
+
+function HomeResumeShelves({
+  resume,
+  reading,
+  controls,
+  notify,
+}: Readonly<{
+  resume: ReturnType<typeof resumeEntries>;
+  reading: LibraryControls['library']['reading'][string][];
+  controls: LibraryControls;
+  notify: ReturnType<typeof useToast>['notify'];
+}>) {
+  return <>
+    {resume.length > 0 && <Shelf title="Continue Watching" href={webHref('history')} hrefLabel="Watch history" landscape>
+      {resume.map(([key, entry]) => {
+        const episode = entry.episode;
+        const remaining = Math.ceil((entry.duration - entry.time) / 60);
+        const left = formatHomeMinutesLeft(remaining);
+        return <MediaCard key={key} item={entry.item} controls={controls} href={resumeHref(entry.item, key, episode)} landscape
+          context={episode ? `S${episode.season} E${episode.number} · ${left}` : left}
+          percent={progressPercent(entry)}
+          onDismiss={() => {
+            controls.recordProgress(key, null);
+            notify({
+              message: `Removed “${entry.item.title}” from Continue Watching.`,
+              tone: 'default',
+              action: {
+                label: 'Undo',
+                onAction: () => controls.recordProgress(key, { ...entry, updated: Date.now() }),
+              },
+            });
+          }} />;
+      })}
+    </Shelf>}
+    {reading.length > 0 && <Shelf title="Continue reading" href={webHref('reading')} hrefLabel="Reading list">
+      {reading.map(entry => <ComicCard item={entry.item} controls={controls} key={entry.item.key}
+        href={readerHref(entry.item, entry.chapter, entry.language, entry.listPage, entry.page)}
+        context={`${entry.label} · Page ${entry.page}`}
+        onDismiss={() => {
+          void controls.removeReading(entry.item.key);
+          notify({ message: `Removed “${entry.item.title}” from Continue reading.`, tone: 'default' });
+        }} />)}
+    </Shelf>}
+  </>;
+}
+
 export function Home({ controls }: Readonly<{ controls: LibraryControls }>) {
   const { notify } = useToast();
   const [cached] = useState(() => readBrowseCache<CachedHome>('home:shelves'));
@@ -179,9 +331,7 @@ export function Home({ controls }: Readonly<{ controls: LibraryControls }>) {
   const [expandedOverviewKey, setExpandedOverviewKey] = useState('');
   const [ratings, setRatings] = useState<Record<string, CatalogRating>>(cached?.ratings ?? {});
   const [featuredDetails, setFeaturedDetails] = useState<Title>();
-  const [recentComics, setRecentComics] = useState<Comic[]>(cached?.recentComics ?? []);
-  const [comicsError, setComicsError] = useState('');
-  const [comicsAttempt, setComicsAttempt] = useState(0);
+  const { recentComics, comicsError, retryComics } = useHomeRecentComics(cached);
 
   const jobs = useRef<Partial<Record<ShelfKey, AbortController>>>({});
   const [retrying, setRetrying] = useState<Partial<Record<ShelfKey, boolean>>>({});
@@ -223,29 +373,6 @@ export function Home({ controls }: Readonly<{ controls: LibraryControls }>) {
     const currentJobs = jobs.current;
     return () => { for (const task of Object.values(currentJobs)) task?.abort(); };
   }, [cached]);
-
-  useEffect(() => {
-    if (cached && cached.recentComics.length > 0 && comicsAttempt === 0) return;
-    const task = new AbortController();
-    request<{ results: Comic[] }>('/api/comics/updates', { signal: task.signal })
-      .then(async res => {
-        if (task.signal.aborted) return;
-        if (Array.isArray(res.results) && res.results.length) {
-          setRecentComics(res.results.slice(0, 10));
-          setComicsError('');
-          return;
-        }
-        const fallback = await request<{ results: Comic[] }>('/api/comics', { signal: task.signal });
-        if (!task.signal.aborted && Array.isArray(fallback.results)) {
-          setRecentComics(fallback.results.slice(0, 10));
-          setComicsError('');
-        }
-      })
-      .catch(error_ => {
-        if (!task.signal.aborted) setComicsError(error_ instanceof Error ? error_.message : 'Manga is temporarily unavailable.');
-      });
-    return () => task.abort();
-  }, [comicsAttempt, cached]);
 
   useEffect(() => {
     if (filter === 'all' || trendingByType[filter]) return;
@@ -336,79 +463,25 @@ export function Home({ controls }: Readonly<{ controls: LibraryControls }>) {
     setFeaturedKey(item.key);
   }
 
-  let heroSection;
-  if (featured) {
-    heroSection = (
-      <FeaturedHero
-        featured={featured}
-        featuredChoices={featuredChoices}
-        featureDir={featureDir}
-        featureDuration={featureDuration}
-        featuredResume={featuredResume}
-        expandedOverviewKey={expandedOverviewKey}
-        controls={controls}
-        onToggleOverview={setExpandedOverviewKey}
-        onSwitchFeature={switchFeature}
-        onSelectFeature={selectFeature}
-      />
-    );
-  } else if (pending) {
-    heroSection = (
-      <div className="af-wrap af-home-hero af-home-loading" data-route-loading>
-        <div className="af-feature-artwork" aria-hidden="true" />
-        <div className="af-copy">
-          <h1 className="sr-only">Home</h1>
-          <span className="af-feature-title-placeholder" aria-hidden="true" />
-          <output className="af-meta">Loading the catalog…</output>
-        </div>
-        <div className="af-feature-choices" aria-hidden="true" />
-      </div>
-    );
-  } else {
-    heroSection = (
-      <div className="af-wrap af-title-page">
-        <h1>Home</h1>
-        {error ? <CatalogProblem error={error} retry={retry} />
-          : shelves.every(([key]) => !shelfTitles(key).length) && <div className="af-state">
-            <output>No featured titles are available yet.</output><ActionLink href={webHref('comics')}>Browse manga</ActionLink>
-          </div>}
-      </div>
-    );
-  }
-
   return <>
-    {heroSection}
+    <HomeHeroSection
+      featured={featured}
+      featuredChoices={featuredChoices}
+      featureDir={featureDir}
+      featureDuration={featureDuration}
+      featuredResume={featuredResume}
+      expandedOverviewKey={expandedOverviewKey}
+      controls={controls}
+      pending={pending}
+      error={error}
+      allShelvesEmpty={shelves.every(([key]) => !shelfTitles(key).length)}
+      onRetry={retry}
+      onToggleOverview={setExpandedOverviewKey}
+      onSwitchFeature={switchFeature}
+      onSelectFeature={selectFeature}
+    />
     <div className="af-wrap af-content">
-      {resume.length > 0 && <Shelf title="Continue Watching" href={webHref('history')} hrefLabel="Watch history" landscape>
-        {resume.map(([key, entry]) => {
-          const episode = entry.episode;
-          const remaining = Math.ceil((entry.duration - entry.time) / 60);
-          const left = formatHomeMinutesLeft(remaining);
-          return <MediaCard key={key} item={entry.item} controls={controls} href={resumeHref(entry.item, key, episode)} landscape
-            context={episode ? `S${episode.season} E${episode.number} · ${left}` : left}
-            percent={progressPercent(entry)}
-            onDismiss={() => {
-              controls.recordProgress(key, null);
-              notify({
-                message: `Removed “${entry.item.title}” from Continue Watching.`,
-                tone: 'default',
-                action: {
-                  label: 'Undo',
-                  onAction: () => controls.recordProgress(key, { ...entry, updated: Date.now() }),
-                },
-              });
-            }} />;
-        })}
-      </Shelf>}
-      {reading.length > 0 && <Shelf title="Continue reading" href={webHref('reading')} hrefLabel="Reading list">
-        {reading.map(entry => <ComicCard item={entry.item} controls={controls} key={entry.item.key}
-          href={readerHref(entry.item, entry.chapter, entry.language, entry.listPage, entry.page)}
-          context={`${entry.label} · Page ${entry.page}`}
-          onDismiss={() => {
-            void controls.removeReading(entry.item.key);
-            notify({ message: `Removed “${entry.item.title}” from Continue reading.`, tone: 'default' });
-          }} />)}
-      </Shelf>}
+      <HomeResumeShelves resume={resume} reading={reading} controls={controls} notify={notify} />
       {!error && !pending && shelfStatus('trending', 'Trending this week')}
       {shelfTitles('trending').length > 0 && <Shelf title="Trending this week" landscape actions={
         <fieldset className="af-filters" aria-label="Filter trending">
@@ -425,7 +498,7 @@ export function Home({ controls }: Readonly<{ controls: LibraryControls }>) {
       {recentComics.length > 0 ? <Shelf title="Manga" href={webHref('comics')}>
         {recentComics.map(item => <ComicCard key={item.key} item={item} controls={controls} />)}
       </Shelf> : comicsError && <section className="af-section"><h2>Manga</h2>
-        <p className="af-state" role="alert">{comicsError} <button type="button" className="af-text-link" onClick={() => { setComicsError(''); setComicsAttempt(v => v + 1); }}>Retry manga</button></p>
+        <p className="af-state" role="alert">{comicsError} <button type="button" className="af-text-link" onClick={retryComics}>Retry manga</button></p>
       </section>}
     </div>
   </>;

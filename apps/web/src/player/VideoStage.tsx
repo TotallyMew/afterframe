@@ -653,29 +653,41 @@ function isShortcutBlocked(event: KeyboardEvent): boolean {
     && Boolean(event.target.closest('button, a, input, textarea, select, summary, iframe, [contenteditable]'));
 }
 
+function handleSpaceShortcut(event: KeyboardEvent, ctx: KeyboardShortcutContext) {
+  event.preventDefault();
+  const playing = !(ctx.positionRef.current.paused || ctx.endedRef.current);
+  ctx.sendCommand(playing ? 'pause' : 'play');
+  ctx.showFeedback(playing ? 'Paused' : 'Playing');
+}
+
+function handleSeekArrowShortcut(event: KeyboardEvent, key: string, ctx: KeyboardShortcutContext) {
+  event.preventDefault();
+  const delta = key === 'arrowleft' ? -10 : 10;
+  ctx.jumpPlayback(delta);
+  ctx.showFeedback(delta < 0 ? '−10s' : '+10s');
+}
+
+function handleVolumeArrowShortcut(event: KeyboardEvent, key: string, ctx: KeyboardShortcutContext) {
+  event.preventDefault();
+  const delta = key === 'arrowup' ? 0.1 : -0.1;
+  const base = ctx.mutedRef.current ? 0 : ctx.volumeRef.current;
+  const nextVol = Math.max(0, Math.min(1, Math.round((base + delta) * 20) / 20));
+  ctx.updateAudio(nextVol, nextVol === 0);
+  ctx.showFeedback(nextVol === 0 ? 'Muted' : `Volume ${Math.round(nextVol * 100)}%`);
+}
+
 function handleCoreShortcutKey(event: KeyboardEvent, key: string, ctx: KeyboardShortcutContext): boolean {
-  const hasDuration = ctx.positionRef.current.duration > 0;
-  if (key === ' ' && hasDuration) {
-    event.preventDefault();
-    const playing = !(ctx.positionRef.current.paused || ctx.endedRef.current);
-    ctx.sendCommand(playing ? 'pause' : 'play');
-    ctx.showFeedback(playing ? 'Paused' : 'Playing');
+  if (ctx.positionRef.current.duration <= 0) return handleShiftEpisodeShortcut(event, key, ctx);
+  if (key === ' ') {
+    handleSpaceShortcut(event, ctx);
     return true;
   }
-  if ((key === 'arrowleft' || key === 'arrowright') && hasDuration) {
-    event.preventDefault();
-    const delta = key === 'arrowleft' ? -10 : 10;
-    ctx.jumpPlayback(delta);
-    ctx.showFeedback(delta < 0 ? '−10s' : '+10s');
+  if (key === 'arrowleft' || key === 'arrowright') {
+    handleSeekArrowShortcut(event, key, ctx);
     return true;
   }
-  if ((key === 'arrowup' || key === 'arrowdown') && hasDuration) {
-    event.preventDefault();
-    const delta = key === 'arrowup' ? 0.1 : -0.1;
-    const base = ctx.mutedRef.current ? 0 : ctx.volumeRef.current;
-    const nextVol = Math.max(0, Math.min(1, Math.round((base + delta) * 20) / 20));
-    ctx.updateAudio(nextVol, nextVol === 0);
-    ctx.showFeedback(nextVol === 0 ? 'Muted' : `Volume ${Math.round(nextVol * 100)}%`);
+  if (key === 'arrowup' || key === 'arrowdown') {
+    handleVolumeArrowShortcut(event, key, ctx);
     return true;
   }
   return handleShiftEpisodeShortcut(event, key, ctx);
@@ -1406,9 +1418,12 @@ function StageNativeVideo({
       onEnded={onEnded}
       onError={onError}
     >
-      {captionsSrc
-        ? <track kind="captions" label="English (auto-generated)" srcLang="en" src={captionsSrc} />
-        : <track kind="captions" />}
+      <track
+        kind="captions"
+        label={captionsSrc ? 'English (auto-generated)' : undefined}
+        srcLang={captionsSrc ? 'en' : undefined}
+        src={captionsSrc}
+      />
     </video>
   );
 }
@@ -1440,6 +1455,26 @@ interface VideoStageProps {
   episodesDrawer?: ReactNode;
 }
 
+function deriveStageMode(media: ActiveMedia, initialProvider: AnimeProvider | null, provider: AnimeProvider, providerControls: boolean) {
+  const animeEligible = Boolean(media.embed && isAnime(media.item.originalLanguage, media.item.genreIds));
+  const initialSelectedProvider: AnimeProvider = animeEligible ? (initialProvider ?? 'emnex') : 'cinesrc';
+  const isEmnex = Boolean(media.embed && provider === 'emnex');
+  const isCineSrc = Boolean(media.embed && provider === 'cinesrc');
+  const isNativeVideo = !media.embed || isEmnex;
+  const externalControls = isCineSrc && providerControls;
+  const showOverlay = isNativeVideo || (isCineSrc && !providerControls);
+  return { animeEligible, initialSelectedProvider, isEmnex, isCineSrc, isNativeVideo, externalControls, showOverlay };
+}
+
+function initialTrackingProgress(
+  embed: boolean,
+  initialSelectedProvider: AnimeProvider,
+  saved: LibraryControls['library']['progress'][string] | undefined,
+) {
+  if (!embed) return saved;
+  return (saved?.provider || 'cinesrc') === initialSelectedProvider ? saved : null;
+}
+
 export function VideoStage({
   stageRef, media, displayItem, displayEpisode, backHref, adjacent, nextStillPath, controls,
   initialProvider, onProviderChange, initialAnimeAudio, onAnimeAudioChange, autoPlayEpisode,
@@ -1447,17 +1482,15 @@ export function VideoStage({
   preferredQuality, onPreferredQualityChange, onNavigateEpisode,
   theatreMode, onToggleTheatre, hasEpisodesDrawer, episodesOpen, onToggleEpisodes, episodesDrawer,
 }: Readonly<VideoStageProps>) {
-  const animeEligible = media.embed && isAnime(media.item.originalLanguage, media.item.genreIds);
-  const initialSelectedProvider: AnimeProvider = animeEligible ? (initialProvider ?? 'emnex') : 'cinesrc';
+  const initialMode = deriveStageMode(media, initialProvider, initialProvider ?? 'cinesrc', providerControls);
+  const { animeEligible, initialSelectedProvider } = initialMode;
 
   const prefs = controls.library.preferences;
   const pref = useCallback(<K extends keyof typeof preferenceDefaults>(name: K) => prefs[name] ?? preferenceDefaults[name], [prefs]);
   const preferredSubtitleLang = resolvePreferredSubtitleLang(prefs);
 
   const [provider, setProvider] = useState<AnimeProvider>(initialSelectedProvider);
-  const isEmnex = Boolean(media.embed && provider === 'emnex');
-  const isCineSrc = Boolean(media.embed && provider === 'cinesrc');
-  const isNativeVideo = !media.embed || isEmnex;
+  const { isEmnex, isCineSrc, isNativeVideo, externalControls, showOverlay } = deriveStageMode(media, initialProvider, provider, providerControls);
   const quality = preferredQuality ?? prefs.quality ?? '';
 
   const selectProvider = useCallback((next: AnimeProvider) => {
@@ -1484,9 +1517,7 @@ export function VideoStage({
   const restoreStateRef = useRef<CineRestoreState | null>(null);
 
   const trackingRef = useRef<ViewingSession>(viewingSession(
-    !media.embed || (initialProgressRef.current?.provider || 'cinesrc') === initialSelectedProvider
-      ? initialProgressRef.current
-      : null,
+    initialTrackingProgress(media.embed, initialSelectedProvider, initialProgressRef.current),
   ));
   const historyRef = useRef<{ id: string; started: number; tracking: ViewingSession; lastSaved: number; lastCoverage: number } | null>(null);
   const lastProgressSavedRef = useRef(0);
@@ -2488,8 +2519,7 @@ export function VideoStage({
   };
 
   // Auto-skip segments & auto-next 10s countdown
-  const externalControls = isCineSrc && providerControls;
-  const activeSegment = !externalControls ? activeSkipSegment(segments, position) : undefined;
+  const activeSegment = externalControls ? undefined : activeSkipSegment(segments, position);
   const allowAutoplay = pref('autoplay');
   const skipSegment = useCallback((segment: SkipSegment) => {
     const reachesEnd = endSegmentReachesEnd(segment, segmentsRef.current, positionRef.current.duration);
@@ -2683,7 +2713,6 @@ export function VideoStage({
   }, [sendCommand, revealControls]);
 
   // Auto-load preferred subtitles on CineSrc and when subtitle preference changes
-  const showOverlay = isNativeVideo || (isCineSrc && !providerControls);
   useEffect(() => {
     if (!isCineSrc || !showOverlay) return;
     if (!preferredSubtitleLang) {

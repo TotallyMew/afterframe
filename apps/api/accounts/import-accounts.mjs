@@ -44,7 +44,7 @@ async function importTable(source, target, tableExists, [table, columns, order],
   return runBatchedInserts(insert, select.iterate(), table, columns, legacyRatings);
 }
 
-async function importAllTables(source, target, tableExists, legacyRatings, index = 0, counts = { accountCount: 0, libraryCount: 0 }) {
+async function importAllTables(source, target, tableExists, legacyRatings, index, counts) {
   if (index >= tables.length) return counts;
   const spec = tables[index];
   const rowCount = await importTable(source, target, tableExists, spec, legacyRatings);
@@ -66,7 +66,7 @@ try {
     await target.prepare('LOCK TABLE accounts, release_snapshots IN EXCLUSIVE MODE').run();
     const occupied = await target.prepare('SELECT EXISTS (SELECT 1 FROM accounts UNION ALL SELECT 1 FROM release_snapshots) AS occupied').get();
     if (occupied.occupied) throw new Error('The destination already contains Afterframe account data.');
-    const counts = await importAllTables(source, target, tableExists, legacyRatings);
+    const counts = await importAllTables(source, target, tableExists, legacyRatings, 0, { accountCount: 0, libraryCount: 0 });
     await target.prepare("SELECT setval(pg_get_serial_sequence('accounts', 'id'), COALESCE(max(id), 1), max(id) IS NOT NULL) FROM accounts").run();
     return counts;
   });

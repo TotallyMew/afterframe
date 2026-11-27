@@ -186,6 +186,46 @@ const cataloguePaths = new Set(['movies', 'tv', 'new', 'search']);
 const libraryPaths = new Set(['watchlist', 'watched', 'ratings', 'reading', 'history', 'notifications']);
 const titleRoutePattern = /^(movie|tv)\/([1-9]\d{0,9})$/;
 
+function resolveDataPage(flags: { home: boolean; isTitle: boolean; isReader: boolean; isPlayer: boolean }): string {
+  if (flags.home) return 'home';
+  if (flags.isTitle) return 'title';
+  if (flags.isReader) return 'reader';
+  if (flags.isPlayer) return 'player';
+  return 'directory';
+}
+
+function resolveRoutePageContent(
+  route: string,
+  path: string,
+  query: string,
+  controls: ReturnType<typeof useLibrary>,
+  matches: {
+    home: boolean;
+    catalogue: boolean;
+    library: boolean;
+    title: RegExpExecArray | null;
+    comic: RegExpExecArray | null;
+    reader: RegExpExecArray | null;
+    playerRoute: ReturnType<typeof parsePlayerRoute>;
+    playerKey: string | null;
+  },
+): { page: ReactNode; fallbackShape: 'posters' | 'hero' | 'rows' } {
+  if (matches.home) return { page: <Home controls={controls} />, fallbackShape: 'hero' };
+  if (matches.title) return { page: <DetailsPage key={path} type={matches.title[1] as MediaType} id={Number(matches.title[2])} controls={controls} />, fallbackShape: 'hero' };
+  if (matches.playerRoute && matches.playerKey) return { page: <PlayerPage key={matches.playerKey} route={matches.playerRoute} controls={controls} />, fallbackShape: 'hero' };
+  if (matches.catalogue) return { page: <Catalogue key={route} route={route} controls={controls} />, fallbackShape: 'posters' };
+  if (path === 'anime') return { page: <AnimePage key={route} query={query} controls={controls} />, fallbackShape: 'posters' };
+  if (path === 'comics' || path === 'manga') return { page: <ComicsPage key={route} query={query} controls={controls} />, fallbackShape: 'posters' };
+  if (matches.comic) return { page: <ComicDetailsPage key={path} id={matches.comic[1]} query={query} controls={controls} />, fallbackShape: 'hero' };
+  if (matches.reader) return { page: <ComicReader key={path} id={matches.reader[1]} chapterId={matches.reader[2]} query={query} controls={controls} />, fallbackShape: 'hero' };
+  if (path === 'recommendations') return { page: <RecommendationsPage controls={controls} />, fallbackShape: 'posters' };
+  if (matches.library) return { page: <LibraryPage key={path} path={path} query={query} controls={controls} />, fallbackShape: 'rows' };
+  return {
+    page: <section className="af-wrap af-directory"><h1>Page unavailable</h1><p className="af-meta">This page does not exist in Afterframe.</p><a className="af-text-link" href={webHref('home')}>Go to Home</a></section>,
+    fallbackShape: 'posters',
+  };
+}
+
 function resolveRouteView(route: string, path: string, query: string, controls: ReturnType<typeof useLibrary>) {
   const title = titleRoutePattern.exec(path);
   const comic = comicPath.exec(path);
@@ -198,25 +238,10 @@ function resolveRouteView(route: string, path: string, query: string, controls: 
   const comicRoute = Boolean(comic || reader);
   const isReader = Boolean(reader);
   const isPlayer = Boolean(playerRoute);
-
-  let dataPage = 'directory';
-  if (home) dataPage = 'home';
-  else if (title || comic) dataPage = 'title';
-  else if (isReader) dataPage = 'reader';
-  else if (isPlayer) dataPage = 'player';
-
-  let page: ReactNode = <section className="af-wrap af-directory"><h1>Page unavailable</h1><p className="af-meta">This page does not exist in Afterframe.</p><a className="af-text-link" href={webHref('home')}>Go to Home</a></section>;
-  let fallbackShape: 'posters' | 'hero' | 'rows' = 'posters';
-  if (home) { page = <Home controls={controls} />; fallbackShape = 'hero'; }
-  else if (title) { page = <DetailsPage key={path} type={title[1] as MediaType} id={Number(title[2])} controls={controls} />; fallbackShape = 'hero'; }
-  else if (playerRoute && playerKey) { page = <PlayerPage key={playerKey} route={playerRoute} controls={controls} />; fallbackShape = 'hero'; }
-  else if (catalogue) page = <Catalogue key={route} route={route} controls={controls} />;
-  else if (path === 'anime') page = <AnimePage key={route} query={query} controls={controls} />;
-  else if (path === 'comics' || path === 'manga') page = <ComicsPage key={route} query={query} controls={controls} />;
-  else if (comic) { page = <ComicDetailsPage key={path} id={comic[1]} query={query} controls={controls} />; fallbackShape = 'hero'; }
-  else if (reader) { page = <ComicReader key={path} id={reader[1]} chapterId={reader[2]} query={query} controls={controls} />; fallbackShape = 'hero'; }
-  else if (path === 'recommendations') page = <RecommendationsPage controls={controls} />;
-  else if (library) { page = <LibraryPage key={path} path={path} query={query} controls={controls} />; fallbackShape = 'rows'; }
+  const dataPage = resolveDataPage({ home, isTitle: Boolean(title || comic), isReader, isPlayer });
+  const { page, fallbackShape } = resolveRoutePageContent(route, path, query, controls, {
+    home, catalogue, library, title, comic, reader, playerRoute, playerKey,
+  });
 
   return { page, fallbackShape, dataPage, playerKey, comicRoute, isReader, isPlayer };
 }

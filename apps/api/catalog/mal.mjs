@@ -1,11 +1,21 @@
 import { cacheMetadata } from './metadata.mjs';
 import { animeMalSource } from './anime.mjs';
 
+const malEndpoints = {
+  anime: 'https://api.myanimelist.net/v2/anime/',
+  manga: 'https://api.myanimelist.net/v2/manga/',
+};
+
 export async function malRating(type, id, strict = false) {
   const clientId = process.env.MAL_CLIENT_ID?.trim();
-  if (!clientId || !['anime', 'manga'].includes(type) || !/^[1-9]\d{0,9}$/.test(String(id))) return null;
-  return cacheMetadata(`mal:${type}:${id}`, 24 * 3600000, async () => {
-    const response = await fetch(`https://api.myanimelist.net/v2/${type}/${id}?fields=mean`, {
+  const endpoint = Object.hasOwn(malEndpoints, type) ? malEndpoints[type] : null;
+  const numericId = Number(id);
+  if (!clientId || !endpoint || !Number.isSafeInteger(numericId) || numericId < 1 || numericId > 9_999_999_999) return null;
+  const safeId = String(numericId);
+  return cacheMetadata(`mal:${type}:${safeId}`, 24 * 3600000, async () => {
+    const url = new URL(encodeURIComponent(safeId), endpoint);
+    url.searchParams.set('fields', 'mean');
+    const response = await fetch(url.href, {
       headers: { 'X-MAL-CLIENT-ID': clientId }, redirect: 'error', signal: AbortSignal.timeout(4500),
     });
     if (!response.ok) {

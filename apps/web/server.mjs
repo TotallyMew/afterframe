@@ -37,6 +37,7 @@ const spaDynamicRoutes = [
 ];
 const staticBuildPath = /^\/(?:assets\/[a-z0-9][\w.-]*|icons\/[a-z0-9][\w.-]*\.png|manifest\.webmanifest|sw\.js)$/i;
 const allowedReadMethods = new Set(['GET', 'HEAD']);
+const proxyPrefixes = ['/api/', '/art/', '/stream/', '/comic-cover/', '/comic-page/'];
 const hopHeaders = ['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
 
 function isSpaRoute(path) {
@@ -72,13 +73,37 @@ function forwardedClientIp(request) {
   return remote;
 }
 
+function sanitizeUpstreamPath(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl, upstream);
+    if (parsed.origin !== upstream.origin) return null;
+    const matchedPrefix = proxyPrefixes.find(prefix => parsed.pathname.startsWith(prefix));
+    if (!matchedPrefix) return null;
+    const tail = parsed.pathname.slice(matchedPrefix.length);
+    if (tail.includes('..') || tail.includes('\\')) return null;
+    const encodedTail = tail
+      .split('/')
+      .map(segment => encodeURIComponent(decodeURIComponent(segment)))
+      .join('/');
+    const query = new URLSearchParams(parsed.search).toString();
+    return query ? `${matchedPrefix}${encodedTail}?${query}` : `${matchedPrefix}${encodedTail}`;
+  } catch {
+    return null;
+  }
+}
+
 function forward(request, response, host, isStream = false) {
+  const safePath = sanitizeUpstreamPath(request.url);
+  if (!safePath) return reply(response, 400, 'Invalid request path.');
   const headers = withoutHopHeaders(request.headers);
   headers.host = host;
   headers['x-forwarded-for'] = forwardedClientIp(request);
-  const proxy = proxyRequest(upstream, {
+  const proxy = proxyRequest({
+    protocol: upstream.protocol,
+    hostname: upstream.hostname,
+    port: upstream.port,
     method: request.method,
-    path: request.url,
+    path: safePath,
     headers,
     ...(isStream ? {} : { timeout: 30_000 }),
   }, incoming => {
@@ -117,8 +142,8 @@ function isNotModified(request, statusCode, etag) {
   if (statusCode !== 200) return false;
   const header = request.headers['if-none-match'];
   if (!header) return false;
-  const validators = header.split(',').map(value => value.trim().replace(/^W\//, ''));
-  return validators.includes('*') || validators.includes(etag.slice(2));
+  const validators = new Set(header.split(',').map(value => value.trim().replace(/^W\//, '')));
+  return validators.has('*') || validators.has(etag.slice(2));
 }
 
 async function getCompressedPayload(staticFile, file, info, preferredEncoding) {

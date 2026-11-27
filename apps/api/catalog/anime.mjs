@@ -71,22 +71,25 @@ function mergeAnilistIndexEntry(byAnilist, id, catalog, season) {
   }
 }
 
+function indexSourceRules(byAnilist, byTmdbShow, source, rules) {
+  if (source[1] === 'show' && source[3]) recordTmdbShowSeason(byTmdbShow, source[2], source[3], rules);
+  const vSeasons = source[1] === 'show' && source[3] === '1' ? virtualSeasonsFromTargets(rules) : null;
+  const catalog = `${source[1] === 'show' ? 'tv' : 'movie'}/${source[2]}`;
+  const baseSeason = source[3] ? Number(source[3]) : null;
+  for (const [target, epRules] of Object.entries(rules || {})) {
+    const id = Number(anilistDescriptorPattern.exec(target)?.[1]);
+    if (!Number.isSafeInteger(id) || id < 1) continue;
+    const season = resolveAnilistSeason(baseSeason, vSeasons, epRules);
+    mergeAnilistIndexEntry(byAnilist, id, catalog, season);
+  }
+}
+
 function buildMappingIndexes(entries) {
   const byAnilist = new Map();
   const byTmdbShow = new Map();
   for (const [descriptor, rules] of entries) {
     const source = tmdbDescriptorPattern.exec(descriptor);
-    if (!source) continue;
-    if (source[1] === 'show' && source[3]) recordTmdbShowSeason(byTmdbShow, source[2], source[3], rules);
-    const vSeasons = source[1] === 'show' && source[3] === '1' ? virtualSeasonsFromTargets(rules) : null;
-    const catalog = `${source[1] === 'show' ? 'tv' : 'movie'}/${source[2]}`;
-    const baseSeason = source[3] ? Number(source[3]) : null;
-    for (const [target, epRules] of Object.entries(rules || {})) {
-      const id = Number(anilistDescriptorPattern.exec(target)?.[1]);
-      if (!Number.isSafeInteger(id) || id < 1) continue;
-      const season = resolveAnilistSeason(baseSeason, vSeasons, epRules);
-      mergeAnilistIndexEntry(byAnilist, id, catalog, season);
-    }
+    if (source) indexSourceRules(byAnilist, byTmdbShow, source, rules);
   }
   return { byAnilist, byTmdbShow };
 }
@@ -154,6 +157,19 @@ async function consumeDubFeedResponse(feedRes, feedUnchanged, feedByAnilist, fee
   }
 }
 
+function recordDubScheduleEntry(entry, schedByAnilist, schedByMal) {
+  const media = entry?.media?.media ?? entry?.media ?? entry;
+  const episodeNumber = Number(entry?.episodeNumber);
+  const episodeDate = typeof entry?.episodeDate === 'string' ? entry.episodeDate : '';
+  if (!Number.isSafeInteger(episodeNumber) || episodeNumber < 1 || !episodeDate) return;
+  const total = Number(entry?.episodes);
+  const record = { episodeNumber, episodeDate, episodes: Number.isSafeInteger(total) && total > 0 ? total : null };
+  const anilistId = Number(media?.id);
+  const malId = Number(media?.idMal);
+  if (Number.isSafeInteger(anilistId) && anilistId > 0) schedByAnilist.set(anilistId, record);
+  if (Number.isSafeInteger(malId) && malId > 0) schedByMal.set(malId, record);
+}
+
 async function consumeDubScheduleResponse(schedRes, schedUnchanged, schedByAnilist, schedByMal) {
   if (schedUnchanged) {
     await schedRes.value.body?.cancel();
@@ -167,18 +183,7 @@ async function consumeDubScheduleResponse(schedRes, schedUnchanged, schedByAnili
   dubSchedEtag = schedRes.value.headers.get('etag') || '';
   const entries = await schedRes.value.json().catch(() => []);
   if (!Array.isArray(entries)) return;
-  for (const entry of entries) {
-    const media = entry?.media?.media ?? entry?.media ?? entry;
-    const episodeNumber = Number(entry?.episodeNumber);
-    const episodeDate = typeof entry?.episodeDate === 'string' ? entry.episodeDate : '';
-    if (!Number.isSafeInteger(episodeNumber) || episodeNumber < 1 || !episodeDate) continue;
-    const total = Number(entry?.episodes);
-    const record = { episodeNumber, episodeDate, episodes: Number.isSafeInteger(total) && total > 0 ? total : null };
-    const anilistId = Number(media?.id);
-    const malId = Number(media?.idMal);
-    if (Number.isSafeInteger(anilistId) && anilistId > 0) schedByAnilist.set(anilistId, record);
-    if (Number.isSafeInteger(malId) && malId > 0) schedByMal.set(malId, record);
-  }
+  for (const entry of entries) recordDubScheduleEntry(entry, schedByAnilist, schedByMal);
 }
 
 export async function animeDubSchedules() {
@@ -939,29 +944,32 @@ function hasDubEvidence(anilistId, malId, dubInfo, dubSchedules) {
   return Boolean(malId && (dubSchedules.feedByMal.has(malId) || dubSchedules.schedByMal.has(malId)));
 }
 
-function scanShowDubSummary(id, dubInfo, dubSchedules, virtualSeasons, today) {
-  let showHasDub = false;
-  let nextDubEpisode = null;
-  const showSeasons = mappingByTmdbShow?.get(String(id)) || [];
-  for (const [seasonNum, targets] of showSeasons) {
-    if (!targets) continue;
-    for (const [descriptor, epRules] of Object.entries(targets)) {
-      const anilistId = Number(anilistDescriptorPattern.exec(descriptor)?.[1]);
-      const malId = Number(malDescriptorPattern.exec(descriptor)?.[1]);
-      if (hasDubEvidence(anilistId, malId, dubInfo, dubSchedules)) showHasDub = true;
-      const sched = (anilistId && dubSchedules.schedByAnilist.get(anilistId)) || (malId && dubSchedules.schedByMal.get(malId));
-      if (!sched || !epRules || typeof epRules !== 'object') continue;
-      showHasDub = true;
-      const airDate = sched.episodeDate.slice(0, 10);
-      if (airDate < today) continue;
-      const mappedTmdbEp = mapDubEpisodeToTmdb(epRules, sched.episodeNumber);
-      const coords = resolveDubTargetCoords(mappedTmdbEp, sched.episodeNumber, seasonNum, virtualSeasons);
-      if (!nextDubEpisode || airDate < nextDubEpisode.air_date) {
-        nextDubEpisode = { ...coords, air_date: airDate };
-      }
+function scanSeasonTargetsForDub(targets, seasonNum, dubInfo, dubSchedules, virtualSeasons, today, state) {
+  if (!targets) return;
+  for (const [descriptor, epRules] of Object.entries(targets)) {
+    const anilistId = Number(anilistDescriptorPattern.exec(descriptor)?.[1]);
+    const malId = Number(malDescriptorPattern.exec(descriptor)?.[1]);
+    if (hasDubEvidence(anilistId, malId, dubInfo, dubSchedules)) state.showHasDub = true;
+    const sched = (anilistId && dubSchedules.schedByAnilist.get(anilistId)) || (malId && dubSchedules.schedByMal.get(malId));
+    if (!sched || !epRules || typeof epRules !== 'object') continue;
+    state.showHasDub = true;
+    const airDate = sched.episodeDate.slice(0, 10);
+    if (airDate < today) continue;
+    const mappedTmdbEp = mapDubEpisodeToTmdb(epRules, sched.episodeNumber);
+    const coords = resolveDubTargetCoords(mappedTmdbEp, sched.episodeNumber, seasonNum, virtualSeasons);
+    if (!state.nextDubEpisode || airDate < state.nextDubEpisode.air_date) {
+      state.nextDubEpisode = { ...coords, air_date: airDate };
     }
   }
-  return showHasDub ? { available: true, next_episode_to_air: nextDubEpisode } : null;
+}
+
+function scanShowDubSummary(id, dubInfo, dubSchedules, virtualSeasons, today) {
+  const state = { showHasDub: false, nextDubEpisode: null };
+  const showSeasons = mappingByTmdbShow?.get(String(id)) || [];
+  for (const [seasonNum, targets] of showSeasons) {
+    scanSeasonTargetsForDub(targets, seasonNum, dubInfo, dubSchedules, virtualSeasons, today, state);
+  }
+  return state.showHasDub ? { available: true, next_episode_to_air: state.nextDubEpisode } : null;
 }
 
 async function maybeApplyVirtualSeasons(id, details, mappings, loadSeason) {
@@ -986,6 +994,20 @@ function selectActiveSeasonNumber(working, today) {
     .sort((a, b) => a.air_date.localeCompare(b.air_date))[0]?.season_number;
 }
 
+async function applyActiveSeasonSchedule(id, working, virtualSeasons, mappings, loadSeason, now, today) {
+  const seasonNumber = selectActiveSeasonNumber(working, today);
+  if (!seasonNumber || !mappings) return working;
+  const vMatch = virtualSeasons?.find(entry => entry.vSeason.season === seasonNumber);
+  const sourceSeason = vMatch ? 1 : seasonNumber;
+  const episodeOffset = vMatch ? vMatch.vSeason.start - 1 : 0;
+  const targets = mappings.get(`tmdb_show:${id}:s${sourceSeason}`);
+  if (!targets) return working;
+  const seasonData = vMatch ? vMatch.sliced : await loadSeason(seasonNumber).catch(() => null);
+  if (!seasonData) return working;
+  const seasonResult = await resolveAnimeSeasonSchedule(id, seasonNumber, seasonData, now, { sourceSeason, episodeOffset });
+  return applyAnimeDetailsSchedule(working, seasonNumber, seasonResult, now);
+}
+
 export async function enrichAnimeDetails(id, details, loadSeason, now = new Date()) {
   if (!details) return details;
   const dubDataPromise = Promise.all([
@@ -993,25 +1015,9 @@ export async function enrichAnimeDetails(id, details, loadSeason, now = new Date
     animeDubSchedules().catch(() => ({ feedByAnilist: new Map(), feedByMal: new Map(), schedByAnilist: new Map(), schedByMal: new Map() })),
   ]);
   const mappings = await animeMappings().catch(() => null);
-  const applied = await maybeApplyVirtualSeasons(id, details, mappings, loadSeason);
-  let working = applied.details;
-  const virtualSeasons = applied.virtualSeasons;
-
+  const { details: withVirtual, virtualSeasons } = await maybeApplyVirtualSeasons(id, details, mappings, loadSeason);
   const today = now.toISOString().slice(0, 10);
-  const seasonNumber = selectActiveSeasonNumber(working, today);
-  if (seasonNumber && mappings) {
-    const vMatch = virtualSeasons?.find(entry => entry.vSeason.season === seasonNumber);
-    const sourceSeason = vMatch ? 1 : seasonNumber;
-    const episodeOffset = vMatch ? vMatch.vSeason.start - 1 : 0;
-    const targets = mappings.get(`tmdb_show:${id}:s${sourceSeason}`);
-    if (targets) {
-      const seasonData = vMatch ? vMatch.sliced : await loadSeason(seasonNumber).catch(() => null);
-      if (seasonData) {
-        const seasonResult = await resolveAnimeSeasonSchedule(id, seasonNumber, seasonData, now, { sourceSeason, episodeOffset });
-        working = applyAnimeDetailsSchedule(working, seasonNumber, seasonResult, now);
-      }
-    }
-  }
+  let working = await applyActiveSeasonSchedule(id, withVirtual, virtualSeasons, mappings, loadSeason, now, today);
 
   // Attach show-level dub availability & upcoming dub episode summary for DetailsPage.
   if (mappings) {

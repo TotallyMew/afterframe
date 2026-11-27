@@ -116,10 +116,10 @@ const seasonalQuery = `query(${seasonalVariableDefs}) {
   } } }`;
 
 const seasonSuffixPatterns = [
-  /(?:season|part|cour)\s+(\d+)$/i,
-  /(\d+)(?:st|nd|rd|th)\s+(?:season|stage|cour)$/i,
-  /final\s+season(?:\s+part\s+(\d+))?$/i,
-  /(?:season|part|cour)(\d+)$/i,
+  /(?:season|part|cour)\s+(\d{1,2})$/i,
+  /\b(\d{1,2})(?:st|nd|rd|th)\s+(?:season|stage|cour)$/i,
+  /final\s+season(?:\s+part\s+(\d{1,2}))?$/i,
+  /(?:season|part|cour)(\d{1,2})$/i,
 ];
 const trailingSeparatorChars = new Set([':', '-', '–', '—', ' ', '\t', '\r', '\n']);
 
@@ -245,29 +245,45 @@ function parseSeasonalNumericBounds(params, variables) {
   if (variables.max) variables.max++;
 }
 
-function parseSeasonalParams(params) {
-  const variables = { page: Number(params.get('page') || 1), sort: [params.get('sort') || 'POPULARITY_DESC'] };
-  if (!Number.isSafeInteger(variables.page) || variables.page < 1 || variables.page > 100 || !animeSort.has(variables.sort[0])) {
-    throw invalidSeasonalParam('Invalid anime page or sort order.');
-  }
-  for (const [key, allowed] of Object.entries({ season: ['WINTER', 'SPRING', 'SUMMER', 'FALL'], format: animeFormats, status: animeStatus })) {
+function parseSeasonalEnums(params, variables) {
+  const enumAllowLists = { season: ['WINTER', 'SPRING', 'SUMMER', 'FALL'], format: animeFormats, status: animeStatus };
+  for (const [key, allowed] of Object.entries(enumAllowLists)) {
     const value = params.get(key);
     if (!value) continue;
     if (!allowed.includes(value)) throw invalidSeasonalParam(`Invalid anime ${key}.`);
     variables[key] = value;
   }
-  parseSeasonalNumericBounds(params, variables);
+}
+
+function parseSeasonalTextFilters(params, variables) {
   for (const key of ['genre', 'theme']) {
     const value = params.get(key)?.trim();
-    if (value && (value.length > 60 || !/^[A-Za-z0-9 '&:/.,+-]+$/.test(value))) throw invalidSeasonalParam(`Invalid anime ${key}.`);
-    if (value) variables[key] = value;
+    if (!value) continue;
+    if (value.length > 60 || !/^[A-Za-z0-9 '&:/.,+-]+$/.test(value)) throw invalidSeasonalParam(`Invalid anime ${key}.`);
+    variables[key] = value;
   }
+}
+
+const audioFilters = new Set(['dub', 'sub', 'dub-airing', 'sub-airing']);
+
+function parseSeasonalAudio(params, variables) {
   const audio = params.get('audio') || '';
-  if (audio && !['dub', 'sub', 'dub-airing', 'sub-airing'].includes(audio)) throw invalidSeasonalParam('Invalid anime audio filter.');
+  if (audio && !audioFilters.has(audio)) throw invalidSeasonalParam('Invalid anime audio filter.');
   if (audio === 'sub-airing' && !variables.status) variables.status = 'RELEASING';
-  if (audio === 'dub-airing' && !variables.status && !variables.season && !variables.year && !variables.yearPattern) {
-    variables.status = 'RELEASING';
+  const noTimeScope = !variables.status && !variables.season && !variables.year && !variables.yearPattern;
+  if (audio === 'dub-airing' && noTimeScope) variables.status = 'RELEASING';
+  return audio;
+}
+
+function parseSeasonalParams(params) {
+  const variables = { page: Number(params.get('page') || 1), sort: [params.get('sort') || 'POPULARITY_DESC'] };
+  if (!Number.isSafeInteger(variables.page) || variables.page < 1 || variables.page > 100 || !animeSort.has(variables.sort[0])) {
+    throw invalidSeasonalParam('Invalid anime page or sort order.');
   }
+  parseSeasonalEnums(params, variables);
+  parseSeasonalNumericBounds(params, variables);
+  parseSeasonalTextFilters(params, variables);
+  const audio = parseSeasonalAudio(params, variables);
   return { variables, audio };
 }
 

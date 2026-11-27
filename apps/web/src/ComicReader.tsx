@@ -16,6 +16,8 @@ type Layout = 'single' | 'double' | 'scroll';
 type Direction = 'rtl' | 'ltr';
 type Fit = 'page' | 'width' | 'height' | 'original';
 type EdgeProgressPos = 'left' | 'bottom' | 'right' | 'off';
+type DrawerTab = 'settings' | 'chapters';
+type ActiveDrawerTab = DrawerTab | null;
 
 function readOption<T>(key: string, fallback: T): T {
   try {
@@ -201,7 +203,7 @@ function readInitialDimLevel(): number {
   return Number.isFinite(saved) ? Math.max(0, Math.min(60, Math.round(saved))) : 0;
 }
 
-function nextModalTab(key: string, current: 'settings' | 'chapters' | null): 'settings' | 'chapters' {
+function nextModalTab(key: string, current: ActiveDrawerTab): DrawerTab {
   if (key === 'Home') return 'settings';
   if (key === 'End') return 'chapters';
   return current === 'settings' ? 'chapters' : 'settings';
@@ -245,11 +247,11 @@ interface ReaderShortcutContext {
   shell: HTMLDivElement | null;
   layout: Layout;
   direction: Direction;
-  drawerTab: 'settings' | 'chapters' | null;
+  drawerTab: ActiveDrawerTab;
   singleKeyEnabled: boolean;
   zoom: number;
-  setDrawerTab: (next: 'settings' | 'chapters' | null) => void;
-  openModalTab: (next: 'settings' | 'chapters' | null, invoker?: HTMLElement | null) => void;
+  setDrawerTab: (next: ActiveDrawerTab) => void;
+  openModalTab: (next: ActiveDrawerTab, invoker?: HTMLElement | null) => void;
   stepForward: () => void;
   stepBackward: () => void;
   toggleFullscreen: () => Promise<void>;
@@ -492,7 +494,7 @@ function usePreloadPages(
 function useScrollPageTracking(options: {
   layout: Layout;
   pinHud: boolean;
-  drawerTab: 'settings' | 'chapters' | null;
+  drawerTab: ActiveDrawerTab;
   stageRef: RefObject<HTMLDivElement | null>;
   pendingAlign: RefObject<number>;
   resumeResolved: RefObject<boolean>;
@@ -630,8 +632,8 @@ function ReaderFloatingChrome({
   chapter: Chapter;
   neighbors?: ChapterNavigation | null;
   back: string;
-  drawerTab: 'settings' | 'chapters' | null;
-  onOpenModalTab: (next: 'settings' | 'chapters' | null, invoker?: HTMLElement | null) => void;
+  drawerTab: ActiveDrawerTab;
+  onOpenModalTab: (next: ActiveDrawerTab, invoker?: HTMLElement | null) => void;
   fitLabel: string;
   onCycleFit: () => void;
   nativeFullscreen: boolean;
@@ -1055,13 +1057,208 @@ function ReaderEndFooter({
   );
 }
 
+function ReaderStageCanvas({
+  layout,
+  fit,
+  direction,
+  seamlessStrip,
+  page,
+  total,
+  pages,
+  visiblePages,
+  transcript,
+  zoom,
+  pan,
+  pageStyle,
+  hudShown,
+  saveProblem,
+  controlsReady,
+  controlsReplaying,
+  stageWrapRef,
+  stageRef,
+  dragStateRef,
+  zoneClickTimerRef,
+  onRetrySave,
+  onAdjustZoom,
+  onPanChange,
+  onMarkLoaded,
+  onStepForward,
+  onStepBackward,
+  onToggleHud,
+}: Readonly<{
+  layout: Layout;
+  fit: Fit;
+  direction: Direction;
+  seamlessStrip: boolean;
+  page: number;
+  total: number;
+  pages: string[];
+  visiblePages: number[];
+  transcript?: ChapterContent['transcript'];
+  zoom: number;
+  pan: { x: number; y: number };
+  pageStyle: CSSProperties;
+  hudShown: boolean;
+  saveProblem?: string;
+  controlsReady: boolean;
+  controlsReplaying: boolean;
+  stageWrapRef: RefObject<HTMLDivElement | null>;
+  stageRef: RefObject<HTMLDivElement | null>;
+  dragStateRef: RefObject<{ pointerId: number; startX: number; startY: number; originX: number; originY: number } | null>;
+  zoneClickTimerRef: RefObject<number | undefined>;
+  onRetrySave: () => void;
+  onAdjustZoom: (next: number) => void;
+  onPanChange: (next: { x: number; y: number }) => void;
+  onMarkLoaded: (num: number) => void;
+  onStepForward: () => void;
+  onStepBackward: () => void;
+  onToggleHud: () => void;
+}>) {
+  return (
+    <div className="af-reader-stage" data-layout={layout} ref={stageWrapRef}>
+      <output className="sr-only">Page {page} of {total}</output>
+      {saveProblem && <p className="af-state af-reader-save-alert" role="alert">Reading position could not be saved. {saveProblem} <button className="af-text-link" type="button" disabled={!controlsReady || controlsReplaying} onClick={onRetrySave}>Retry saving position</button></p>}
+
+      <div
+        className={`af-reader-pages ${zoom > 1 ? 'is-zoomed' : ''}`}
+        data-layout={layout}
+        data-fit={fit}
+        data-direction={direction}
+        data-seamless={seamlessStrip || undefined}
+        style={Object.keys(pageStyle).length ? pageStyle : undefined}
+        onDoubleClick={event => {
+          if (layout === 'scroll') return;
+          event.stopPropagation();
+          onAdjustZoom(zoom > 1 ? 1 : 2);
+        }}
+        onPointerDown={event => {
+          if (zoom <= 1) return;
+          dragStateRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: pan.x, originY: pan.y };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={event => {
+          const drag = dragStateRef.current;
+          if (!drag || drag.pointerId !== event.pointerId) return;
+          onPanChange({ x: drag.originX + (event.clientX - drag.startX), y: drag.originY + (event.clientY - drag.startY) });
+        }}
+        onPointerUp={event => {
+          if (dragStateRef.current?.pointerId === event.pointerId) dragStateRef.current = null;
+        }}
+        onPointerCancel={() => { dragStateRef.current = null; }}
+        ref={stageRef}
+      >
+        {visiblePages.map(num => {
+          const text = transcript?.pages?.[num - 1];
+          return <ReaderImage key={num} page={num} src={pages[num - 1]}
+            visible={layout === 'scroll' ? Math.abs(num - page) <= 2 : visiblePages.includes(num)}
+            described={typeof text === 'string' && Boolean(text.trim())}
+            onLoad={onMarkLoaded} />;
+        })}
+      </div>
+
+      {zoom > 1 && <button type="button" className="af-reader-zoom-reset" onClick={() => onAdjustZoom(1)} aria-label="Reset zoom">
+        {Math.round(zoom * 100)}% · Reset zoom
+      </button>}
+
+      {zoom <= 1 && layout !== 'scroll' && (
+        <ReaderTapZones
+          direction={direction}
+          hudShown={hudShown}
+          onStepForward={onStepForward}
+          onStepBackward={onStepBackward}
+          onToggleHud={onToggleHud}
+          onZoomIn={() => onAdjustZoom(2)}
+          zoneClickTimerRef={zoneClickTimerRef}
+        />
+      )}
+    </div>
+  );
+}
+
+function ReaderMenuDialog({
+  drawerTab,
+  modalCloseRef,
+  modalInvokerRef,
+  onTabChange,
+  settingsProps,
+  chaptersProps,
+}: Readonly<{
+  drawerTab: ActiveDrawerTab;
+  modalCloseRef: RefObject<HTMLButtonElement | null>;
+  modalInvokerRef: RefObject<HTMLElement | null>;
+  onTabChange: (next: ActiveDrawerTab) => void;
+  settingsProps: Parameters<typeof ReaderSettingsPanel>[0];
+  chaptersProps: Parameters<typeof ReaderChaptersPanel>[0];
+}>) {
+  const handleModalTabKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = nextModalTab(event.key, drawerTab);
+    onTabChange(next);
+    document.getElementById(`af-reader-tab-${next}`)?.focus();
+  };
+
+  return (
+    <Dialog.Root open={drawerTab !== null} onOpenChange={next => { if (!next) onTabChange(null); }}>
+      <Dialog.Portal>
+        <Dialog.Backdrop className="af-reader-modal-scrim" />
+        <Dialog.Popup
+          className="af-reader-modal"
+          aria-label="Reader menu"
+          initialFocus={modalCloseRef}
+          finalFocus={() => modalInvokerRef.current?.isConnected ? modalInvokerRef.current : document.getElementById('main')}
+        >
+          <Dialog.Title className="sr-only">Reader menu</Dialog.Title>
+          <div className="af-reader-modal-head">
+            <div className="af-reader-modal-tabs" role="tablist" aria-label="Reader menu sections" tabIndex={0} onKeyDown={handleModalTabKey}>
+              <button
+                id="af-reader-tab-settings"
+                type="button"
+                role="tab"
+                aria-selected={drawerTab === 'settings'}
+                aria-controls="af-reader-panel-settings"
+                tabIndex={drawerTab === 'settings' ? 0 : -1}
+                onClick={() => onTabChange('settings')}
+              >Settings</button>
+              <button
+                id="af-reader-tab-chapters"
+                type="button"
+                role="tab"
+                aria-selected={drawerTab === 'chapters'}
+                aria-controls="af-reader-panel-chapters"
+                tabIndex={drawerTab === 'chapters' ? 0 : -1}
+                onClick={() => onTabChange('chapters')}
+              >Chapters</button>
+            </div>
+            <Dialog.Close ref={modalCloseRef} className="af-icon-button af-reader-modal-close" aria-label="Close reader menu">
+              <Icon name="close" />
+            </Dialog.Close>
+          </div>
+
+          <div
+            className="af-reader-modal-body"
+            role="tabpanel"
+            id={`af-reader-panel-${drawerTab ?? 'settings'}`}
+            aria-labelledby={`af-reader-tab-${drawerTab ?? 'settings'}`}
+          >
+            {drawerTab === 'settings'
+              ? <ReaderSettingsPanel {...settingsProps} />
+              : <ReaderChaptersPanel {...chaptersProps} />}
+          </div>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
 function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, requestedPage, controls, back }: Readonly<{
   data: ReaderData; listPage: number; requestedPage: number; controls: LibraryControls; back: string;
 }>) {
   const recent = controls.library.reading[item.key];
   const total = pages.length;
   const bounded = (p: number) => Math.max(1, Math.min(total, p));
-  const start = bounded(requestedPage || (recent?.chapter === chapter.id && controls.ready ? recent.page : 1));
+  const resumePage = recent?.chapter === chapter.id && controls.ready ? recent.page : 1;
+  const start = bounded(requestedPage || resumePage);
   const [page, setPage] = useState(start);
   const [loaded, setLoaded] = useState<Set<number>>(() => new Set());
   const [layout, setLayout] = useState<Layout>(() => readInitialLayout(item));
@@ -1079,7 +1276,7 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
   const zoneClickTimerRef = useRef<number | undefined>(undefined);
   const [hudVisible, setHudVisible] = useState(true);
   const [pinHud, setPinHud] = useState<boolean>(() => readOption('comicPinHud', false));
-  const [drawerTab, setDrawerTab] = useState<'settings' | 'chapters' | null>(null);
+  const [drawerTab, setDrawerTab] = useState<ActiveDrawerTab>(null);
   const [nativeFullscreen, setNativeFullscreen] = useState(false);
   const [neighbors, setNeighbors] = useState<ChapterNavigation | null>();
   const [chapterList, setChapterList] = useState<Chapter[]>([]);
@@ -1226,7 +1423,7 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
 
   const modalInvokerRef = useRef<HTMLElement | null>(null);
   const modalCloseRef = useRef<HTMLButtonElement>(null);
-  const openModalTab = (next: 'settings' | 'chapters' | null, invoker?: HTMLElement | null) => {
+  const openModalTab = (next: ActiveDrawerTab, invoker?: HTMLElement | null) => {
     if (next && invoker) modalInvokerRef.current = invoker;
     setDrawerTab(next);
   };
@@ -1282,14 +1479,6 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
 
   const activeSet = useMemo(() => new Set(visiblePages), [visiblePages]);
 
-  const handleModalTabKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
-    event.preventDefault();
-    const next = nextModalTab(event.key, drawerTab);
-    setDrawerTab(next);
-    document.getElementById(`af-reader-tab-${next}`)?.focus();
-  };
-
   return <section className="af-comic-reader" aria-label="Chapter reader" data-layout={layout} data-oled={oledMode || undefined}>
     <h1 className="sr-only" tabIndex={-1}>{chapter.label}</h1>
     <div className={`af-reader-shell ${hudShown ? '' : 'is-hud-hidden'}`} data-layout={layout} ref={shellRef}>
@@ -1319,63 +1508,35 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
         onJump={jump}
       />
 
-      <div className="af-reader-stage" data-layout={layout} ref={stageWrapRef}>
-        <output className="sr-only">Page {page} of {total}</output>
-        {saveProblem && <p className="af-state af-reader-save-alert" role="alert">Reading position could not be saved. {saveProblem} <button className="af-text-link" type="button" disabled={!controls.ready || controls.replaying} onClick={() => setResumeAttempt(v => v + 1)}>Retry saving position</button></p>}
-
-        <div
-          className={`af-reader-pages ${zoom > 1 ? 'is-zoomed' : ''}`}
-          data-layout={layout}
-          data-fit={fit}
-          data-direction={direction}
-          data-seamless={seamlessStrip || undefined}
-          style={Object.keys(pageStyle).length ? pageStyle : undefined}
-          onDoubleClick={event => {
-            if (layout === 'scroll') return;
-            event.stopPropagation();
-            adjustZoom(zoom > 1 ? 1 : 2);
-          }}
-          onPointerDown={event => {
-            if (zoom <= 1) return;
-            dragStateRef.current = { pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, originX: pan.x, originY: pan.y };
-            event.currentTarget.setPointerCapture(event.pointerId);
-          }}
-          onPointerMove={event => {
-            const drag = dragStateRef.current;
-            if (!drag || drag.pointerId !== event.pointerId) return;
-            setPan({ x: drag.originX + (event.clientX - drag.startX), y: drag.originY + (event.clientY - drag.startY) });
-          }}
-          onPointerUp={event => {
-            if (dragStateRef.current?.pointerId === event.pointerId) dragStateRef.current = null;
-          }}
-          onPointerCancel={() => { dragStateRef.current = null; }}
-          ref={stageRef}
-        >
-          {visiblePages.map(num => {
-            const text = transcript?.pages?.[num - 1];
-            return <ReaderImage key={num} page={num} src={pages[num - 1]}
-              visible={layout === 'scroll' ? Math.abs(num - page) <= 2 : visiblePages.includes(num)}
-              described={typeof text === 'string' && Boolean(text.trim())}
-              onLoad={markLoaded} />;
-          })}
-        </div>
-
-        {zoom > 1 && <button type="button" className="af-reader-zoom-reset" onClick={() => adjustZoom(1)} aria-label="Reset zoom">
-          {Math.round(zoom * 100)}% · Reset zoom
-        </button>}
-
-        {zoom <= 1 && layout !== 'scroll' && (
-          <ReaderTapZones
-            direction={direction}
-            hudShown={hudShown}
-            onStepForward={stepForward}
-            onStepBackward={stepBackward}
-            onToggleHud={toggleHud}
-            onZoomIn={() => adjustZoom(2)}
-            zoneClickTimerRef={zoneClickTimerRef}
-          />
-        )}
-      </div>
+      <ReaderStageCanvas
+        layout={layout}
+        fit={fit}
+        direction={direction}
+        seamlessStrip={seamlessStrip}
+        page={page}
+        total={total}
+        pages={pages}
+        visiblePages={visiblePages}
+        transcript={transcript}
+        zoom={zoom}
+        pan={pan}
+        pageStyle={pageStyle}
+        hudShown={hudShown}
+        saveProblem={saveProblem}
+        controlsReady={controls.ready}
+        controlsReplaying={controls.replaying}
+        stageWrapRef={stageWrapRef}
+        stageRef={stageRef}
+        dragStateRef={dragStateRef}
+        zoneClickTimerRef={zoneClickTimerRef}
+        onRetrySave={() => setResumeAttempt(v => v + 1)}
+        onAdjustZoom={adjustZoom}
+        onPanChange={setPan}
+        onMarkLoaded={markLoaded}
+        onStepForward={stepForward}
+        onStepBackward={stepBackward}
+        onToggleHud={toggleHud}
+      />
 
       <ReaderBottomBar
         hudShown={hudShown}
@@ -1394,94 +1555,51 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
         onAdjustZoom={adjustZoom}
       />
 
-      <Dialog.Root open={drawerTab !== null} onOpenChange={next => { if (!next) setDrawerTab(null); }}>
-        <Dialog.Portal>
-          <Dialog.Backdrop className="af-reader-modal-scrim" />
-          <Dialog.Popup
-            className="af-reader-modal"
-            aria-label="Reader menu"
-            initialFocus={modalCloseRef}
-            finalFocus={() => modalInvokerRef.current?.isConnected ? modalInvokerRef.current : document.getElementById('main')}
-          >
-            <Dialog.Title className="sr-only">Reader menu</Dialog.Title>
-            <div className="af-reader-modal-head">
-              <div className="af-reader-modal-tabs" role="tablist" aria-label="Reader menu sections" tabIndex={0} onKeyDown={handleModalTabKey}>
-                <button
-                  id="af-reader-tab-settings"
-                  type="button"
-                  role="tab"
-                  aria-selected={drawerTab === 'settings'}
-                  aria-controls="af-reader-panel-settings"
-                  tabIndex={drawerTab === 'settings' ? 0 : -1}
-                  onClick={() => setDrawerTab('settings')}
-                >Settings</button>
-                <button
-                  id="af-reader-tab-chapters"
-                  type="button"
-                  role="tab"
-                  aria-selected={drawerTab === 'chapters'}
-                  aria-controls="af-reader-panel-chapters"
-                  tabIndex={drawerTab === 'chapters' ? 0 : -1}
-                  onClick={() => setDrawerTab('chapters')}
-                >Chapters</button>
-              </div>
-              <Dialog.Close ref={modalCloseRef} className="af-icon-button af-reader-modal-close" aria-label="Close reader menu">
-                <Icon name="close" />
-              </Dialog.Close>
-            </div>
-
-            <div
-              className="af-reader-modal-body"
-              role="tabpanel"
-              id={`af-reader-panel-${drawerTab ?? 'settings'}`}
-              aria-labelledby={`af-reader-tab-${drawerTab ?? 'settings'}`}
-            >
-              {drawerTab === 'settings' ? (
-                <ReaderSettingsPanel
-                  layout={layout}
-                  onLayoutChange={val => { writeOption('comicLayout', val); setLayout(val); }}
-                  direction={direction}
-                  onDirectionChange={val => { writeOption('comicDirection', val); setDirection(val); }}
-                  fit={fit}
-                  onFitChange={val => { writeOption('comicFit', val); setFit(val); }}
-                  progressPos={progressPos}
-                  onProgressPosChange={val => { writeOption('comicProgressPos', val); setProgressPos(val); }}
-                  offsetCover={offsetCover}
-                  onOffsetCoverChange={checked => { setOffsetCover(checked); writeOption('comicOffsetCover', checked); }}
-                  seamlessStrip={seamlessStrip}
-                  onSeamlessStripChange={checked => { setSeamlessStrip(checked); writeOption('comicSeamless', checked); }}
-                  pinHud={pinHud}
-                  onPinHudChange={checked => { setPinHud(checked); setHudVisible(true); writeOption('comicPinHud', checked); }}
-                  dimLevel={dimLevel}
-                  onDimLevelChange={next => { setDimLevel(next); writeOption('comicDim', next); }}
-                  grayscale={grayscale}
-                  onGrayscaleChange={checked => { setGrayscale(checked); writeOption('comicGrayscale', checked); }}
-                  oledMode={oledMode}
-                  onOledModeChange={checked => { setOledMode(checked); writeOption('comicOled', checked); }}
-                  zoom={zoom}
-                  onAdjustZoom={adjustZoom}
-                />
-              ) : (
-                <ReaderChaptersPanel
-                  item={item}
-                  chapter={chapter}
-                  total={total}
-                  credit={credit}
-                  navError={navError}
-                  onRetryNavigation={() => { setNavError(''); setNavigationAttempt(v => v + 1); }}
-                  chapterList={chapterList}
-                  chapterFilter={chapterFilter}
-                  onChapterFilterChange={setChapterFilter}
-                  activeChapterRef={activeChapterRef}
-                  back={back}
-                  listHref={listHref}
-                  onCloseDrawer={() => setDrawerTab(null)}
-                />
-              )}
-            </div>
-          </Dialog.Popup>
-        </Dialog.Portal>
-      </Dialog.Root>
+      <ReaderMenuDialog
+        drawerTab={drawerTab}
+        modalCloseRef={modalCloseRef}
+        modalInvokerRef={modalInvokerRef}
+        onTabChange={setDrawerTab}
+        settingsProps={{
+          layout,
+          onLayoutChange: val => { writeOption('comicLayout', val); setLayout(val); },
+          direction,
+          onDirectionChange: val => { writeOption('comicDirection', val); setDirection(val); },
+          fit,
+          onFitChange: val => { writeOption('comicFit', val); setFit(val); },
+          progressPos,
+          onProgressPosChange: val => { writeOption('comicProgressPos', val); setProgressPos(val); },
+          offsetCover,
+          onOffsetCoverChange: checked => { setOffsetCover(checked); writeOption('comicOffsetCover', checked); },
+          seamlessStrip,
+          onSeamlessStripChange: checked => { setSeamlessStrip(checked); writeOption('comicSeamless', checked); },
+          pinHud,
+          onPinHudChange: checked => { setPinHud(checked); setHudVisible(true); writeOption('comicPinHud', checked); },
+          dimLevel,
+          onDimLevelChange: next => { setDimLevel(next); writeOption('comicDim', next); },
+          grayscale,
+          onGrayscaleChange: checked => { setGrayscale(checked); writeOption('comicGrayscale', checked); },
+          oledMode,
+          onOledModeChange: checked => { setOledMode(checked); writeOption('comicOled', checked); },
+          zoom,
+          onAdjustZoom: adjustZoom,
+        }}
+        chaptersProps={{
+          item,
+          chapter,
+          total,
+          credit,
+          navError,
+          onRetryNavigation: () => { setNavError(''); setNavigationAttempt(v => v + 1); },
+          chapterList,
+          chapterFilter,
+          onChapterFilterChange: setChapterFilter,
+          activeChapterRef,
+          back,
+          listHref,
+          onCloseDrawer: () => setDrawerTab(null),
+        }}
+      />
     </div>
 
     <ReaderEndFooter
