@@ -1160,6 +1160,12 @@ a.af-episode-title:hover { color: var(--af-selection); }
   pointer-events: none;
 }
 
+/* Manga sort tabs and latest-chapter poster label */
+.af-comic-sort { margin-block: var(--af-space-4) var(--af-space-3); }
+.af-comic-sort .af-route-tabs { flex-wrap: nowrap; overflow-x: auto; gap: var(--af-space-1) var(--af-space-5); }
+.af-comic-sort .af-route-tabs a { white-space: nowrap; font-weight: 600; }
+.af-poster-latest { text-align: start; }
+
 /* Sliding Header Nav Indicator */
 .af-nav { position: relative; }
 .af-nav-indicator {

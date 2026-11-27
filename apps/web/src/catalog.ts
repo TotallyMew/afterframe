@@ -59,6 +59,8 @@ export interface Comic {
   status?: string;
   lastChapter?: string;
   chapterCount?: string;
+  latestChapter?: string;
+  latestAt?: string;
   updated?: number;
   malId?: number | null;
   mal?: number;
@@ -240,6 +242,46 @@ export function playerHref(route: string, back = currentLocationHref()) {
   const params = new URLSearchParams(existingQuery);
   if (back && !params.has('back')) params.set('back', back);
   return webHref(routeWithParams(path, params));
+}
+
+const browseCache = new Map<string, { at: number; data: unknown }>();
+const browseCacheTtlMs = 30 * 60_000;
+const browseCacheLimit = 24;
+const browseStorageKey = 'afterframe.browse-cache';
+
+export function readBrowseCache<T>(key: string): T | null {
+  const now = Date.now();
+  const inMemory = browseCache.get(key);
+  if (inMemory) {
+    if (inMemory.at > now - browseCacheTtlMs) {
+      browseCache.delete(key);
+      browseCache.set(key, inMemory);
+      return inMemory.data as T;
+    }
+    browseCache.delete(key);
+  }
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(browseStorageKey) ?? 'null');
+    if (stored?.key === key && stored.at > now - browseCacheTtlMs) {
+      browseCache.set(key, { at: stored.at, data: stored.data });
+      return stored.data as T;
+    }
+  } catch { /* Storage is optional. */ }
+  return null;
+}
+
+export function writeBrowseCache<T>(key: string, data: T): void {
+  const entry = { at: Date.now(), data };
+  browseCache.delete(key);
+  browseCache.set(key, entry);
+  while (browseCache.size > browseCacheLimit) {
+    const oldest = browseCache.keys().next().value;
+    if (oldest === undefined) break;
+    browseCache.delete(oldest);
+  }
+  try {
+    sessionStorage.setItem(browseStorageKey, JSON.stringify({ key, at: entry.at, data }));
+  } catch { /* Storage is optional; in-memory cache still holds the loaded pages. */ }
 }
 
 export function rememberRoute(invoker: Element | null = null) {

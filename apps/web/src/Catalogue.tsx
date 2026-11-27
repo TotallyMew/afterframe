@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
-  catalogGenres, formatDate, navigate, normalizeTitles, request, routeWithParams, titleHref, webHref,
+  catalogGenres, formatDate, navigate, normalizeTitles, readBrowseCache, request, routeWithParams, titleHref, webHref, writeBrowseCache,
   type CatalogRating, type Comic, type MediaType, type RatingCoverage, type Title, type TitleResults,
 } from './catalog';
 import { Artwork, CatalogProblem, Icon, Loading, MediaCard, SaveButton, Score, Shelf } from './components';
@@ -151,14 +151,15 @@ function Releases({ items, controls }: { items: Title[]; controls: LibraryContro
   </section>);
 }
 
-type CachedCatalogue = { items: Title[]; next: number | null; total: number | null; ratingCoverage?: RatingCoverage };
-
-function recentCatalogue(route: string): CachedCatalogue | null {
-  try {
-    const value = JSON.parse(sessionStorage.getItem('afterframe.catalogue') ?? 'null');
-    return value?.route === route && value.at > Date.now() - 120000 ? value.data : null;
-  } catch { return null; }
-}
+type CachedCatalogue = {
+  items: Title[];
+  comicItems: Comic[];
+  inlineComics: Comic[];
+  page: number;
+  next: number | null;
+  total: number | null;
+  ratingCoverage?: RatingCoverage;
+};
 
 export function Catalogue({ route, controls }: { route: string; controls: LibraryControls }) {
   const [rawPath, query = ''] = route.split('?', 2);
@@ -175,11 +176,12 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
   const type: MediaType = selected === 'tv' ? 'tv' : 'movie';
   const heading = search ? (text ? `Results for “${text}”` : 'Search') : releases ? 'New Releases'
     : params.get('collection') === 'gems' ? 'Hidden gems' : type === 'tv' ? 'TV Shows' : 'Movies';
-  const [cached] = useState(() => comicSearch ? null : recentCatalogue(route));
+  const cacheKey = `catalogue:${route}`;
+  const [cached] = useState(() => readBrowseCache<CachedCatalogue>(cacheKey));
   const [items, setItems] = useState<Title[]>(cached?.items ?? []);
-  const [comicItems, setComicItems] = useState<Comic[]>([]);
-  const [inlineComics, setInlineComics] = useState<Comic[]>([]);
-  const [page, setPage] = useState(1);
+  const [comicItems, setComicItems] = useState<Comic[]>(cached?.comicItems ?? []);
+  const [inlineComics, setInlineComics] = useState<Comic[]>(cached?.inlineComics ?? []);
+  const [page, setPage] = useState(cached?.page ?? 1);
   const [next, setNext] = useState<number | null>(cached?.next ?? null);
   const [ratingCoverage, setRatingCoverage] = useState<RatingCoverage | undefined>(cached?.ratingCoverage);
   const [total, setTotal] = useState<number | null>(cached?.total ?? null);
@@ -192,14 +194,14 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
   const sortLabel = (value: string) => value !== 'popular' ? sortOptions.find(([key]) => key === value)?.[1] ?? '' : '';
 
   useEffect(() => {
-    if (!comicSearch && !loading && items.length) {
-      try { sessionStorage.setItem('afterframe.catalogue', JSON.stringify({ route, at: Date.now(), data: { items, next, total, ratingCoverage } })); }
-      catch { /* Storage is optional. */ }
+    if (!loading && (comicSearch ? comicItems.length : items.length)) {
+      writeBrowseCache<CachedCatalogue>(cacheKey, { items, comicItems, inlineComics, page, next, total, ratingCoverage });
     }
-  }, [items, next, total, route, loading, ratingCoverage, comicSearch]);
+  }, [cacheKey, items, comicItems, inlineComics, page, next, total, loading, ratingCoverage, comicSearch]);
 
   useEffect(() => {
     if (!search || selected !== '' || !text.trim()) { setInlineComics([]); return; }
+    if (cached && cached.inlineComics.length > 0) return;
     const task = new AbortController();
     request<{ results: Comic[] }>(`/api/comics?q=${encodeURIComponent(text)}`, { signal: task.signal })
       .then(result => {
@@ -218,11 +220,11 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
       })
       .catch(() => {});
     return () => task.abort();
-  }, [search, selected, text]);
+  }, [search, selected, text, cached]);
 
   useEffect(() => {
-    if (cached && page === 1 && attempt === 0) {
-      if (search && cached.items.some(item => !item.rating)) {
+    if (cached && page === cached.page && attempt === 0) {
+      if (search && !comicSearch && cached.items.some(item => !item.rating)) {
         const task = new AbortController();
         const keys = cached.items.filter(item => !item.rating).slice(0, 20).map(item => `${item.type}:${item.id}`);
         if (keys.length) {

@@ -213,17 +213,14 @@ export async function seasonalAnime(params, tmdb = null, tmdbEnabled = false) {
     if (!Array.isArray(result?.media)) throw new Error('Anime schedules are temporarily unavailable.');
     return result;
   });
-  let currentPage = variables.page;
-  let lastFetchedPage = variables.page;
-  let hasNextPage = false;
-  const collected = [];
+  const pageSize = 20;
   const needsClientFilter = audio === 'dub' || audio === 'sub' || audio === 'dub-airing';
-  const maxScanPages = needsClientFilter ? 4 : 1;
-  for (let scan = 0; scan < maxScanPages && currentPage <= 100; scan++) {
-    const pageData = await fetchAnilistPage(currentPage);
-    lastFetchedPage = currentPage;
-    hasNextPage = Boolean(pageData.pageInfo?.hasNextPage);
-    const tagged = pageData.media.map(entry => {
+  const collected = [];
+  let hasNextPage = false;
+  let nextPage = null;
+
+  const tagAndFilter = media => {
+    const tagged = media.map(entry => {
       const inDubbed = Boolean(entry.idMal && dubInfo.dubbed.has(entry.idMal));
       const inIncomplete = Boolean(entry.idMal && dubInfo.incomplete.has(entry.idMal));
       const hasDub = inDubbed || inIncomplete;
@@ -232,7 +229,7 @@ export async function seasonalAnime(params, tmdb = null, tmdbEnabled = false) {
       const dubAiring = (subAiring && hasDub) || (inIncomplete && (subAiring || recentYear >= currentYear - 1));
       return { ...entry, hasDub, subAiring, dubAiring };
     });
-    const filtered = audio === 'dub'
+    return audio === 'dub'
       ? tagged.filter(item => item.hasDub)
       : audio === 'sub'
         ? tagged.filter(item => !item.hasDub)
@@ -241,9 +238,31 @@ export async function seasonalAnime(params, tmdb = null, tmdbEnabled = false) {
           : audio === 'sub-airing'
             ? tagged.filter(item => item.subAiring)
             : tagged;
-    collected.push(...filtered);
-    if (!needsClientFilter || collected.length >= 18 || !hasNextPage) break;
-    currentPage++;
+  };
+
+  if (!needsClientFilter) {
+    const pageData = await fetchAnilistPage(variables.page);
+    hasNextPage = Boolean(pageData.pageInfo?.hasNextPage);
+    collected.push(...tagAndFilter(pageData.media).slice(0, pageSize));
+    nextPage = hasNextPage && variables.page < 100 ? variables.page + 1 : null;
+  } else {
+    // Client-side audio filters scan cached AniList pages to yield exact 20-item pages without skipping entries.
+    const targetStart = (variables.page - 1) * pageSize;
+    const targetEnd = variables.page * pageSize;
+    const maxPage = Math.min(100, variables.page * 4);
+    const allFiltered = [];
+    let anilistPage = 1;
+    while (anilistPage <= maxPage) {
+      const pageData = await fetchAnilistPage(anilistPage);
+      hasNextPage = Boolean(pageData.pageInfo?.hasNextPage);
+      allFiltered.push(...tagAndFilter(pageData.media));
+      if (allFiltered.length > targetEnd || !hasNextPage) break;
+      anilistPage++;
+    }
+    collected.push(...allFiltered.slice(targetStart, targetEnd));
+    nextPage = allFiltered.length > targetEnd || (hasNextPage && anilistPage < 100 && collected.length > 0)
+      ? variables.page + 1
+      : null;
   }
   const mapped = await animeCatalogTitles(collected.map(item => item.id)).catch(() => new Map());
   const results = collected.map(item => {
@@ -265,5 +284,5 @@ export async function seasonalAnime(params, tmdb = null, tmdbEnabled = false) {
   for (let start = 0; start < results.length; start += 6) {
     await Promise.all(results.slice(start, start + 6).map(async item => { item.mal = await malRating('anime', item.idMal); }));
   }
-  return { results, nextPage: hasNextPage && lastFetchedPage < 100 ? lastFetchedPage + 1 : null };
+  return { results, nextPage };
 }

@@ -1,6 +1,6 @@
 import { comicEditionCredit, comicLanguage, groupComicEditions } from '@afterframe/shared/comic-display';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { comicCover, comicDetailsHref, navigate, previousBrowse, request, routeWithParams, webHref, type Comic } from './catalog';
+import { comicCover, comicDetailsHref, navigate, previousBrowse, readBrowseCache, request, routeWithParams, webHref, writeBrowseCache, type Comic } from './catalog';
 import { currentLocationHref, currentSearchParams } from './router';
 import { InputField, PageHeading, ResultsSummary, RouteTabs, SelectField } from './Catalogue';
 import { ActionLink, Artwork, Icon, Loading, RatingProblem, SaveButton, Score, Shelf, useOptionalRating } from './components';
@@ -10,12 +10,40 @@ import { AfSelect, MobileFilterSheet, useMediaQuery } from './UiControls';
 
 const formats = [['', 'All'], ['manga', 'Manga'], ['manhwa', 'Manhwa'], ['manhua', 'Manhua']] as const;
 const statuses = [['ongoing', 'Ongoing'], ['completed', 'Completed'], ['hiatus', 'On hiatus'], ['cancelled', 'Cancelled']] as const;
-const sorts = [['popular', 'Popularity'], ['updated', 'Recently updated'], ['newest', 'Publication year'], ['title', 'Title A–Z']] as const;
+const sorts = [['popular', 'Popularity'], ['trending', 'Trending'], ['updated', 'Latest updates'], ['newest', 'Newly added'], ['rating', 'Top rated'], ['year', 'Publication year'], ['title', 'Title A–Z']] as const;
+const quickSorts = [['trending', 'Trending'], ['updated', 'Latest updates'], ['newest', 'Newly added'], ['rating', 'Top rated']] as const;
 const readingStatusOptions = Object.entries(readingStatuses).map(([value, label]) => ({ value, label }));
 const comicRatingOptions = [
   { value: '0', label: 'Choose 1–10' },
   ...Array.from({ length: 10 }, (_, index) => ({ value: String(index + 1), label: `${index + 1} / 10` })),
 ];
+const fullDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+const shortDate = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+
+export function releasedAgo(iso?: string, now = Date.now()) {
+  const time = iso ? Date.parse(iso) : NaN;
+  if (Number.isNaN(time)) return '';
+  const minutes = Math.max(0, Math.round((now - time) / 60_000));
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  if (days < 30) return `${Math.round(days / 7)}w ago`;
+  if (days < 365) return `${Math.round(days / 30)}mo ago`;
+  return `${Math.round(days / 365)}y ago`;
+}
+
+function LatestRelease({ item }: { item: Comic }) {
+  const ago = releasedAgo(item.latestAt);
+  if (!ago) return null;
+  const chapter = item.latestChapter ? `Ch. ${item.latestChapter}` : 'Updated';
+  return <time className="af-poster-airing af-poster-latest" dateTime={item.latestAt}
+    title={`${item.latestChapter ? `Chapter ${item.latestChapter}` : 'Latest chapter'} released ${fullDate.format(new Date(item.latestAt!))}`}>
+    {chapter} · {ago}
+  </time>;
+}
 
 export function comicHref(item: Pick<Comic, 'id'>) {
   return comicDetailsHref(item.id);
@@ -44,7 +72,7 @@ export function ComicCard({ item, controls, href, context, eager, onDismiss }: {
 }) {
   const cover = comicCover(item.poster);
   return <article className="af-media-card"><a href={href || comicHref(item)}>
-    <span className="af-poster"><Artwork src={cover} loading={eager ? 'eager' : 'lazy'} decoding="async" fallback={<Icon name="book" />} /></span>
+    <span className="af-poster"><Artwork src={cover} loading={eager ? 'eager' : 'lazy'} decoding="async" fallback={<Icon name="book" />} />{!context && <LatestRelease item={item} />}</span>
     <strong>{item.title}</strong><span className="af-card-meta">{context || comicFacts(item)}</span>
     {!context && <Score mal={item.mal} />}
   </a>
@@ -56,32 +84,51 @@ export function ComicCard({ item, controls, href, context, eager, onDismiss }: {
 }
 
 type ComicsResults = { results: Comic[]; nextPage?: number | null };
+type CachedComics = {
+  items: Comic[];
+  page: number;
+  nextPage: number | null;
+  recent: Comic[];
+  trending: Comic[];
+  chapterCounts: Record<string, string>;
+};
 
 export function ComicsPage({ query, controls }: { query: string; controls: LibraryControls }) {
   const params = new URLSearchParams(query);
-  const [items, setItems] = useState<Comic[]>([]);
-  const [page, setPage] = useState(1);
-  const [nextPage, setNextPage] = useState<number | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [recent, setRecent] = useState<Comic[]>([]);
+  const cacheKey = `comics:${query}`;
+  const [cached] = useState(() => readBrowseCache<CachedComics>(cacheKey));
+  const [items, setItems] = useState<Comic[]>(cached?.items ?? []);
+  const [page, setPage] = useState(cached?.page ?? 1);
+  const [nextPage, setNextPage] = useState<number | null>(cached?.nextPage ?? null);
+  const [loading, setLoading] = useState(!cached);
+  const [recent, setRecent] = useState<Comic[]>(cached?.recent ?? []);
+  const [trending, setTrending] = useState<Comic[]>(cached?.trending ?? []);
   const [genres, setGenres] = useState<NonNullable<Comic['genres']>>([]);
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [auxError, setAuxError] = useState({ genres: false, updates: false });
   const [genreAttempt, setGenreAttempt] = useState(0);
   const [updateAttempt, setUpdateAttempt] = useState(0);
-  const [chapterCounts, setChapterCounts] = useState<Record<string, string>>({});
-  const requestedCountsRef = useRef<Set<string>>(new Set());
+  const [chapterCounts, setChapterCounts] = useState<Record<string, string>>(cached?.chapterCounts ?? {});
+  const requestedCountsRef = useRef<Set<string>>(new Set(Object.keys(cached?.chapterCounts ?? {})));
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const isCompactBrowse = useMediaQuery('(max-width: 640px)');
   const type = params.get('type') || '';
   const text = params.get('q') || '';
   const selectedGenre = params.get('genre') || '';
+  const sort = params.get('sort') || '';
   const genreOptions = genres.map(genre => [genre.id, genre.name] as const);
   if (selectedGenre && !genreOptions.some(([id]) => id === selectedGenre)) genreOptions.unshift([selectedGenre, 'Selected genre']);
   const comicFilterCount = ['genre', 'status', 'sort'].filter(key => Boolean(params.get(key))).length;
 
   useEffect(() => {
+    if (!loading && items.length) {
+      writeBrowseCache<CachedComics>(cacheKey, { items, page, nextPage, recent, trending, chapterCounts });
+    }
+  }, [cacheKey, items, page, nextPage, recent, trending, chapterCounts, loading]);
+
+  useEffect(() => {
+    if (cached && page === cached.page && attempt === 0) return;
     const task = new AbortController();
     const { signal } = task;
     const reqParams = new URLSearchParams(query);
@@ -96,7 +143,7 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
       .catch(problem => { if (!signal.aborted) setError(problem.message); })
       .finally(() => { if (!signal.aborted) setLoading(false); });
     return () => task.abort();
-  }, [query, page, attempt]);
+  }, [query, page, attempt, cached]);
 
   useEffect(() => {
     const task = new AbortController();
@@ -113,6 +160,7 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
 
   useEffect(() => {
     if (query) return;
+    if (cached && cached.recent.length > 0 && updateAttempt === 0) return;
     const task = new AbortController();
     request<ComicsResults>('/api/comics/updates', { signal: task.signal })
       .then(data => {
@@ -123,11 +171,21 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
         }
       }).catch(() => { if (!task.signal.aborted) setAuxError(current => ({ ...current, updates: true })); });
     return () => task.abort();
-  }, [query, updateAttempt]);
+  }, [query, updateAttempt, cached]);
+
+  useEffect(() => {
+    if (query) return;
+    if (cached && cached.trending.length > 0) return;
+    const task = new AbortController();
+    request<ComicsResults>('/api/comics?sort=trending', { signal: task.signal })
+      .then(data => { if (!task.signal.aborted && Array.isArray(data.results)) setTrending(data.results.slice(0, 18)); })
+      .catch(() => {});
+    return () => task.abort();
+  }, [query, cached]);
 
   useEffect(() => {
     const requested = requestedCountsRef.current;
-    const missing = [...new Set([...recent, ...items]
+    const missing = [...new Set([...recent, ...trending, ...items]
       .filter(item => !item.lastChapter && !item.chapterCount && !requested.has(item.id))
       .map(item => item.id))];
     if (!missing.length) return;
@@ -155,7 +213,7 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
       task.abort();
       for (const id of pending) requested.delete(id);
     };
-  }, [recent, items]);
+  }, [recent, trending, items]);
 
   const withChapterCount = (item: Comic) => (
     item.chapterCount || item.lastChapter || !chapterCounts[item.id]
@@ -226,10 +284,18 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
       )}
     </div>
     {auxError.updates && <p className="af-state" role="alert">Recently updated manga could not load. <button type="button" className="af-text-link" onClick={() => setUpdateAttempt(value => value + 1)}>Retry updates</button></p>}
-    {recent.length > 0 && <Shelf title="Recently updated">
+    {!query && recent.length > 0 && <Shelf title="Latest updates" href={webHref(withParam('sort', 'updated'))} hrefLabel="See all updates">
       {recent.map((item, index) => <ComicCard item={withChapterCount(item)} key={item.key} controls={controls} eager={index < 5} />)}
     </Shelf>}
-    {recent.length > 0 && <h2 className="af-comic-catalog-heading">Browse the catalog</h2>}
+    {!query && trending.length > 0 && <Shelf title="Trending now" href={webHref(withParam('sort', 'trending'))} hrefLabel="See all trending">
+      {trending.map(item => <ComicCard item={withChapterCount(item)} key={item.key} controls={controls} />)}
+    </Shelf>}
+    {!query && (recent.length > 0 || trending.length > 0) && <h2 className="af-comic-catalog-heading">Browse the catalog</h2>}
+    <div className="af-comic-sort"><RouteTabs
+      label="Sort manga"
+      tabs={[[withParam('sort', ''), text ? 'Best match' : 'Popular'], ...quickSorts.map(([key, label]) => [withParam('sort', key), label] as const)]}
+      active={withParam('sort', sort === 'popular' && !text ? '' : sort)}
+    /></div>
     <ResultsSummary count={!loading || items.length ? items.length : null} loading={loading && page === 1 && !items.length} route="comics" filters={params} clear={webHref('comics')} labels={{
       type: value => formats.find(([key]) => key === value)?.[1] ?? '',
       genre: value => genreOptions.find(([id]) => id === value)?.[1] ?? '',
@@ -253,7 +319,7 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
 }
 
 type ComicRecord = Comic & { synopsis?: string; author?: string[]; languages: string[]; defaultLanguage: string; malId?: number };
-type Chapter = { id: string; label: string; number?: string | number; title?: string; language: string; groups?: (string | { name?: string })[]; source?: string };
+type Chapter = { id: string; label: string; number?: string | number; title?: string; language: string; groups?: (string | { name?: string })[]; source?: string; releasedAt?: string };
 type Chapters = { results: Chapter[]; nextPage?: number | null; ranges?: { start: string; end: string }[]; totalChapters?: number; partial?: boolean; preview?: boolean };
 
 export function ComicDetailsPage({ id, query, controls }: { id: string; query: string; controls: LibraryControls }) {
@@ -354,6 +420,7 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
   const saved = controls.library.saved[item.key];
   const listing = (lang: string) => routeWithParams(`comic/${id}`, new URLSearchParams({ lang, ...(params.has('back') ? { back: params.get('back')! } : {}) }));
   const chapterTotal = chapters?.totalChapters ?? (groupedChapters.length > 0 ? groupedChapters.length : null);
+  const lastRelease = chapters?.results.reduce<string | undefined>((latest, entry) => entry.releasedAt && (!latest || entry.releasedAt > latest) ? entry.releasedAt : latest, undefined);
   const chapterFact = chapterTotal != null
     ? `${chapterTotal} ${chapterTotal === 1 ? 'chapter' : 'chapters'}`
     : item.lastChapter
@@ -372,6 +439,7 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
             <div className="af-meta af-details-meta af-title-facts">
               <span>{comicFacts(item, false)}</span>
               {chapterFact && <a href="#chapters" className="af-fact-link af-tabular">{chapterFact}</a>}
+              {lastRelease && <time dateTime={lastRelease} title={fullDate.format(new Date(lastRelease))}>Updated {releasedAgo(lastRelease)}</time>}
               {item.genres?.slice(0, 3).map(g => <span key={g.id}>{g.name}</span>)}
               <Score mal={mal.value} />
             </div>
@@ -452,10 +520,14 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
           {filteredChapters.map(editions => {
             const chapter = editions.find(release => release.id === recent?.chapter) ?? editions[0];
             const credits = comicEditionCredit(chapter);
+            const released = chapter.releasedAt ?? editions.find(release => release.releasedAt)?.releasedAt;
             const otherEditions = editions.filter(release => release.id !== chapter.id);
             return <article className="af-activity-row" key={chapter.id}>
               <div><strong>{chapter.label}{chapter.title ? ` · ${chapter.title}` : ''}</strong>{chapter.id === recent?.chapter && <p className="af-meta">Last read · Page {recent.page}</p>}
-                {credits && <p className="af-meta">{credits}</p>}
+                {(credits || released) && <p className="af-meta">
+                  {credits}{credits && released ? ' · ' : ''}
+                  {released && <time dateTime={released} title={fullDate.format(new Date(released))}>{shortDate.format(new Date(released))}</time>}
+                </p>}
                 {otherEditions.length > 0 && <details>
                   <summary>{otherEditions.length} other {otherEditions.length === 1 ? 'edition' : 'editions'}</summary>
                   <ul>{otherEditions.map((release, index) => <li key={release.id}>

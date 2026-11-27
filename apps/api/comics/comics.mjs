@@ -19,7 +19,20 @@ const formatLanguages = { manga: ['ja'], manhwa: ['ko'], manhua: ['zh', 'zh-hk']
 const contentRatings = ['safe', 'suggestive'];
 const publicationStatuses = ['ongoing', 'completed', 'hiatus', 'cancelled'];
 const coverPath = new RegExp(`^/comic-cover/(${comicIdSource}/${comicIdSource}\\.(?:jpe?g|png|webp)\\.(?:256|512)\\.jpg)$`, 'i');
-const catalogSorts = { popular: ['followedCount', 'desc'], updated: ['latestUploadedChapter', 'desc'], newest: ['year', 'desc'], title: ['title', 'asc'], relevance: ['relevance', 'desc'] };
+const catalogSorts = {
+  popular: ['followedCount', 'desc'],
+  // MangaDex has no trending order, so rank the most-followed titles added in the trending window.
+  trending: ['followedCount', 'desc'],
+  updated: ['latestUploadedChapter', 'desc'],
+  newest: ['createdAt', 'desc'],
+  rating: ['rating', 'desc'],
+  year: ['year', 'desc'],
+  title: ['title', 'asc'],
+  relevance: ['relevance', 'desc'],
+};
+const trendingWindowDays = 60;
+const readableOnlySorts = new Set(['trending', 'newest', 'updated']);
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const languagePattern = /^[a-z]{2,3}(?:-[a-z]{2,4})?$/;
 const chaptersPerPage = 50;
 const feedLimit = 500;
@@ -143,17 +156,50 @@ async function browse(search) {
   params.set('limit', String(pagination.limit));
   const [order, direction] = Object.hasOwn(catalogSorts, sort) ? catalogSorts[sort] : query ? catalogSorts.relevance : catalogSorts.popular;
   params.set(`order[${order}]`, direction);
+  if (sort === 'trending') {
+    // Round to the day so the cache key stays stable.
+    const since = new Date(Date.now() - trendingWindowDays * 24 * 60 * minute);
+    params.set('createdAtSince', `${since.toISOString().slice(0, 10)}T00:00:00`);
+  }
+  if (readableOnlySorts.has(sort)) params.set('hasAvailableChapters', 'true');
   if (query) params.set('title', query);
   if (new RegExp(`^${comicIdSource}$`, 'i').test(genre)) params.set('includedTags[]', genre);
   if (publicationStatuses.includes(status)) params.set('status[]', status);
   for (const language of Object.hasOwn(formatLanguages, format) ? formatLanguages[format] : []) params.append('originalLanguage[]', language);
   const result = await cacheMetadata(`comics:browse:${params}`, 15 * minute, () => mangaDex('/manga', params));
-  const results = result.data.map(comic);
+  const latest = await latestChapters(result.data).catch(() => ({}));
+  const results = result.data.map(entry => withLatest(comic(entry), latest[entry.attributes.latestUploadedChapter]));
   if (order === 'relevance') {
     const exact = results.findIndex(item => item.title.toLowerCase() === query?.toLowerCase());
     if (exact > 0) results.unshift(...results.splice(exact, 1));
   }
   return { results, nextPage: nextPage(pagination, result.total) };
+}
+
+function latestRelease(attributes) {
+  const at = attributes?.readableAt || attributes?.publishAt || attributes?.createdAt;
+  if (!at || Number.isNaN(Date.parse(at))) return null;
+  const number = typeof attributes.chapter === 'string' && /^\d+(?:\.\d+)?$/.test(attributes.chapter.trim())
+    ? chapterNumber(attributes.chapter.trim()) : null;
+  return { at: new Date(at).toISOString(), ...(number ? { chapter: number } : {}) };
+}
+
+function withLatest(item, release) {
+  if (!release) return item;
+  return { ...item, latestAt: release.at, ...(release.chapter ? { latestChapter: release.chapter } : {}) };
+}
+
+// One batched lookup resolves the release date and number of each title's newest chapter.
+async function latestChapters(entries) {
+  const ids = [...new Set(entries.map(entry => entry.attributes.latestUploadedChapter).filter(id => uuidPattern.test(id ?? '')))].sort();
+  if (!ids.length) return {};
+  return cacheMetadata(`comics:latest:${ids.join(',')}`, 10 * minute, async () => {
+    const params = catalogParams([]);
+    params.set('limit', String(ids.length));
+    for (const id of ids) params.append('ids[]', id);
+    const result = await mangaDex('/chapter', params);
+    return Object.fromEntries(result.data.map(entry => [entry.id, latestRelease(entry.attributes)]).filter(([, release]) => release));
+  });
 }
 
 async function genres() {
@@ -167,14 +213,19 @@ async function recentComics() {
   params.set('limit', '100');
   params.set('order[readableAt]', 'desc');
   const feed = await mangaDex('/chapter', params);
-  const ids = [...new Set(feed.data.filter(entry => chapter(entry))
-    .map(entry => entry.relationships.find(rel => rel.type === 'manga')?.id).filter(Boolean))].slice(0, 12);
+  const releases = new Map();
+  for (const entry of feed.data) {
+    if (!chapter(entry)) continue;
+    const id = entry.relationships.find(rel => rel.type === 'manga')?.id;
+    if (id && !releases.has(id)) releases.set(id, latestRelease(entry.attributes));
+  }
+  const ids = [...releases.keys()].slice(0, 18);
   if (!ids.length) return [];
   const covers = catalogParams(['cover_art']);
   covers.set('limit', String(ids.length));
   for (const id of ids) covers.append('ids[]', id);
   const result = await mangaDex('/manga', covers);
-  const items = new Map(result.data.map(entry => [entry.id, comic(entry)]));
+  const items = new Map(result.data.map(entry => [entry.id, withLatest(comic(entry), releases.get(entry.id))]));
   return ids.map(id => items.get(id)).filter(Boolean);
 }
 
@@ -207,9 +258,11 @@ function chapter({ id, attributes, relationships }) {
   if (attributes.externalUrl || !(attributes.pages > 0) || attributes.isUnavailable
     || groups.some(group => blockedGroups.has(group.id.toLowerCase()))) return null;
   const label = attributes.chapter == null ? attributes.title || 'Oneshot' : `Chapter ${attributes.chapter}`;
+  const released = attributes.readableAt || attributes.publishAt;
   return {
     id, label, title: attributes.chapter == null ? '' : attributes.title,
     number: attributes.chapter, language: attributes.translatedLanguage,
+    ...(released && !Number.isNaN(Date.parse(released)) ? { releasedAt: new Date(released).toISOString() } : {}),
     groups: groups.map(group => ({ name: group.attributes?.name || 'Scanlation group', id: group.id })),
   };
 }

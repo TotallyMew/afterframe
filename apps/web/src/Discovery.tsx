@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { navigate, normalizeTitles, request, routeWithParams, searchHref, webHref, type CatalogRating, type MediaType, type RawTitle, type Title } from './catalog';
+import { navigate, normalizeTitles, readBrowseCache, request, routeWithParams, searchHref, webHref, writeBrowseCache, type CatalogRating, type MediaType, type RawTitle, type Title } from './catalog';
 import { currentLocationHref } from './router';
 import { InputField, PageHeading, ResultsSummary, RouteTabs, SelectField } from './Catalogue';
 import { Artwork, CatalogProblem, Icon, Loading, MediaCard, SaveButton, Shelf } from './components';
@@ -53,14 +53,9 @@ function animeToSavedTitle(entry: AnimeEntry, cover?: string): Title | null {
   };
 }
 
+type CachedAnime = { entries: AnimeEntry[]; page: number; nextPage: number | null };
+
 export function AnimePage({ query, controls }: { query: string; controls: LibraryControls }) {
-  const [entries, setEntries] = useState<AnimeEntry[]>([]);
-  const [page, setPage] = useState(1);
-  const [nextPage, setNextPage] = useState<number | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [retry, setRetry] = useState(0);
-  const [rangeError, setRangeError] = useState('');
   const params = new URLSearchParams(query);
   const date = new Date();
   if (!query) {
@@ -69,8 +64,24 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
   }
   const isSeasonal = params.has('season') || params.has('year');
   const baseQuery = params.toString();
+  const cacheKey = `anime:${baseQuery}`;
+  const [cached] = useState(() => readBrowseCache<CachedAnime>(cacheKey));
+  const [entries, setEntries] = useState<AnimeEntry[]>(cached?.entries ?? []);
+  const [page, setPage] = useState(cached?.page ?? 1);
+  const [nextPage, setNextPage] = useState<number | null>(cached?.nextPage ?? null);
+  const [loading, setLoading] = useState(!cached);
+  const [error, setError] = useState('');
+  const [retry, setRetry] = useState(0);
+  const [rangeError, setRangeError] = useState('');
 
   useEffect(() => {
+    if (!loading && entries.length) {
+      writeBrowseCache<CachedAnime>(cacheKey, { entries, page, nextPage });
+    }
+  }, [cacheKey, entries, page, nextPage, loading]);
+
+  useEffect(() => {
+    if (cached && page === cached.page && retry === 0) return;
     const task = new AbortController();
     const reqParams = new URLSearchParams(baseQuery);
     reqParams.set('page', String(page));
@@ -100,7 +111,7 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
       .catch(problem => { if (!task.signal.aborted) setError(problem.message); })
       .finally(() => { if (!task.signal.aborted) setLoading(false); });
     return () => task.abort();
-  }, [baseQuery, page, retry, isSeasonal]);
+  }, [baseQuery, page, retry, isSeasonal, cached]);
 
   const moreAnimeCount = ['genre', 'theme', 'min', 'max', 'sort'].filter(name => {
     const val = params.get(name);
