@@ -1,5 +1,5 @@
 import { cacheMetadata } from './metadata.mjs';
-import { animeCatalogTitles, animeDubInfo } from './anime.mjs';
+import { animeCatalogTitles, animeDubInfo, animeVirtualSeasonPlan } from './anime.mjs';
 import { recommendationProfile } from '@afterframe/shared/library';
 import { malRating } from './mal.mjs';
 
@@ -141,7 +141,7 @@ function normalizeAnimeName(value) {
   return String(value || '')
     .toLowerCase()
     .replace(/['’`´]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .trim();
 }
 
@@ -152,7 +152,7 @@ export function stripAnimeSeasonTitle(rawTitle) {
     const match = matchSeasonSuffix(clean);
     if (!match) break;
     const extracted = Number(match[1]);
-    if (Number.isInteger(extracted) && extracted >= 1 && extracted <= 50 && season === null) {
+    if (/season|stage/i.test(match[0]) && !/^final/i.test(match[0]) && Number.isInteger(extracted) && extracted >= 1 && extracted <= 50) {
       season = extracted;
     }
     clean = trimTrailingSeparators(clean.slice(0, match.index)).trim();
@@ -164,16 +164,17 @@ function collectFallbackQueries(rawNames) {
   let detectedSeason = null;
   const queries = [];
   const seenQueries = new Set();
-  for (const raw of rawNames) {
-    const { baseTitle, season } = stripAnimeSeasonTitle(raw);
+  const stripped = rawNames.map(raw => stripAnimeSeasonTitle(raw));
+  for (const { season } of stripped) {
     if (season && detectedSeason === null) detectedSeason = season;
-    for (const candidate of [baseTitle, raw]) {
-      const trimmed = candidate.trim();
-      const norm = normalizeAnimeName(trimmed);
-      if (trimmed && norm && !seenQueries.has(norm)) {
-        seenQueries.add(norm);
-        queries.push({ query: trimmed, norm });
-      }
+  }
+  // Try each parent-series name before trying season-qualified titles.
+  for (const candidate of [...stripped.map(item => item.baseTitle), ...rawNames]) {
+    const trimmed = candidate.trim();
+    const norm = normalizeAnimeName(trimmed);
+    if (trimmed && norm && !seenQueries.has(norm)) {
+      seenQueries.add(norm);
+      queries.push({ query: trimmed, norm });
     }
   }
   return { detectedSeason, queries };
@@ -200,7 +201,7 @@ async function searchFallbackQueries(queries, targetNorms, mediaType, detectedSe
   const scored = list
     .filter(res => !res.adult && Number.isSafeInteger(res.id))
     .map(res => scoreFallbackCandidate(res, targetNorms))
-    .filter(entry => entry.score >= 12 || (entry.exact && entry.isAnim))
+    .filter(entry => entry.exact && entry.isAnim)
     .sort((a, b) => b.score - a.score || (b.res.popularity || 0) - (a.res.popularity || 0));
   if (scored.length) {
     return {
@@ -211,15 +212,32 @@ async function searchFallbackQueries(queries, targetNorms, mediaType, detectedSe
   return searchFallbackQueries(queries, targetNorms, mediaType, detectedSeason, tmdb, index + 1);
 }
 
+async function validateFallbackSeason(match, tmdb) {
+  if (!match?.season || !match.catalog.startsWith('tv/')) return match;
+  const id = match.catalog.slice(3);
+  const details = await cacheMetadata(`anime-fallback-seasons:${id}`, 12 * 3600000,
+    () => tmdb(`/tv/${id}`, { language: 'en-US' })).catch(() => null);
+  const seasons = (details?.seasons || []).filter(season => season.season_number > 0);
+  if (seasons.some(season => season.season_number === match.season)) return match;
+  if (seasons.length === 1 && seasons[0].season_number === 1) {
+    const plan = await animeVirtualSeasonPlan(id).catch(() => null);
+    if (plan?.some(season => season.season === match.season && seasons[0].episode_count >= season.start)) return match;
+    // TMDB sometimes keeps later anime seasons in the first season's continuous episode list.
+    return { ...match, season: 1 };
+  }
+  return { ...match, season: null };
+}
+
 export async function fallbackAnimeCatalog(item, tmdb) {
   if (!tmdb || !item?.id) return null;
   const mediaType = item.format === 'MOVIE' ? 'movie' : 'tv';
-  const rawNames = [item.title?.english, item.title?.romaji].filter(Boolean);
+  const rawNames = [item.title?.english, item.title?.romaji, item.title?.native, ...(item.synonyms || []).slice(0, 4)].filter(Boolean);
   if (!rawNames.length) return null;
-  return cacheMetadata(`anime-tmdb-fallback:v1:${item.id}`, 7 * 86400000, () => {
+  return cacheMetadata(`anime-tmdb-fallback:v3:${item.id}`, 7 * 86400000, async () => {
     const { detectedSeason, queries } = collectFallbackQueries(rawNames);
     const targetNorms = new Set(queries.map(q => q.norm));
-    return searchFallbackQueries(queries.slice(0, 2), targetNorms, mediaType, detectedSeason, tmdb);
+    const match = await searchFallbackQueries(queries.slice(0, 6), targetNorms, mediaType, detectedSeason, tmdb);
+    return validateFallbackSeason(match, tmdb);
   }).catch(() => null);
 }
 

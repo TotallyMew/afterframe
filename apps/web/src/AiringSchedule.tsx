@@ -12,7 +12,7 @@ const fullDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'full', timeSty
 const clock = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
 
 function scheduleHref(entry: AiringEntry, type: 'anime' | 'tv') {
-  if (!/^(tv|movie)\/[1-9]\d{0,9}$/.test(entry.catalog || '')) return searchHref(entry.title, { type });
+  if (!/^(tv|movie)\/[1-9]\d{0,9}$/.test(entry.catalog || '')) return type === 'tv' ? searchHref(entry.title, { type }) : null;
   const params = new URLSearchParams({ back: currentLocationHref() });
   if (entry.catalog?.startsWith('tv/') && entry.catalogSeason) params.set('season', String(entry.catalogSeason));
   return webHref(routeWithParams(entry.catalog!, params));
@@ -23,15 +23,19 @@ function ScheduleEntry({ entry, type, now }: Readonly<{ entry: AiringEntry; type
   const poster = /^https:\/\/(s4\.anilist\.co|static\.tvmaze\.com)\//.test(entry.poster || '') ? entry.poster : undefined;
   const episode = entry.episode ? `Ep ${entry.episode}` : 'Special';
   const label = entry.season ? `S${entry.season} · ${episode}` : episode;
-  return <li>
-    <a className="af-airing-entry" href={scheduleHref(entry, type)}>
+  const href = scheduleHref(entry, type);
+  const content = <>
       <span className="af-airing-art"><Artwork src={poster} loading="lazy" width={38} height={55} fallback={<Icon name="film" />} /></span>
       <span className="af-airing-copy">
         <strong title={entry.title}>{entry.title}</strong>
         <span className="af-airing-episode">{label} · <time dateTime={date.toISOString()} title={fullDate.format(date)}>{entry.timeKnown ? airingCountdown(entry.airingAt, now) : shortDate.format(date)}</time></span>
         <span className="af-airing-time">{entry.timeKnown ? clock.format(date) : 'Time TBA'}{entry.network ? ` · ${entry.network}` : ''}</span>
+        {!href && <span className="af-airing-time">Not in catalog</span>}
       </span>
-    </a>
+  </>;
+  return <li>
+    {href ? <a className="af-airing-entry" href={href}>{content}</a>
+      : <div className="af-airing-entry is-unavailable" title="This anime has no match in the connected catalog.">{content}</div>}
   </li>;
 }
 
@@ -95,7 +99,7 @@ export function AiringSchedulePage({ type }: Readonly<{ type: 'anime' | 'tv' }>)
           {offset !== 0 && <button className="af-text-link" type="button" onClick={() => setOffset(0)}>This week</button>}
         </div>
       </header>
-      <p className="af-airing-context">Times in {timezone}.{type === 'tv' ? ' US TV & worldwide streaming.' : ' Original broadcast times; streaming availability may vary.'}</p>
+      <p className="af-airing-context">Times in {timezone}.{type === 'tv' ? ' US TV & worldwide streaming.' : ' Japanese anime with weekly episode releases. Original broadcast times; streaming availability may vary.'}</p>
       {loading && <Loading shape="rows" label="Loading weekly schedule…" />}
       {error && <p className="af-state" role="alert">{error} <button className="af-text-link" type="button" onClick={() => setRetry(value => value + 1)}>Retry</button></p>}
       {!loading && !error && <>

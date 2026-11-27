@@ -24,7 +24,7 @@
 
 - **Unified Discovery & Search**
   - Browse Movies, TV Shows, Anime (with seasonal schedules and airing countdowns), Manga (manga, manhwa, manhua, comics), Weekly Releases, and personalized **For You** picks.
-  - Open **Weekly airing schedule** beside Seasonal / All anime or All TV shows for a seven-day episode board, local broadcast times, countdowns, and week navigation. Anime uses AniList; TV covers US broadcasts and worldwide streaming via TVmaze.
+  - Open **Weekly airing schedule** beside Seasonal / All anime or All TV shows for a seven-day episode board, local broadcast times, countdowns, and week navigation. The anime board shows Japanese series with weekly releases, excluding batch drops and companion extras; season titles resolve to the parent catalog and season, and unmatched titles are labeled. Anime uses AniList; TV covers US broadcasts and worldwide streaming via TVmaze.
   - Filter by genre, decade, release year range, runtime, and IMDb/MAL ratings, or press `/` / `Ctrl+K` (`⌘K`) anywhere for instant command palette search.
 - **Personal Library, Stats & Custom Folders**
   - Track watch and reading statuses (`Watching`, `Completed`, `On-Hold`, `Dropped`, `Plan to Watch`), 1–10 personal ratings, custom color-coded folders, and day-grouped watch history.

@@ -1,5 +1,6 @@
 import { cacheMetadata } from './metadata.mjs';
 import { animeCatalogTitles } from './anime.mjs';
+import { fallbackAnimeCatalog } from './discovery.mjs';
 
 const day = 86400;
 const animeQuery = `query($page:Int!, $from:Int!, $to:Int!) {
@@ -7,7 +8,10 @@ const animeQuery = `query($page:Int!, $from:Int!, $to:Int!) {
     pageInfo { hasNextPage }
     airingSchedules(airingAt_greater:$from, airingAt_lesser:$to, sort:TIME) {
       id episode airingAt
-      media { id isAdult title { english romaji } coverImage { large } }
+      media {
+        id isAdult countryOfOrigin format duration episodes title { english romaji native } synonyms coverImage { large }
+        relations { edges { relationType node { type format } } }
+      }
     }
   }
 }`;
@@ -28,14 +32,46 @@ async function providerJson(url, options = {}) {
   return response.json();
 }
 
-async function animeSchedule(from, to) {
+export function weeklyAnimeEntries(episodes) {
+  const groups = new Map();
+  for (const entry of episodes) {
+    const media = entry?.media;
+    if (!media || media.isAdult || media.countryOfOrigin !== 'JP'
+      || !['TV', 'TV_SHORT', 'ONA'].includes(media.format) || media.episodes === 1) continue;
+    // Short companion extras belong to the main title's specials, not its weekly season.
+    const names = [...Object.values(media.title || {}), ...(media.synonyms || [])].join(' ');
+    const companion = /\b(?:mini anime|omake|choitashi)\b/i.test(names)
+      || (media.duration > 0 && media.duration <= 5 && media.relations?.edges?.some(edge =>
+        edge.relationType === 'PARENT' && edge.node?.type === 'ANIME'));
+    if (companion) continue;
+    const group = groups.get(media.id) || new Map();
+    if (Number.isSafeInteger(entry.episode) && Number.isSafeInteger(entry.airingAt)) group.set(entry.episode, entry);
+    groups.set(media.id, group);
+  }
+  const results = [];
+  for (const group of groups.values()) {
+    const entries = [...group.values()].sort((a, b) => a.airingAt - b.airingAt || a.episode - b.episode);
+    const releases = new Map();
+    for (const entry of entries) releases.set(entry.airingAt, (releases.get(entry.airingAt) || 0) + 1);
+    // Three or more episodes in one release, or an entire short season, is a batch drop.
+    const batch = [...releases.values()].some(count => count >= 3 || (count > 1 && count === entries[0].media.episodes));
+    const times = [...releases.keys()];
+    const gaps = times.slice(1).map((at, index) => at - times[index]);
+    const weekly = gaps.some(gap => gap >= 5 * day && gap <= 9 * day);
+    if (!batch && weekly && gaps.every(gap => gap >= 5 * day)) results.push(...entries);
+  }
+  return results;
+}
+
+async function animeSchedule(from, to, tmdb) {
   const episodes = [];
   // Paginate the schedule itself so multiple episodes and less popular titles are included.
   for (let page = 1; page <= 40; page++) {
-    const data = await cacheMetadata(`weekly-anime:v1:${from}:${to}:${page}`, 15 * 60000, () =>
+    const data = await cacheMetadata(`weekly-anime:v2:${from}:${to}:${page}`, 15 * 60000, () =>
       providerJson('https://graphql.anilist.co', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ query: animeQuery, variables: { page, from: from - 1, to } }),
+        // Neighboring weeks distinguish weekly premieres/finales from batch or daily releases.
+        body: JSON.stringify({ query: animeQuery, variables: { page, from: from - 8 * day, to: to + 8 * day } }),
       }));
     const result = data?.data?.Page;
     if (data.errors?.length || !Array.isArray(result?.airingSchedules)) {
@@ -45,10 +81,17 @@ async function animeSchedule(from, to) {
     if (!result.pageInfo?.hasNextPage) break;
     if (page === 40) throw new Error('The anime schedule is too large. Please try again later.');
   }
-  const eligible = episodes.filter(entry => entry?.media && !entry.media.isAdult);
+  const eligible = weeklyAnimeEntries(episodes).filter(entry => entry.airingAt >= from && entry.airingAt < to);
   const mappings = eligible.length
     ? await animeCatalogTitles([...new Set(eligible.map(entry => entry.media.id))]).catch(() => new Map())
     : new Map();
+  const unmatched = [...new Map(eligible.filter(entry => !mappings.get(entry.media.id)).map(entry => [entry.media.id, entry.media])).values()];
+  for (let index = 0; index < unmatched.length; index += 4) {
+    await Promise.all(unmatched.slice(index, index + 4).map(async media => {
+      const match = await fallbackAnimeCatalog(media, tmdb);
+      if (match) mappings.set(media.id, match);
+    }));
+  }
   return eligible.map(entry => {
     const match = mappings.get(entry.media.id);
     return {
@@ -92,7 +135,7 @@ async function tvSchedule(from, to) {
   });
 }
 
-export async function weeklyAiringSchedule(params, now = Date.now()) {
+export async function weeklyAiringSchedule(params, now = Date.now(), tmdb = null) {
   const type = params.get('type');
   const from = Number(params.get('from'));
   const to = Number(params.get('to'));
@@ -102,7 +145,7 @@ export async function weeklyAiringSchedule(params, now = Date.now()) {
     || Math.abs(from - now / 1000) > 36 * day) {
     throw invalid('Choose a week within the previous or next four weeks.');
   }
-  const entries = type === 'anime' ? await animeSchedule(from, to) : await tvSchedule(from, to);
+  const entries = type === 'anime' ? await animeSchedule(from, to, tmdb) : await tvSchedule(from, to);
   const seen = new Set();
   const results = entries.filter(entry => {
     if (!entry.id || !Number.isFinite(entry.airingAt) || entry.airingAt < from || entry.airingAt >= to || seen.has(entry.id)) return false;

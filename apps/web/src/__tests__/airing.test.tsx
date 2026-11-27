@@ -57,6 +57,15 @@ describe('Weekly airing schedule', () => {
     expect(screen.getByText(/US TV & worldwide streaming/)).toBeTruthy();
   });
 
+  it('labels unmatched anime instead of linking to an empty season-title search', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ results: [{
+      id: 'unmatched', title: 'Unknown Anime Season 3', episode: 2, airingAt: Date.now() / 1000, timeKnown: true,
+    }] })));
+    render(<AiringSchedulePage type="anime" />);
+    expect(await screen.findByText('Not in catalog')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: /Unknown Anime/ })).toBeNull();
+  });
+
   it('counts down to an episode without displaying negative times', () => {
     const now = 1000000000;
     expect(airingCountdown(now / 1000 - 1, now)).toBe('Aired');

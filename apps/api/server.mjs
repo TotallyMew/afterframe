@@ -195,7 +195,7 @@ async function handleRecommendationsRoute(request, send) {
 
 async function dispatchPreGetRoutes(request, pathname, searchParams, send) {
   if (pathname === '/api/airing-schedule' && request.method === 'GET') {
-    return send(200, await weeklyAiringSchedule(searchParams), publicCatalogCache);
+    return send(200, await weeklyAiringSchedule(searchParams, Date.now(), hasTmdbCredential() ? tmdb : null), publicCatalogCache);
   }
   if (pathname === '/api/anime-discovery' && request.method === 'GET') {
     return send(200, await seasonalAnime(searchParams, tmdb, hasTmdbCredential()), publicCatalogCache);

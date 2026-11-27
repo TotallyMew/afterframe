@@ -23,7 +23,7 @@
 .af-airing-day[data-today="true"] h3 { color: var(--af-selection); }
 .af-airing-day ul { list-style: none; margin: 0; padding: 6px; display: grid; gap: 4px; }
 .af-airing-entry { display: flex; align-items: start; gap: 9px; min-inline-size: 0; padding: 8px 5px; border-radius: var(--af-radius); transition: background-color var(--af-duration-fast) var(--af-ease); }
-.af-airing-entry:hover, .af-airing-entry:focus-visible { background: var(--af-raised); }
+.af-airing-entry:is(a):hover, .af-airing-entry:focus-visible { background: var(--af-raised); }
 .af-airing-art { display: grid; place-items: center; flex: 0 0 34px; aspect-ratio: 2 / 3; background: var(--af-raised); border-radius: var(--af-radius-sm); }
 .af-airing-art img { display: block; inline-size: 100%; block-size: 100%; object-fit: cover; border-radius: inherit; }
 .af-airing-copy { display: grid; gap: 4px; min-inline-size: 0; }

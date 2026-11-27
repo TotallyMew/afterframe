@@ -176,6 +176,7 @@ function disableNativeCaptionTrack(
 }
 
 function SubtitleTracksPanel({
+  active,
   isEmbed,
   videoRef,
   nativeCaptionsOn,
@@ -197,7 +198,9 @@ function SubtitleTracksPanel({
   onSelectLanguage,
   onForcedOnlyChange,
   onChooseTrack,
+  onTurnOff,
 }: Readonly<{
+  active: boolean;
   isEmbed: boolean;
   videoRef: RefObject<VideoWithAudioTracks | null>;
   nativeCaptionsOn: boolean;
@@ -219,15 +222,21 @@ function SubtitleTracksPanel({
   onSelectLanguage: (lang: string) => void;
   onForcedOnlyChange: (next: boolean) => void;
   onChooseTrack: (track: SubtitleTrack) => void;
+  onTurnOff: () => void;
 }>) {
+  const offOption = <button type="button" className="af-subtitle-choice" aria-pressed={!active} onClick={onTurnOff}>
+    <span className="af-subtitle-choice-main"><span className="af-subtitle-choice-label">Subtitles off</span></span>
+    {!active && <Icon name="check" />}
+  </button>;
   if (!isEmbed) {
     return (
-      <div>
+      <section className="af-subtitle-tracks" aria-label="Subtitle versions">
+        {offOption}
         <button type="button" className="af-subtitle-choice" aria-pressed={nativeCaptionsOn}
           onClick={() => enableNativeCaptionTrack(videoRef, rememberSubtitles, controls, onEnableNative)}>
           <span>English (auto-generated)</span>{nativeCaptionsOn && <Icon name="check" />}
         </button>
-      </div>
+      </section>
     );
   }
 
@@ -262,6 +271,7 @@ function SubtitleTracksPanel({
       </button>
     </div>}
     <section className="af-subtitle-tracks" aria-label="Subtitle versions">
+      {offOption}
       {visibleTracks.map((track, idx) => (
         <SubtitleTrackOption
           key={track.url}
@@ -373,6 +383,7 @@ export function SubtitleMenu({
 
     {tab === 'tracks' || !isEmbed ? (
       <SubtitleTracksPanel
+        active={active}
         isEmbed={isEmbed}
         videoRef={videoRef}
         nativeCaptionsOn={nativeCaptionsOn}
@@ -394,6 +405,7 @@ export function SubtitleMenu({
         onSelectLanguage={onSelectLanguage}
         onForcedOnlyChange={setForcedOnly}
         onChooseTrack={onChooseTrack}
+        onTurnOff={() => disableNativeCaptionTrack(videoRef, rememberSubtitles, controls, onTurnOff)}
       />
     ) : (
       <SubtitleStylePanel
@@ -402,11 +414,6 @@ export function SubtitleMenu({
       />
     )}
   </>;
-
-  const offButton = (
-    <button type="button" className="af-player-popup-action" aria-pressed={!active}
-      onClick={() => disableNativeCaptionTrack(videoRef, rememberSubtitles, controls, onTurnOff)}>Off</button>
-  );
 
   if (useMobileSheets) {
     return <>
@@ -427,7 +434,6 @@ export function SubtitleMenu({
             <header className="af-sheet-head">
               <Dialog.Title>Subtitles</Dialog.Title>
               <div className="af-sheet-head-actions">
-                {offButton}
                 <Dialog.Close className="af-icon-button" aria-label="Close subtitles"><Icon name="close" /></Dialog.Close>
               </div>
             </header>
@@ -455,7 +461,6 @@ export function SubtitleMenu({
     <div className="af-player-popup af-subtitle-popup">
       <div className="af-player-popup-head">
         <span>Subtitles</span>
-        {offButton}
       </div>
       {body}
     </div>
