@@ -562,13 +562,14 @@ describe('PlayerPage regressions', () => {
     subDetails.open = true;
     fireEvent(subDetails, new Event('toggle'));
 
-    await waitFor(() => expect(screen.getByText('Sicario.2015 (Foreign parts only)')).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'English · Track 3 Forced' })).toBeTruthy());
+    expect(screen.getByTitle('Sicario.2015 (Foreign parts only)')).toBeTruthy();
     expect(screen.getByText('Forced')).toBeTruthy();
     expect(screen.getByText('SDH')).toBeTruthy();
 
     // Filter down to Forced tracks only
     fireEvent.click(screen.getByRole('button', { name: 'Forced (1)' }));
-    expect(screen.queryByText('Sicario.2015.BluRay.SPARKS')).toBeNull();
-    expect(screen.getByText('Sicario.2015 (Foreign parts only)')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'English · Track 1' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'English · Track 3 Forced' })).toBeTruthy();
   });
 });
