@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { navigate, normalizeTitles, readBrowseCache, request, routeWithParams, searchHref, webHref, writeBrowseCache, type CatalogRating, type MediaType, type RawTitle, type Title } from './catalog';
 import { currentLocationHref } from './router';
-import { InputField, PageHeading, ResultsSummary, RouteTabs, SelectField } from './Catalogue';
+import { CollectionTabs, InputField, PageHeading, ResultsSummary, SelectField } from './Catalogue';
 import { Artwork, CatalogProblem, Icon, Loading, MediaCard, SaveButton, Shelf } from './components';
 import { guestRecommendations, type LibraryControls } from './library';
 import { FilterPopover } from './UiControls';
@@ -212,8 +212,7 @@ export function AnimePage({ query, controls }: Readonly<{ query: string; control
   return <div className="af-wrap af-directory">
     <PageHeading title="Anime" />
     <div className="af-catalog-tools">
-      <RouteTabs label="Anime collection" active={isSeasonal ? 'anime' : 'anime?view=all'}
-        tabs={[['anime', 'Seasonal'], ['anime?view=all', 'All anime']]} />
+      <CollectionTabs type="anime" active={isSeasonal ? 'anime' : 'anime?view=all'} />
       <form className="af-field-bar" onSubmit={event => {
         event.preventDefault();
         const formEl = event.currentTarget;

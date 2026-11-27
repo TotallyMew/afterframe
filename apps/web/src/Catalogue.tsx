@@ -63,6 +63,13 @@ export function RouteTabs({ tabs, active, label }: Readonly<{ tabs: readonly (re
   </nav>;
 }
 
+export function CollectionTabs({ type, active }: Readonly<{ type: 'anime' | 'tv'; active: string }>) {
+  return <RouteTabs label={type === 'anime' ? 'Anime collection' : 'TV collection'} active={active} tabs={[
+    ...(type === 'anime' ? [['anime', 'Seasonal'], ['anime?view=all', 'All anime']] as const : [['tv', 'All TV shows']] as const),
+    [`${type}?view=schedule`, 'Weekly airing schedule'],
+  ]} />;
+}
+
 const resultFilterLabels: Record<string, (value: string) => string> = {
   query: value => `Title: ${value}`,
   q: value => `Search: ${value}`,
@@ -515,6 +522,7 @@ export function Catalogue({ route, controls }: Readonly<{ route: string; control
 
   return <div className="af-wrap af-directory">
     <PageHeading title={heading} />
+    {path === 'tv' && <div className="af-directory-tabs"><CollectionTabs type="tv" active="tv" /></div>}
     {(search || releases) && <div className="af-directory-tabs">
       <RouteTabs active={setType(selected)} label={search ? 'Search type' : 'Release type'} tabs={[
         ...(search ? [[setType(''), 'All']] as const : []),

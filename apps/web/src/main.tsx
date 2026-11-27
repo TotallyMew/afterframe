@@ -22,6 +22,7 @@ const DetailsPage = lazy(() => import('./Details').then(m => ({ default: m.Detai
 const PlayerPage = lazy(() => import('./PlayerPage').then(m => ({ default: m.PlayerPage })));
 const Catalogue = lazy(() => import('./Catalogue').then(m => ({ default: m.Catalogue })));
 const AnimePage = lazy(() => import('./Discovery').then(m => ({ default: m.AnimePage })));
+const AiringSchedulePage = lazy(() => import('./AiringSchedule').then(m => ({ default: m.AiringSchedulePage })));
 const RecommendationsPage = lazy(() => import('./Discovery').then(m => ({ default: m.RecommendationsPage })));
 const ComicsPage = lazy(() => import('./Comics').then(m => ({ default: m.ComicsPage })));
 const ComicDetailsPage = lazy(() => import('./Comics').then(m => ({ default: m.ComicDetailsPage })));
@@ -213,6 +214,9 @@ function resolveRoutePageContent(
   if (matches.home) return { page: <Home controls={controls} />, fallbackShape: 'hero' };
   if (matches.title) return { page: <DetailsPage key={path} type={matches.title[1] as MediaType} id={Number(matches.title[2])} controls={controls} />, fallbackShape: 'hero' };
   if (matches.playerRoute && matches.playerKey) return { page: <PlayerPage key={matches.playerKey} route={matches.playerRoute} controls={controls} />, fallbackShape: 'hero' };
+  if ((path === 'anime' || path === 'tv') && new URLSearchParams(query).get('view') === 'schedule') {
+    return { page: <AiringSchedulePage key={path} type={path} />, fallbackShape: 'rows' };
+  }
   if (matches.catalogue) return { page: <Catalogue key={route} route={route} controls={controls} />, fallbackShape: 'posters' };
   if (path === 'anime') return { page: <AnimePage key={route} query={query} controls={controls} />, fallbackShape: 'posters' };
   if (path === 'comics' || path === 'manga') return { page: <ComicsPage key={route} query={query} controls={controls} />, fallbackShape: 'posters' };

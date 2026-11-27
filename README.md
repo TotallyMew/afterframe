@@ -24,6 +24,7 @@
 
 - **Unified Discovery & Search**
   - Browse Movies, TV Shows, Anime (with seasonal schedules and airing countdowns), Manga (manga, manhwa, manhua, comics), Weekly Releases, and personalized **For You** picks.
+  - Open **Weekly airing schedule** beside Seasonal / All anime or All TV shows for a seven-day episode board, local broadcast times, countdowns, and week navigation. Anime uses AniList; TV covers US broadcasts and worldwide streaming via TVmaze.
   - Filter by genre, decade, release year range, runtime, and IMDb/MAL ratings, or press `/` / `Ctrl+K` (`⌘K`) anywhere for instant command palette search.
 - **Personal Library, Stats & Custom Folders**
   - Track watch and reading statuses (`Watching`, `Completed`, `On-Hold`, `Dropped`, `Plan to Watch`), 1–10 personal ratings, custom color-coded folders, and day-grouped watch history.
@@ -177,5 +178,6 @@ npm run build       # Production Vite bundle
 - Movie and TV metadata by [TMDB](https://www.themoviedb.org/) (this product uses the TMDB API but is not endorsed or certified by TMDB).
 - Regional streaming availability by [JustWatch](https://www.justwatch.com/).
 - Anime episode mappings by [AniBridge](https://github.com/anibridge/anibridge-mappings); skip segments by [AniSkip](https://aniskip.com/) and [TheIntroDB](https://theintrodb.org/).
+- Anime airing schedules by [AniList](https://anilist.co); TV airing schedules by [TVmaze](https://www.tvmaze.com), licensed under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
 - Manga catalog and chapter artwork by [MangaDex](https://mangadex.org/) and credited scanlation groups.
 - Public-domain and Creative Commons editions via the [Internet Archive](https://archive.org/) and [Wikimedia Commons](https://commons.wikimedia.org/).

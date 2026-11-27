@@ -1,6 +1,7 @@
 .git
 .agents
 .codex
+.impeccable
 .aws
 **/node_modules
 **/dist

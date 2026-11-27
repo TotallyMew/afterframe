@@ -6,6 +6,7 @@ import { catalogFilters, isAnime, matchesCatalog } from '@afterframe/shared/disc
 import { archiveEdition, archiveIdPattern } from './catalog/archive.mjs';
 import { accountApi, accountStorageHealth, clientAddress, closeAccountStorage, currentAccount, readLibrary, saveProviderCredential } from './accounts/accounts.mjs';
 import { recommendations, seasonalAnime } from './catalog/discovery.mjs';
+import { weeklyAiringSchedule } from './catalog/airing.mjs';
 import { monitorReleases } from './catalog/releases.mjs';
 import { catalogAnimeRating, malRating } from './catalog/mal.mjs';
 import { comicCoverResponse, comicPageResponse, comicsApi } from './comics/comics.mjs';
@@ -193,6 +194,9 @@ async function handleRecommendationsRoute(request, send) {
 }
 
 async function dispatchPreGetRoutes(request, pathname, searchParams, send) {
+  if (pathname === '/api/airing-schedule' && request.method === 'GET') {
+    return send(200, await weeklyAiringSchedule(searchParams), publicCatalogCache);
+  }
   if (pathname === '/api/anime-discovery' && request.method === 'GET') {
     return send(200, await seasonalAnime(searchParams, tmdb, hasTmdbCredential()), publicCatalogCache);
   }

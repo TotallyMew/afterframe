@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 const brotliAsync = promisify(brotliCompress);
 const gzipAsync = promisify(gzip);
 
-const contentPolicy = "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' blob: https://image.tmdb.org https://s4.anilist.co https://archive.org https://*.archive.org https://uploads.mangadex.org; media-src 'self' blob: https://archive.org https://*.archive.org https://upload.wikimedia.org https://api.emnexanime.site; connect-src 'self' https://api.emnexanime.site https://opensubtitles-v3.strem.io https://subs5.strem.io https://subs.bright67.online https://uploads.mangadex.org; frame-src https://cinesrc.st https://www.youtube-nocookie.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+const contentPolicy = "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' blob: https://image.tmdb.org https://s4.anilist.co https://static.tvmaze.com https://archive.org https://*.archive.org https://uploads.mangadex.org; media-src 'self' blob: https://archive.org https://*.archive.org https://upload.wikimedia.org https://api.emnexanime.site; connect-src 'self' https://api.emnexanime.site https://opensubtitles-v3.strem.io https://subs5.strem.io https://subs.bright67.online https://uploads.mangadex.org; frame-src https://cinesrc.st https://www.youtube-nocookie.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 
 export const publicOrigin = process.env.AFTERFRAME_ORIGIN ? new URL(process.env.AFTERFRAME_ORIGIN) : null;
 if (publicOrigin && (publicOrigin.protocol !== 'https:' || publicOrigin.href !== `${publicOrigin.origin}/`)) {
