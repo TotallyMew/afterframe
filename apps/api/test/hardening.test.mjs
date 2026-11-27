@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { cacheMetadata, cachedRatings, peekMetadata } from '../catalog/metadata.mjs';
 import { comicsApi } from '../comics/comics.mjs';
-import { fetchWithRetry, resetCircuits } from '../http-client.mjs';
+import { assertPublicHost, fetchWithRetry, readTextWithLimit, resetCircuits } from '../http-client.mjs';
+import { applySecurityHeaders, isPrivateIp } from '../http-settings.mjs';
+import { relayArchive } from '../archive-stream.mjs';
 import { checkRateLimit, resetRateLimits } from '../rate-limit.mjs';
 
 const prevDb = process.env.AFTERFRAME_DB;
@@ -482,4 +484,124 @@ test('cachedRatings resolves title:v2: cache entries to cached IMDb ratings', as
   await cacheMetadata('imdb:tt7777777', 60_000, async () => ({ score: 8.6, votes: 12000 }));
   const ratings = await cachedRatings(['movie:77777']);
   assert.deepEqual(ratings['movie-77777'], { score: 8.6, votes: 12000 });
+});
+
+test('security hardening: redirect:error default, private IP/SSRF guards, byte limits, and headers', async t => {
+  assert.equal(isPrivateIp('127.0.0.1'), true);
+  assert.equal(isPrivateIp('10.0.0.5'), true);
+  assert.equal(isPrivateIp('169.254.169.254'), true);
+  assert.equal(isPrivateIp('::ffff:192.168.1.1'), true);
+  assert.equal(isPrivateIp('fc00::1'), true);
+  assert.equal(isPrivateIp('8.8.8.8'), false);
+
+  await assert.rejects(() => assertPublicHost('127.0.0.1'));
+  await assert.rejects(() => assertPublicHost('169.254.169.254'));
+  await assert.rejects(() => assertPublicHost('localhost'));
+
+  let capturedRedirect = '';
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    capturedRedirect = init?.redirect;
+    return new Response('ok', { status: 200 });
+  });
+  await fetchWithRetry('https://example.test/no-redirect');
+  assert.equal(capturedRedirect, 'error');
+
+  const big = new Response('a'.repeat(500), { headers: { 'content-type': 'text/html' } });
+  await assert.rejects(() => readTextWithLimit(big, 100), /size limit/i);
+
+  const headers = new Map();
+  applySecurityHeaders({ setHeader: (k, v) => headers.set(k.toLowerCase(), v) });
+  assert.equal(headers.get('x-frame-options'), 'DENY');
+  assert.match(headers.get('content-security-policy'), /object-src 'none'/);
+  assert.ok(headers.get('permissions-policy'));
+});
+
+test('relayArchive blocks non-archive redirects and never reflects upstream 416 HTML', async t => {
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    assert.equal(init?.redirect, 'manual');
+    return new Response('<html>bad range</html>', {
+      status: 416,
+      headers: { 'content-type': 'text/html', 'content-range': 'bytes */1024' },
+    });
+  });
+  let status = 0;
+  let body = null;
+  let extra = null;
+  const fakeRes = { once() {}, writableEnded: false };
+  await relayArchive(
+    { method: 'GET', headers: { range: 'bytes=999999-' } },
+    fakeRes,
+    '/stream/nosferatu',
+    (_res, code, payload, hdrs) => { status = code; body = payload; extra = hdrs; },
+  );
+  assert.equal(status, 416);
+  assert.equal(body.error, 'Requested range not satisfiable.');
+  assert.equal(extra['content-range'], 'bytes */1024');
+
+  t.mock.method(globalThis, 'fetch', async () => new Response(null, {
+    status: 302,
+    headers: { location: 'http://169.254.169.254/latest/meta-data/' },
+  }));
+  status = 0;
+  await relayArchive(
+    { method: 'GET', headers: {} },
+    fakeRes,
+    '/stream/nosferatu',
+    (_res, code, payload) => { status = code; body = payload; },
+  );
+  assert.equal(status, 502);
+});
+
+test('account API strips unknown fields, batches mark-episodes, and returns 304 on ETag match', async () => {
+  let cookie = '';
+  const captureRes = {
+    setHeader(name, value) {
+      if (String(name).toLowerCase() === 'set-cookie') {
+        const raw = Array.isArray(value) ? value[0] : value;
+        cookie = String(raw).split(';')[0];
+      }
+    },
+  };
+  const created = await accountApi(
+    { method: 'POST', headers: {} },
+    captureRes,
+    '/api/account/create',
+    { username: 'batch-etag-user', password: 'strong-test-password' },
+  );
+  assert.equal(created.code, 201);
+  const accountId = created.body.account.id;
+
+  const saved = await accountApi(
+    { method: 'POST', headers: { cookie } },
+    captureRes,
+    '/api/account/library',
+    {
+      accountId,
+      kind: 'saved',
+      key: 'tv-9001',
+      value: { key: 'tv-9001', id: 9001, type: 'tv', title: 'Strip Test', watchStatus: 'watching', added: Date.now(), evilExtra: 'drop-me' },
+    },
+  );
+  assert.equal(saved.code, 200);
+
+  const batch = await accountApi(
+    { method: 'POST', headers: { cookie } },
+    captureRes,
+    '/api/account/mark-episodes',
+    { accountId, item: { key: 'tv-9001', id: 9001, type: 'tv', title: 'Strip Test' }, episodes: ['s1e1', 's1e2', 's1e3'] },
+  );
+  assert.equal(batch.code, 200);
+
+  const firstGet = await accountApi({ method: 'GET', headers: { cookie } }, captureRes, '/api/account');
+  assert.equal(firstGet.code, 200);
+  assert.equal(firstGet.body.library.saved['tv-9001'].evilExtra, undefined);
+  assert.equal(Object.hasOwn(firstGet.body.library.watched, 'tv-9001/s1e2'), true);
+  assert.ok(firstGet.headers?.etag);
+
+  const secondGet = await accountApi(
+    { method: 'GET', headers: { cookie, 'if-none-match': firstGet.headers.etag } },
+    captureRes,
+    '/api/account',
+  );
+  assert.equal(secondGet.code, 304);
 });

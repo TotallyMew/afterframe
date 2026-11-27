@@ -1,9 +1,13 @@
 import { createReadStream } from 'node:fs';
-import { access, stat } from 'node:fs/promises';
+import { access, readFile, stat } from 'node:fs/promises';
 import { createServer, request as proxyRequest } from 'node:http';
 import { extname } from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { applySecurityHeaders, publicOrigin } from '../api/http-settings.mjs';
+import { applySecurityHeaders, compressBuffer, isPrivateIp, negotiateEncoding, publicOrigin } from '../api/http-settings.mjs';
+
+const compressibleExts = new Set(['.html', '.js', '.css', '.svg', '.webmanifest']);
+const compressedCache = new Map();
+const MAX_COMPRESSED_CACHE = 64;
 
 const port = Number(process.env.PORT || 4173);
 const localHosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
@@ -37,24 +41,32 @@ function reply(response, code, error) {
 }
 
 function forwardedClientIp(request) {
-  if (publicOrigin) {
+  const remote = request.socket?.remoteAddress || '127.0.0.1';
+  if (publicOrigin && isPrivateIp(remote)) {
     const incoming = request.headers['x-forwarded-for'];
     if (typeof incoming === 'string' && incoming.trim()) {
       const parts = incoming.split(',').map(part => part.trim()).filter(Boolean);
-      if (parts.length) return parts.at(-1);
+      const hops = Math.max(1, Number(process.env.AFTERFRAME_TRUST_PROXY_HOPS) || 1);
+      if (parts.length) return parts[Math.max(0, parts.length - hops)];
     }
   }
-  return request.socket?.remoteAddress || '127.0.0.1';
+  return remote;
 }
 
-function forward(request, response, host) {
+function forward(request, response, host, isStream = false) {
   const headers = withoutHopHeaders(request.headers);
   headers.host = host;
   headers['x-forwarded-for'] = forwardedClientIp(request);
-  const proxy = proxyRequest(upstream, { method: request.method, path: request.url, headers }, incoming => {
+  const proxy = proxyRequest(upstream, {
+    method: request.method,
+    path: request.url,
+    headers,
+    ...(isStream ? {} : { timeout: 30_000 }),
+  }, incoming => {
     response.writeHead(incoming.statusCode, withoutHopHeaders(incoming.headers));
     pipeline(incoming, response).catch(() => response.destroy());
   });
+  proxy.once('timeout', () => proxy.destroy(new Error('Upstream timeout')));
   response.once('close', () => proxy.destroy());
   proxy.once('error', () => {
     if (response.destroyed) return;
@@ -79,25 +91,57 @@ const server = createServer(async (request, response) => {
   const isAsset = staticBuildPath.test(path);
   const isProxy = /^\/(?:api|art|stream|comic-cover|comic-page)\//.test(path);
   if (isProxy) {
-    return forward(request, response, railwayHealth ? publicOrigin?.host || `localhost:${port}` : request.headers.host);
+    return forward(request, response, railwayHealth ? publicOrigin?.host || `localhost:${port}` : request.headers.host, path.startsWith('/stream/'));
   }
   if (!['GET', 'HEAD'].includes(request.method)) return reply(response, 405, 'Method unavailable.');
   const staticFile = path === '/' ? 'index.html' : isAsset ? path.slice(1) : (spaRoute.test(path) || !extname(path)) ? 'index.html' : null;
   if (!staticFile) return reply(response, 404, 'Not found.');
   const file = new URL(staticFile, build);
-  const type = assets[extname(staticFile)];
+  const ext = extname(staticFile);
+  const type = assets[ext];
   const info = type && await stat(file).catch(() => null);
   if (!info?.isFile()) return reply(response, 404, 'Not found.');
   const statusCode = staticFile === 'index.html' && !spaRoute.test(path) ? 404 : 200;
+  const etag = `W/"${info.size.toString(16)}-${info.mtimeMs.toString(16)}"`;
   const cacheControl = path.startsWith('/assets/')
     ? 'public, max-age=31536000, immutable'
     : path.startsWith('/icons/')
       ? 'public, max-age=86400'
       : 'no-cache';
+  const cacheHeaders = { etag, 'cache-control': cacheControl };
+  const validators = request.headers['if-none-match']?.split(',').map(value => value.trim().replace(/^W\//, ''));
+  if (statusCode === 200 && (validators?.includes('*') || validators?.includes(etag.slice(2)))) {
+    response.writeHead(304, cacheHeaders);
+    return response.end();
+  }
+  const preferredEncoding = compressibleExts.has(ext) && info.size >= 1024 && info.size <= 2 * 1024 * 1024
+    ? negotiateEncoding(request.headers['accept-encoding'])
+    : null;
+  if (preferredEncoding) {
+    const cacheKey = `${staticFile}:${info.size}:${info.mtimeMs}:${preferredEncoding}`;
+    let payload = compressedCache.get(cacheKey);
+    if (!payload) {
+      const raw = await readFile(file);
+      payload = await compressBuffer(raw, preferredEncoding);
+      if (compressedCache.size >= MAX_COMPRESSED_CACHE) {
+        const oldest = compressedCache.keys().next().value;
+        if (oldest) compressedCache.delete(oldest);
+      }
+      compressedCache.set(cacheKey, payload);
+    }
+    response.writeHead(statusCode, {
+      ...cacheHeaders,
+      'content-type': type,
+      'content-length': payload.buffer.length,
+      vary: 'Accept-Encoding',
+      ...(payload.encoding ? { 'content-encoding': payload.encoding } : {}),
+    });
+    return response.end(request.method === 'HEAD' ? undefined : payload.buffer);
+  }
   response.writeHead(statusCode, {
+    ...cacheHeaders,
     'content-type': type,
     'content-length': info.size,
-    'cache-control': cacheControl,
   });
   if (request.method === 'HEAD') return response.end();
   await pipeline(createReadStream(file), response).catch(() => response.destroy());

@@ -35,14 +35,18 @@ export function Icon({ name }: { name: keyof typeof glyphs }) {
   return <svg className="af-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{glyphs[name]}</svg>;
 }
 
-export function Artwork({ fallback, src, ...props }: ComponentProps<'img'> & { fallback?: ReactNode }) {
+export function Artwork({ fallback, src, decoding = 'async', ...props }: ComponentProps<'img'> & { fallback?: ReactNode }) {
   const [failed, setFailed] = useState<string>();
-  return src && failed !== src ? <img {...props} src={src} alt={props.alt ?? ''} onError={() => setFailed(src)} /> : fallback;
+  return src && failed !== src ? <img {...props} decoding={decoding} src={src} alt={props.alt ?? ''} onError={() => setFailed(src)} /> : fallback;
 }
 
-function tmdbImageSet(src: string | undefined, widths: readonly number[]) {
+export function tmdbImageSet(src: string | undefined, widths: readonly number[]) {
   const path = src?.match(/^https:\/\/image\.tmdb\.org\/t\/p\/w\d+(\/[a-z0-9]+\.(?:jpg|png|webp))$/i)?.[1];
   if (path) return widths.map(width => `${imagePath(path, `w${width}`)} ${width}w`).join(', ');
+}
+
+export function tmdbImageSize(src: string | undefined, size: string) {
+  return src ? src.replace(/^(https:\/\/image\.tmdb\.org\/t\/p\/)w\d+(\/)/i, `$1${size}$2`) : src;
 }
 
 export function HeroBackdrop({ src, sizes }: { src?: string; sizes: string }) {
@@ -119,7 +123,7 @@ export function SaveButton({ item, controls, compact = false }: { item: Title | 
   const saved = Boolean(controls.library.saved[item.key]);
   const list = item.type === 'comic' ? 'Reading' : 'Library';
   return <><button type="button" className={compact ? 'af-icon-button af-card-save' : 'af-button af-secondary'}
-    aria-pressed={saved} aria-label={compact ? `${saved ? 'Remove from' : 'Add to'} ${list}: ${item.title}` : undefined}
+    aria-pressed={saved} aria-label={compact ? `Save ${item.title} to ${list}` : undefined}
     aria-busy={controls.isPending(item.key)} disabled={!controls.ready || controls.isPending(item.key)} onClick={() => void controls.toggleSaved(item)}>
     <Icon name={saved ? 'check' : 'plus'} />{!compact && (saved ? `In ${list}` : list)}
   </button><MutationStatus itemKey={item.key} controls={controls} /></>;
@@ -440,6 +444,11 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
     setSelected(index => index < 0 ? (direction > 0 ? 0 : results.length - 1) : (index + direction + results.length) % results.length);
   }
 
+  useEffect(() => {
+    if (selected < 0) return;
+    document.getElementById(`af-search-${selected}`)?.scrollIntoView({ block: 'nearest' });
+  }, [selected]);
+
   return <Dialog.Portal>
     <Dialog.Backdrop className="af-scrim" />
     <Dialog.Popup className="af-modal" initialFocus={input} finalFocus={finalFocus}>
@@ -452,11 +461,11 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
         {!trimmed && recentSearches.length > 0 && <div className="af-recent-searches">
           <div className="af-palette-head">
             <span>Recent searches</span>
-            <button type="button" className="af-text-link" onClick={() => { try { localStorage.removeItem(recentSearchKey); } catch { /* ignore */ } setRecentSearches([]); }}>Clear</button>
+            <button type="button" className="af-text-link" onClick={() => { try { localStorage.removeItem(recentSearchKey); } catch { /* ignore */ } setRecentSearches([]); input.current?.focus(); }}>Clear</button>
           </div>
           <div className="af-recent-chips">
             {recentSearches.map(term => (
-              <button key={term} type="button" className="af-chip-btn" onClick={() => onInput(term)}>{term}</button>
+              <button key={term} type="button" className="af-chip-btn" onClick={() => { onInput(term); input.current?.focus(); }}>{term}</button>
             ))}
           </div>
         </div>}
@@ -480,7 +489,7 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
           ) : (
             <a role="option" aria-selected={index === selected} tabIndex={-1} id={`af-search-${index}`}
               key={item.key} href={item.href} onClick={() => { if (trimmed) saveRecentSearch(trimmed); close(); }} className="af-search-result">
-              <span className="af-result-art"><Artwork src={item.art} fallback={<span className="af-result-art-fallback" aria-hidden="true"><Icon name={item.kind === 'comic' || (item.kind === 'library' && item.isComic) ? 'book' : 'film'} /></span>} /></span>
+              <span className="af-result-art"><Artwork src={tmdbImageSize(item.art, 'w92')} fallback={<span className="af-result-art-fallback" aria-hidden="true"><Icon name={item.kind === 'comic' || (item.kind === 'library' && item.isComic) ? 'book' : 'film'} /></span>} /></span>
               <span className="af-search-result-copy"><strong>{item.title}</strong><small className="af-search-result-meta"><span>{item.subtitle}</span>{item.kind !== 'library' && ((item.kind === 'video' && item.rating && item.rating.score > 0) || (item.mal != null && item.mal > 0)) && <><span aria-hidden="true">·</span><Score rating={item.kind === 'video' ? item.rating : undefined} mal={item.mal} /></>}</small></span>
               <Icon name="right" />
             </a>
@@ -625,11 +634,12 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
     ro.observe(nav);
     return () => ro.disconnect();
   }, [activeNavKey]);
+  const singleKeyEnabled = controls.library.preferences.singleKeyShortcuts !== false;
   useEffect(() => {
     const shortcut = (event: globalThis.KeyboardEvent) => {
       if (event.defaultPrevented || event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable=true]')) return;
       const isCmdK = event.key.toLowerCase() === 'k' && (event.metaKey || event.ctrlKey);
-      const isSlash = event.key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey;
+      const isSlash = singleKeyEnabled && event.key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey;
       if (isCmdK || isSlash) {
         event.preventDefault();
         if (search || document.querySelector('[role="dialog"][aria-modal="true"]')) return;
@@ -656,11 +666,11 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
       window.removeEventListener('afterframe-open-search', openSearchEvent);
       window.removeEventListener('afterframe-open-browse', openBrowseEvent);
     };
-  }, [search]);
+  }, [search, singleKeyEnabled]);
   const isLibraryActive = ['watchlist', 'watched', 'ratings', 'reading', 'history', 'notifications'].includes(path);
   const accountName = controls.account?.username;
   return <header className="af-header">
-    <a className="af-brand" href={webHref('home')}><img src="/art/favicon.svg" alt="" />afterframe</a>
+    <a className="af-brand" href={webHref('home')}><img src="/art/favicon.svg" width={25} height={25} alt="" />afterframe</a>
     <nav ref={navRef} className={`af-nav ${pill.ready ? 'has-indicator' : ''}`} aria-label="Main navigation">
       {pill.ready && <span
         className={`af-nav-indicator ${pill.animate ? 'is-animated' : ''}`}
@@ -730,6 +740,7 @@ export function MobileNav({ route }: { route: string }) {
 
   useEffect(() => {
     setHidden(false);
+    if (typeof window.matchMedia === 'function' && !window.matchMedia('(max-width: 45rem)').matches) return;
     let lastY = window.scrollY;
     const onScroll = () => {
       const y = window.scrollY;
@@ -747,7 +758,7 @@ export function MobileNav({ route }: { route: string }) {
     <a href={webHref('home')} aria-current={isHome ? 'page' : undefined}>
       <Icon name="home" /><span>Home</span>
     </a>
-    <button type="button" aria-pressed={isBrowse} onClick={() => window.dispatchEvent(new Event('afterframe-open-browse'))}>
+    <button type="button" aria-haspopup="dialog" className={isBrowse ? 'is-active' : undefined} onClick={() => window.dispatchEvent(new Event('afterframe-open-browse'))}>
       <Icon name="film" /><span>Browse</span>
     </button>
     <a href={webHref('comics')} aria-current={isComics ? 'page' : undefined}>

@@ -1,13 +1,12 @@
 import { Dialog } from '@base-ui/react/dialog';
 import { archiveCatalog, type ArchiveEpisode, type ArchiveTitle } from '@afterframe/shared/catalog';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import {
   episodeKey, episodeLabel, episodePosition, formatDate, imagePath, isAired, navigate, normalizeTitle,
   playerHref, previousBrowse, request, timeCode, titleHref, webHref,
-  type Details, type Episode, type EpisodePosition, type Title,
+  type Details, type Episode, type EpisodePosition, type Season, type Title,
 } from './catalog';
 import { ActionLink, Artwork, Icon, Loading, SaveButton } from './components';
-import { orderSeasons } from './Details';
 import { effectiveWatchStatus, getSeason, progressPercent, resumeFor, savedRating, watchStatuses, type LibraryControls, type WatchStatus } from './library';
 import { FolderPickerPopover } from './library/FolderPickerPopover';
 import { ArchiveEditionView } from './player/ArchiveEditionView';
@@ -25,6 +24,13 @@ const playerRatingOptions = [
   ...Array.from({ length: 10 }, (_, index) => ({ value: String(index + 1), label: `${index + 1} / 10` })),
 ];
 const watchStatusOptions = Object.entries(watchStatuses).map(([value, label]) => ({ value, label }));
+
+function orderSeasons(seasons: readonly Season[] | undefined): Season[] {
+  const valid = (seasons ?? []).filter(entry => entry.episode_count > 0 && entry.season_number >= 0);
+  const regular = valid.filter(entry => entry.season_number > 0).sort((a, b) => a.season_number - b.season_number);
+  const specials = valid.filter(entry => entry.season_number === 0);
+  return [...regular, ...specials];
+}
 
 function isPlayerUrl(href: string): boolean {
   return /^\/(?:movie\/\d+\/watch|tv\/\d+\/s\d+e\d+|edition\/[^/]+\/watch)(?:$|\?)/.test(href);
@@ -98,7 +104,11 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
   }, [routeKind]);
 
   useEffect(() => {
-    if (!libraryResolved && routeWatch) return;
+    if (!libraryResolved && routeKind === 'edition' && routeWatch) return;
+    if (routeKind === 'catalog' && loadedRef.current?.embed && loadedRef.current.item.key === `${routeCatalogType}-${routeCatalogId}`
+      && loadedRef.current.episode?.season === routeSeason && loadedRef.current.episode?.number === routeEpisode) {
+      return;
+    }
     const controller = new AbortController();
     const { signal } = controller;
     setError('');
@@ -311,6 +321,31 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
     navigate(nextHref);
   }, [originBack]);
 
+  const drawerCloseRef = useRef<HTMLButtonElement>(null);
+  const drawerReturnFocusRef = useRef<HTMLElement | null>(null);
+  const prevDrawerOpenRef = useRef(false);
+
+  const toggleEpisodesDrawer = useCallback(() => {
+    setEpisodesOpen(current => {
+      if (!current) {
+        const active = document.activeElement;
+        drawerReturnFocusRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+      }
+      return !current;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (episodesOpen && !prevDrawerOpenRef.current) {
+      requestAnimationFrame(() => drawerCloseRef.current?.focus({ preventScroll: true }));
+    } else if (!episodesOpen && prevDrawerOpenRef.current) {
+      const target = drawerReturnFocusRef.current;
+      if (target?.isConnected) target.focus({ preventScroll: true });
+      drawerReturnFocusRef.current = null;
+    }
+    prevDrawerOpenRef.current = episodesOpen;
+  }, [episodesOpen]);
+
   useEffect(() => {
     if (!episodesOpen) return;
     const onKey = (event: KeyboardEvent) => {
@@ -322,6 +357,14 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [episodesOpen]);
+
+  const historyDurations = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const entry of Object.values(controls.library.history)) {
+      if (entry.duration > 0 && !map.has(entry.mediaKey)) map.set(entry.mediaKey, entry.duration);
+    }
+    return map;
+  }, [controls.library.history]);
 
   if (error) {
     const alternate = route.kind === 'catalog' && route.type === 'movie'
@@ -342,7 +385,7 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
     return <ArchiveEditionView entry={editionDetails} backHref={originBack} controls={controls} />;
   }
 
-  if (!loaded) {
+  if (!loaded || !libraryResolved) {
     return <section className="af-wrap af-directory">
       <a className="af-text-link" href={originBack}><Icon name="left" /> Back</a>
       <Loading label="Loading playback…" shape="hero" />
@@ -380,11 +423,25 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
     ].filter(Boolean).join(' · ')
     : [hydratedItem.year, hydratedItem.duration ? `${hydratedItem.duration} min` : '', hydratedItem.genre].filter(Boolean).join(' · ');
 
+  const handleSeasonTabKey = (event: ReactKeyboardEvent<HTMLDivElement>, prefix: string) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key) || orderedSeasons.length < 2) return;
+    event.preventDefault();
+    const idx = orderedSeasons.findIndex(s => s.season_number === seasonNumber);
+    const nextIdx = event.key === 'Home' ? 0
+      : event.key === 'End' ? orderedSeasons.length - 1
+      : (idx + (event.key === 'ArrowRight' ? 1 : -1) + orderedSeasons.length) % orderedSeasons.length;
+    const nextSeason = orderedSeasons[nextIdx].season_number;
+    setSeasonNumber(nextSeason);
+    setSeasonRange(0);
+    document.getElementById(`${prefix}-${nextSeason}`)?.focus();
+  };
+
   const episodesDrawerBody = <>
     {!loaded.archive && orderedSeasons.length > 1 && (
-      <div className="af-season-tabs af-drawer-tabs" role="tablist" aria-label="Drawer seasons">
+      <div className="af-season-tabs af-drawer-tabs" role="tablist" aria-label="Drawer seasons" onKeyDown={event => handleSeasonTabKey(event, 'af-drawer-season')}>
         {orderedSeasons.map(s => (
-          <button key={s.season_number} type="button" role="tab" aria-selected={seasonNumber === s.season_number}
+          <button key={s.season_number} id={`af-drawer-season-${s.season_number}`} type="button" role="tab" aria-selected={seasonNumber === s.season_number}
+            tabIndex={seasonNumber === s.season_number ? 0 : -1}
             className="af-season-tab" onClick={() => { setSeasonNumber(s.season_number); setSeasonRange(0); }}>
             {s.season_number === 0 ? 'Specials' : `S${s.season_number}`}
           </button>
@@ -433,7 +490,7 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
           <strong>Episodes</strong>
           <p className="af-meta af-tabular">{currentSeasonObj?.name || (loaded.archive ? hydratedItem.title : `Season ${seasonNumber}`)}</p>
         </div>
-        <button type="button" className="af-icon-button" aria-label="Close episodes drawer" onClick={() => setEpisodesOpen(false)}>
+        <button ref={drawerCloseRef} type="button" className="af-icon-button" aria-label="Close episodes drawer" onClick={() => setEpisodesOpen(false)}>
           <Icon name="close" />
         </button>
       </header>
@@ -458,7 +515,7 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
       </div>
       <div className="af-player-topbar-actions">
         {hasSeriesEpisodes && (
-          <button type="button" className="af-button af-secondary af-topbar-btn" aria-pressed={episodesOpen} onClick={() => setEpisodesOpen(v => !v)}>
+          <button type="button" className="af-button af-secondary af-topbar-btn" aria-pressed={episodesOpen} onClick={toggleEpisodesDrawer}>
             <PlayerGlyph name="episodes" />
             <span>Episodes</span>
             <kbd className="af-kbd af-topbar-kbd">E</kbd>
@@ -509,7 +566,7 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
         onToggleTheatre={() => setTheatreMode(v => !v)}
         hasEpisodesDrawer={hasSeriesEpisodes}
         episodesOpen={episodesOpen}
-        onToggleEpisodes={() => setEpisodesOpen(v => !v)}
+        onToggleEpisodes={toggleEpisodesDrawer}
         episodesDrawer={episodesDrawerNode}
       />
     </div>
@@ -611,13 +668,15 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
             />
           </div>}
         </header>
-        {orderedSeasons.length > 1 && <div className="af-season-tabs" role="tablist" aria-label="Seasons">
+        {orderedSeasons.length > 1 && <div className="af-season-tabs" role="tablist" aria-label="Seasons" onKeyDown={event => handleSeasonTabKey(event, 'af-player-season')}>
           {orderedSeasons.map(season => (
             <button
               key={season.season_number}
+              id={`af-player-season-${season.season_number}`}
               type="button"
               role="tab"
               aria-selected={seasonNumber === season.season_number}
+              tabIndex={seasonNumber === season.season_number ? 0 : -1}
               className="af-season-tab"
               onClick={() => { setSeasonNumber(season.season_number); setSeasonRange(0); }}
             >
@@ -628,23 +687,25 @@ export function PlayerPage({ route, controls }: { route: PlayerRoute; controls: 
         {seasonError
           ? <p className="af-state" role="alert">{seasonError} <button type="button" className="af-text-link" onClick={() => setSeasonAttempt(v => v + 1)}>Retry</button></p>
           : <div className={`af-episode-grid ${controls.library.preferences.compact ? 'af-compact' : ''}`}>
-            {seasonEpisodes.slice(rangeStart, rangeStart + playerEpisodeRangeSize).map(ep => (
-              <PlayerEpisodeRow
-                key={episodeKey(hydratedItem, ep)}
+            {seasonEpisodes.slice(rangeStart, rangeStart + playerEpisodeRangeSize).map(ep => {
+              const epKey = episodeKey(hydratedItem, ep);
+              return <PlayerEpisodeRow
+                key={epKey}
                 item={hydratedItem}
                 episode={ep}
                 current={loaded.episode?.season === ep.season_number && loaded.episode?.number === ep.episode_number}
                 backHref={originBack}
                 controls={controls}
-              />
-            ))}
+                historyDurationSec={historyDurations.get(epKey)}
+              />;
+            })}
           </div>}
       </section>}
 
       {sourcePage && loaded.archive && <div className="af-watch-source">
         {loaded.archive.credit && <span>{loaded.archive.credit}</span>}
-        <a href={sourcePage} target="_blank" rel="noopener noreferrer">{loaded.nativeMedia?.source || 'Internet Archive'}</a>
-        {loaded.archive.license && <a href={loaded.archive.license[1]} target="_blank" rel="noopener noreferrer">{loaded.archive.license[0]}</a>}
+        <a href={sourcePage} target="_blank" rel="noopener noreferrer">{loaded.nativeMedia?.source || 'Internet Archive'}<span className="sr-only"> (opens in new tab)</span></a>
+        {loaded.archive.license && <a href={loaded.archive.license[1]} target="_blank" rel="noopener noreferrer">{loaded.archive.license[0]}<span className="sr-only"> (opens in new tab)</span></a>}
       </div>}
       {loaded.embed && <div className="af-watch-source">
         <span>Playback by {animePlayers[activeProvider ?? 'cinesrc'].label}</span>

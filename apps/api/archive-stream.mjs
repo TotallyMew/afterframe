@@ -2,8 +2,35 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { archiveCatalog, archiveFileUrl } from '@afterframe/shared/catalog';
 import { archiveEdition, archiveIdPattern } from './catalog/archive.mjs';
+import { assertPublicHost } from './http-client.mjs';
 
 const catalog = new Map(archiveCatalog.map(item => [item.key, item]));
+const maxArchiveRedirects = 5;
+
+function isAllowedArchiveHost(hostname) {
+  const host = hostname.toLowerCase();
+  return host === 'archive.org' || host.endsWith('.archive.org') || host === 'upload.wikimedia.org';
+}
+
+async function fetchArchiveWithRedirects(startUrl, method, headers, signal) {
+  let current = new URL(startUrl);
+  for (let hop = 0; hop <= maxArchiveRedirects; hop++) {
+    if (current.protocol !== 'https:' || current.username || current.password || !isAllowedArchiveHost(current.hostname)) {
+      throw new Error('Archive redirect target is not allowed.');
+    }
+    await assertPublicHost(current.hostname);
+    const upstream = await fetch(current, { method, signal, headers, redirect: 'manual' });
+    if (upstream.status >= 300 && upstream.status < 400) {
+      const location = upstream.headers.get('location');
+      await upstream.body?.cancel();
+      if (!location || hop === maxArchiveRedirects) throw new Error('Archive redirect limit exceeded.');
+      current = new URL(location, current);
+      continue;
+    }
+    return upstream;
+  }
+  throw new Error('Archive redirect limit exceeded.');
+}
 
 export async function relayArchive(request, response, pathname, sendJson) {
   const [, , key, episodeKey] = pathname.split('/');
@@ -18,23 +45,30 @@ export async function relayArchive(request, response, pathname, sendJson) {
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 18000);
-  response.on('close', () => controller.abort());
+  response.once('close', () => {
+    if (!response.writableEnded) controller.abort();
+  });
   let upstream;
   try {
-    upstream = await fetch(url, {
-      method: request.method, signal: controller.signal,
-      headers: range ? { Range: range } : {},
-    });
+    upstream = await fetchArchiveWithRedirects(url, request.method, range ? { Range: range } : {}, controller.signal);
+  } catch {
+    return sendJson(response, 502, { error: 'The video source could not serve this stream.' });
   } finally {
     clearTimeout(timer);
   }
-  const type = upstream.headers.get('content-type')?.split(';')[0];
-  if (![200, 206, 416].includes(upstream.status) || (upstream.ok && !type?.startsWith('video/'))) {
+  if (upstream.status === 416) {
+    const contentRange = upstream.headers.get('content-range');
+    await upstream.body?.cancel();
+    const extra = contentRange && /^bytes \*\/\d+$/.test(contentRange) ? { 'content-range': contentRange } : {};
+    return sendJson(response, 416, { error: 'Requested range not satisfiable.' }, extra);
+  }
+  const type = upstream.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase();
+  if (![200, 206].includes(upstream.status) || !type?.startsWith('video/')) {
     await upstream.body?.cancel();
     return sendJson(response, 502, { error: 'The video source could not serve this stream.' });
   }
-  const headers = { 'cache-control': item && upstream.ok ? 'private, max-age=3600' : 'no-store' };
-  for (const name of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified']) {
+  const headers = { 'cache-control': item ? 'private, max-age=3600' : 'no-store', 'content-type': type };
+  for (const name of ['content-length', 'content-range', 'accept-ranges', 'last-modified']) {
     const value = upstream.headers.get(name);
     if (value) headers[name] = value;
   }

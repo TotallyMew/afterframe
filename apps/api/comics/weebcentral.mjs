@@ -73,11 +73,15 @@ export async function weebChapters(item) {
 export function weebPageList(chapterId) {
   return cacheMetadata(`comics:weeb:pages:${chapterId}`, 10 * minute, async () => {
     const result = await html(`/chapters/${chapterId.slice(5).toUpperCase()}/images?is_prev=False&reading_style=long_strip`);
-    const images = Array.from(result.matchAll(/<img\b[^>]*\bsrc="([^"]+)"[^>]*\balt="Page \d+"[^>]*>/gi), ([, src]) => {
+    const images = [];
+    for (const [tag] of result.matchAll(/<img\b[^<>]{1,1000}>/gi)) {
+      if (!/\balt="Page \d+"/i.test(tag)) continue;
+      const src = tag.match(/\bsrc="([^"]+)"/i)?.[1];
+      if (!src) { images.push(null); continue; }
       const url = URL.parse(decodeHtml(src));
-      return url?.protocol === 'https:' && !url.port && !url.username && !url.password && !url.search && !url.hash
-        && imageHosts.has(url.hostname) && httpsImage.test(url.pathname) ? url.href : null;
-    });
+      images.push(url?.protocol === 'https:' && !url.port && !url.username && !url.password && !url.search && !url.hash
+        && imageHosts.has(url.hostname) && httpsImage.test(url.pathname) ? url.href : null);
+    }
     if (!images.length || images.some(url => !url)) throw new Error('Weeb Central pages are temporarily unavailable.');
     return images;
   });

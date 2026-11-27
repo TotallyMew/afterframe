@@ -139,8 +139,10 @@ export async function catalogFacts(keys) {
       const [type, id] = key.split(':');
       const cardKey = `${type}-${id}`;
       try {
-        const needDetails = type === 'tv' || (!cached[cardKey] && hasOmdbKey()) || hasMal;
-        const details = needDetails ? await basicTitle(type, id) : null;
+        const peeked = peekMetadata(`title:v2:${key}:`) ?? peekMetadata(`basic:${key}:`);
+        const peekedIsNonAnimeMovie = type === 'movie' && peeked && !isAnime(peeked.original_language, peeked.genres?.map(genre => genre.id));
+        const needDetails = type === 'tv' || (!cached[cardKey] && hasOmdbKey()) || (hasMal && !peekedIsNonAnimeMovie);
+        const details = needDetails ? (peeked ?? await basicTitle(type, id)) : null;
         const external = details?.external_ids?.imdb_id || details?.imdb_id;
         const anime = details && isAnime(details.original_language, details.genres?.map(genre => genre.id));
         const [rating, mal, vPlan] = await Promise.all([

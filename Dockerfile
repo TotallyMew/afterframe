@@ -29,7 +29,7 @@ COPY packages/shared/package.json packages/shared/
 COPY apps/api/package.json apps/api/
 COPY apps/web/package.json apps/web/
 COPY afterframe/package.json afterframe/
-RUN npm ci --omit=dev --workspace=@afterframe/shared --workspace=@afterframe/api \
+RUN npm ci --omit=dev --ignore-scripts --workspace=@afterframe/shared --workspace=@afterframe/api \
     && install -d -o node -g node /app/afterframe/data
 COPY packages/shared/ packages/shared/
 COPY afterframe/public/ afterframe/public/

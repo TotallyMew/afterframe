@@ -44,30 +44,42 @@ const groups = [
 export function ShortcutsDialog({
   open,
   onOpenChange,
+  singleKeyShortcuts = true,
 }: {
   open: boolean;
   onOpenChange: (next: boolean) => void;
+  singleKeyShortcuts?: boolean;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
+    if (!singleKeyShortcuts) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable=true]')) return;
       if (event.key === '?') {
         if (!open && document.querySelector('[role="dialog"][aria-modal="true"]')) return;
         event.preventDefault();
+        if (!open) {
+          const active = document.activeElement;
+          returnFocusRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+        }
         onOpenChange(!open);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, onOpenChange]);
+  }, [open, onOpenChange, singleKeyShortcuts]);
 
   return <Dialog.Root open={open} onOpenChange={onOpenChange}>
     <Dialog.Portal>
       <Dialog.Backdrop className="af-scrim" />
-      <Dialog.Popup className="af-modal af-shortcuts-modal" initialFocus={closeRef}>
+      <Dialog.Popup
+        className="af-modal af-shortcuts-modal"
+        initialFocus={closeRef}
+        finalFocus={() => returnFocusRef.current?.isConnected ? returnFocusRef.current : document.getElementById('main')}
+      >
         <header className="af-section-head">
           <Dialog.Title>Keyboard shortcuts</Dialog.Title>
           <Dialog.Close ref={closeRef} className="af-icon-button" aria-label="Close shortcuts">

@@ -307,12 +307,14 @@ export function computeLibraryStats(
     .filter(([, entry]) => matchesVideoType(entry.item, mediaType))
     .sort(([, a], [, b]) => b.updated - a.updated);
   let rewatched = 0;
+  const completedKeys = new Set<string>();
   const coveredMediaKeys = new Set<string>();
   let totalSeconds = 0;
-  for (let i = 0; i < historyList.length; i++) {
+  for (let i = historyList.length - 1; i >= 0; i--) {
     const [, entry] = historyList[i];
-    if (entry.completed && historyList.slice(i + 1).some(([, prior]) => prior.mediaKey === entry.mediaKey && prior.completed)) {
-      rewatched++;
+    if (entry.completed) {
+      if (completedKeys.has(entry.mediaKey)) rewatched++;
+      else completedKeys.add(entry.mediaKey);
     }
     const watchedPart = Math.min(entry.duration || 0, Math.max(0, entry.coverage || entry.time || 0));
     totalSeconds += watchedPart;
@@ -567,7 +569,10 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
 
   useEffect(() => {
     void refresh();
-    const restore = () => { if (!document.hidden) void refresh(); };
+    const restore = (event: Event) => {
+      if (event.type === 'pageshow' && !(event as PageTransitionEvent).persisted) return;
+      if (!document.hidden) void refresh();
+    };
     const storage = (event: StorageEvent) => {
       if (event.key === null || event.key.startsWith('afterframe.')) {
         if (identity.current === null && expiredIdentity.current === null) {
@@ -1116,6 +1121,31 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
     }
   }
 
+  async function markEpisodesWatched(item: Title, episodes: string[]) {
+    if (!episodes.length) return false;
+    const unique = [...new Set(episodes)];
+    const opKey = `${item.key}/season-batch`;
+    return change(opKey, async account => {
+      const updated = Date.now();
+      const apply = (library: Library): Library => {
+        const watched = { ...library.watched };
+        const progress = { ...library.progress };
+        for (const ep of unique) {
+          const mediaKey = `${item.key}/${ep}`;
+          watched[mediaKey] = { item, updated };
+          delete progress[mediaKey];
+        }
+        return { ...library, watched, progress };
+      };
+      if (!account) {
+        await guestChange(apply, ['watched', 'progress']);
+        return guestLibrary;
+      }
+      await post('/api/account/mark-episodes', { accountId: account.id, item, episodes: unique });
+      return apply;
+    });
+  }
+
   async function importLibrary(incoming: Partial<Library>, options?: { clearGuest?: boolean }) {
     const owner = sessionRef.current.account;
     if (owner) {
@@ -1147,13 +1177,14 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
         folders: { ...(current.folders ?? {}) },
         preferences: { ...current.preferences },
       };
+      const forbiddenKeys = new Set(['__proto__', 'constructor', 'prototype']);
       for (const kind of kinds) {
         const bucket = incoming[kind];
         if (!bucket || typeof bucket !== 'object') continue;
         const target = next[kind] as Record<string, { updated?: number; added?: number }>;
         for (const [key, val] of Object.entries(bucket as Record<string, { updated?: number; added?: number }>)) {
-          if (!val || typeof val !== 'object') { skipped++; continue; }
-          const existing = target[key];
+          if (forbiddenKeys.has(key) || !val || typeof val !== 'object') { skipped++; continue; }
+          const existing = Object.hasOwn(target, key) ? target[key] : undefined;
           const inTs = Number(val.updated ?? val.added ?? 0);
           const curTs = Number(existing?.updated ?? existing?.added ?? 0);
           if (existing && inTs <= curTs) { skipped++; continue; }
@@ -1163,7 +1194,8 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
       }
       if (incoming.preferences && typeof incoming.preferences === 'object') {
         for (const [k, v] of Object.entries(incoming.preferences)) {
-          if ((next.preferences as Record<string, unknown>)[k] === undefined && v !== undefined) {
+          if (forbiddenKeys.has(k)) continue;
+          if (!Object.hasOwn(next.preferences, k) && v !== undefined) {
             (next.preferences as Record<string, unknown>)[k] = v;
             totalImported++;
           }
@@ -1179,7 +1211,7 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
 
   const isPending = (key: string) => pending.includes(key);
   return {
-    ...session, ready, state, isPending, completing, problems, error, refresh, toggleSaved, toggleWatched, rate, setStatus, setComicStatus, setPreference,
+    ...session, ready, state, isPending, completing, problems, error, refresh, toggleSaved, toggleWatched, markEpisodesWatched, rate, setStatus, setComicStatus, setPreference,
     recordReading, removeReading, recordProgress, recordHistory, removeHistory, clearHistory,
     markNotification, markAllNotificationsRead,
     createFolder, renameFolder, deleteFolder, toggleFolderItem,

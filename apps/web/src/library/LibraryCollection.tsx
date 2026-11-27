@@ -6,8 +6,8 @@ import {
   type Comic, type Details, type Title,
 } from '../catalog';
 import { InputField, ResultsSummary, SelectField } from '../Catalogue';
-import { ActionLink, Artwork, Icon, MediaCard, Shelf } from '../components';
-import { ComicCard, readerHref } from '../Comics';
+import { ActionLink, Artwork, Icon, MediaCard, Shelf, tmdbImageSet, tmdbImageSize } from '../components';
+import { ComicCard, readerHref } from '../ComicCard';
 import { EmptyState } from '../EmptyState';
 import {
   effectiveWatchStatus, progressPercent, readingStatuses, resumeEntries, resumeFor, savedRating, titleCoverage,
@@ -88,6 +88,7 @@ function StatusPillPopover({
                 key={option}
                 type="button"
                 className={`af-status-menu-item ${option === status ? 'is-selected' : ''}`}
+                aria-pressed={option === status}
                 onClick={() => {
                   setOpen(false);
                   if (option !== status) onSelect(option);
@@ -150,6 +151,7 @@ function CardQuickMenu({
                       key={option}
                       type="button"
                       className={`af-card-menu-pill is-${option} ${option === status ? 'is-selected' : ''}`}
+                      aria-pressed={option === status}
                       onClick={() => {
                         setOpen(false);
                         if (option !== status) onChangeStatus(option);
@@ -173,6 +175,8 @@ function CardQuickMenu({
                       key={val}
                       type="button"
                       className={`af-score-btn ${score === val ? 'is-selected' : ''}`}
+                      aria-pressed={score === val}
+                      aria-label={`Rate ${val} out of 10`}
                       onClick={() => {
                         setOpen(false);
                         void controls.rate(item, score === val ? 0 : val);
@@ -260,6 +264,7 @@ export function LibraryCollection({
   const [viewMode, setViewMode] = useState<'grid' | 'list'>(readViewMode);
   const [saving, setSaving] = useState<string[]>([]);
   const [problem, setProblem] = useState('');
+  const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
   const [completionError, setCompletionError] = useState<Record<string, string>>({});
   const formRef = useRef<HTMLFormElement>(null);
   const searchTimer = useRef<number | undefined>(undefined);
@@ -296,6 +301,8 @@ export function LibraryCollection({
     const afterVal = next.get('after'), beforeVal = next.get('before');
     if (afterVal && beforeVal && afterVal > beforeVal) {
       setProblem('The first added date must come before the last added date.');
+      setMoreFiltersOpen(true);
+      requestAnimationFrame(() => formRef.current?.querySelector<HTMLInputElement>('[name=after]')?.focus());
       return;
     }
     setProblem('');
@@ -307,7 +314,7 @@ export function LibraryCollection({
   const statusOptions = useMemo(() => statusOrder.map(value => ({ value, label: labels[value] })), [labels]);
   const allSaved = Object.values(library.saved);
   const saved: SavedTitle[] = mode === 'reading' ? allSaved.filter(isComic) : allSaved.filter(isVideo);
-  const folders = library.folders ?? {};
+  const folders = useMemo(() => library.folders ?? {}, [library.folders]);
   const lookup = (name: string) => filters.get(name) || '';
   const activeStatus = lookup('status');
   const activeFolderId = lookup('folder');
@@ -392,8 +399,18 @@ export function LibraryCollection({
   const showActiveQueue = !activeFolderId && (!activeStatus || activeStatus === 'watching');
   const allSavedKeys = useMemo(() => new Set(allSaved.map(item => item.key)), [allSaved]);
 
-  const foldersForItem = (itemKey: string) =>
-    Object.values(folders).filter(folder => folder.items.includes(itemKey));
+  const foldersByItem = useMemo(() => {
+    const index = new Map<string, (typeof folders)[string][]>();
+    for (const folder of Object.values(folders)) {
+      for (const key of folder.items) {
+        let list = index.get(key);
+        if (!list) { list = []; index.set(key, list); }
+        list.push(folder);
+      }
+    }
+    return index;
+  }, [folders]);
+  const foldersForItem = (itemKey: string) => foldersByItem.get(itemKey) ?? [];
 
   if (!saved.length && !resumeList.length && !readingList.length && !Object.keys(folders).length) {
     return (
@@ -559,11 +576,11 @@ export function LibraryCollection({
             <SelectField label="Type" name="type" value={type} empty="All titles" options={[['movie', 'Movies'], ['tv', 'TV Shows'], ['anime', 'Anime']]} onChange={onSelectFilter('type')} />
             <SelectField label="Genre" name="genre" value={genre} empty="All genres" options={genreNames.map(v => [v, v])} onChange={onSelectFilter('genre')} />
             <SelectField label="Sort by" name="sort" value={sort || 'recent'} options={videoSorting} onChange={onSelectFilter('sort')} />
-            <FilterPopover activeCount={moreCount}>
+            <FilterPopover activeCount={moreCount} open={moreFiltersOpen} onOpenChange={setMoreFiltersOpen}>
               <SelectField label="Personal rating" name="rating" value={rating} empty="Any rating" options={ratingFilters} onChange={onSelectFilter('rating')} />
               <SelectField label="Progress" name="coverage" value={coverage} empty="Any progress" options={progression} onChange={onSelectFilter('coverage')} />
               <InputField label="Added from" type="date" name="after" defaultValue={after} aria-invalid={Boolean(problem)} aria-describedby={problem ? 'library-error' : undefined} />
-              <InputField label="Added through" type="date" name="before" defaultValue={before} />
+              <InputField label="Added through" type="date" name="before" defaultValue={before} aria-invalid={Boolean(problem)} aria-describedby={problem ? 'library-error' : undefined} />
             </FilterPopover>
           </>
         ) : (
@@ -619,14 +636,21 @@ export function LibraryCollection({
             return (
               <article className="af-lib-card" key={item.key}>
                 <div className="af-lib-poster-wrap">
-                  <a className="af-lib-card-link" href={libraryItemHref(item)}>
+                  <a className="af-lib-card-link" href={libraryItemHref(item)} tabIndex={-1} aria-hidden="true">
                     <span className="af-poster">
-                      <Artwork src={poster} loading="lazy" decoding="async" fallback={<Icon name={item.type === 'comic' ? 'book' : 'film'} />} />
-                      {pct > 0 && pct < 100 && (
-                        <progress className="af-progress af-card-progress" max={100} value={pct} aria-label={`${item.title} ${pct}% watched`} />
-                      )}
+                      <Artwork
+                        src={item.type === 'comic' ? poster : tmdbImageSize(poster, 'w342')}
+                        srcSet={item.type === 'comic' ? undefined : tmdbImageSet(poster, [185, 342, 500])}
+                        sizes="(max-width: 640px) 44vw, 190px"
+                        loading="lazy"
+                        decoding="async"
+                        fallback={<Icon name={item.type === 'comic' ? 'book' : 'film'} />}
+                      />
                     </span>
                   </a>
+                  {pct > 0 && pct < 100 && (
+                    <progress className="af-progress af-card-progress" max={100} value={pct} aria-label={`${item.title} ${pct}% watched`} />
+                  )}
 
                   {canEditStatus ? (
                     <StatusPillPopover
@@ -645,8 +669,10 @@ export function LibraryCollection({
 
                   <div className="af-lib-poster-right">
                     {score > 0 && (
-                      <span className="af-poster-rating-pill" aria-label={`Rated ${score} out of 10`}>
+                      <span className="af-poster-rating-pill">
+                        <span className="sr-only">Rated </span>
                         <span aria-hidden="true">★</span> {score}
+                        <span className="sr-only"> out of 10</span>
                       </span>
                     )}
                     <CardQuickMenu
@@ -668,6 +694,7 @@ export function LibraryCollection({
                     {metaLine}
                     {itemFolders.length > 0 && (
                       <span className="af-card-folder-dots" title={itemFolders.map(f => f.name).join(', ')}>
+                        <span className="sr-only">Folders: {itemFolders.map(f => f.name).join(', ')}</span>
                         {itemFolders.slice(0, 3).map(f => (
                           <span key={f.id} className={`af-folder-dot is-${f.color}`} aria-hidden="true" />
                         ))}
@@ -700,7 +727,13 @@ export function LibraryCollection({
             return (
               <article className="af-lib-row" role="listitem" key={item.key}>
                 <a className="af-lib-row-art" href={libraryItemHref(item)} tabIndex={-1} aria-hidden="true">
-                  <Artwork src={poster} loading="lazy" fallback={<Icon name={item.type === 'comic' ? 'book' : 'film'} />} />
+                  <Artwork
+                    src={item.type === 'comic' ? poster : tmdbImageSize(poster, 'w154')}
+                    srcSet={item.type === 'comic' ? undefined : tmdbImageSet(poster, [154, 342])}
+                    sizes="64px"
+                    loading="lazy"
+                    fallback={<Icon name={item.type === 'comic' ? 'book' : 'film'} />}
+                  />
                 </a>
                 <div className="af-lib-row-main">
                   <div className="af-lib-row-title-wrap">

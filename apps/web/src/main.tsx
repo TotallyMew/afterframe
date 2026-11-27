@@ -126,8 +126,14 @@ function restoreRoute(locationKey: string, focusOnEntry: boolean) {
   const restore = () => {
     if (view) {
       const wanted = view.focus;
-      const target = wanted && Array.from(document.querySelectorAll<HTMLElement>('a[href], button[aria-label]'))
-        .find(node => node.getClientRects().length && (node.getAttribute('href') === wanted || node.getAttribute('aria-label') === wanted));
+      let target: HTMLElement | null = null;
+      if (wanted) {
+        const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function' ? CSS.escape(wanted) : wanted.replace(/["\\]/g, '\\$&');
+        const candidates = document.querySelectorAll<HTMLElement>(`a[href="${escaped}"], button[aria-label="${escaped}"]`);
+        for (const node of candidates) {
+          if (node.getClientRects().length) { target = node; break; }
+        }
+      }
       if (target && (view.y === 0 || document.documentElement.scrollHeight >= view.y + innerHeight - 1)) {
         target.focus({ preventScroll: true });
         window.scrollTo(0, view.y);
@@ -146,14 +152,25 @@ function restoreRoute(locationKey: string, focusOnEntry: boolean) {
   };
   window.scrollTo(0, 0);
   if (restore()) return;
-  const observer = new MutationObserver(() => { if (restore()) controller.abort(); });
+  let rafId = 0;
+  const observer = new MutationObserver(() => {
+    if (rafId) return;
+    rafId = requestAnimationFrame(() => {
+      rafId = 0;
+      if (restore()) controller.abort();
+    });
+  });
   observer.observe(main, { childList: true, subtree: true });
   const timeout = window.setTimeout(() => {
     if (view) window.scrollTo(0, view.y);
     focusHeading();
     controller.abort();
-  }, 31_000);
-  controller.signal.addEventListener('abort', () => { observer.disconnect(); clearTimeout(timeout); }, { once: true });
+  }, 6_000);
+  controller.signal.addEventListener('abort', () => {
+    observer.disconnect();
+    if (rafId) cancelAnimationFrame(rafId);
+    clearTimeout(timeout);
+  }, { once: true });
   for (const event of ['pointerdown', 'keydown', 'wheel', 'touchstart']) {
     window.addEventListener(event, () => controller.abort(), { once: true, passive: true, signal: controller.signal });
   }
@@ -260,7 +277,11 @@ function AppShell() {
     </main>
     {!reader && <Footer onOpenShortcuts={() => setShortcutsOpen(true)} />}
     {!reader && !playerRoute && <MobileNav route={route} />}
-    <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+    <ShortcutsDialog
+      open={shortcutsOpen}
+      onOpenChange={setShortcutsOpen}
+      singleKeyShortcuts={controls.library.preferences.singleKeyShortcuts !== false}
+    />
   </div></AccountProvider></SettingsProvider></ToastProvider>;
 }
 

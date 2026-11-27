@@ -6,7 +6,7 @@ export async function malRating(type, id, strict = false) {
   if (!clientId || !['anime', 'manga'].includes(type) || !/^[1-9]\d{0,9}$/.test(String(id))) return null;
   return cacheMetadata(`mal:${type}:${id}`, 24 * 3600000, async () => {
     const response = await fetch(`https://api.myanimelist.net/v2/${type}/${id}?fields=mean`, {
-      headers: { 'X-MAL-CLIENT-ID': clientId }, signal: AbortSignal.timeout(4500),
+      headers: { 'X-MAL-CLIENT-ID': clientId }, redirect: 'error', signal: AbortSignal.timeout(4500),
     });
     if (!response.ok) {
       await response.body?.cancel();

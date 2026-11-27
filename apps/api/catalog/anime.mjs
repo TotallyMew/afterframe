@@ -17,23 +17,74 @@ const airingScheduleQuery = `query($id:Int!, $page:Int!) {
   }
 }`;
 let mapping;
+let mappingByAnilist;
+let mappingByTmdbShow;
+let mappingEtag = '';
 let mappingExpiry = 0;
 let mappingRequest;
 let dubsCache;
+let dubsEtag = '';
 let dubsExpiry = 0;
 let dubsRequest;
 let dubSchedulesCache;
+let dubFeedEtag = '';
+let dubSchedEtag = '';
 let dubSchedulesExpiry = 0;
 let dubSchedulesRequest;
+
+function buildMappingIndexes(entries) {
+  const byAnilist = new Map();
+  const byTmdbShow = new Map();
+  for (const [descriptor, rules] of entries) {
+    const source = descriptor.match(/^tmdb_(show|movie):([1-9]\d*)(?::s(\d+))?$/);
+    if (!source) continue;
+    if (source[1] === 'show' && source[3]) {
+      const showId = source[2];
+      const sNum = Number(source[3]);
+      if (Number.isSafeInteger(sNum) && sNum >= 1) {
+        let list = byTmdbShow.get(showId);
+        if (!list) { list = []; byTmdbShow.set(showId, list); }
+        list.push([sNum, rules]);
+      }
+    }
+    const vSeasons = source[1] === 'show' && source[3] === '1' ? virtualSeasonsFromTargets(rules) : null;
+    for (const [target, epRules] of Object.entries(rules || {})) {
+      const id = Number(target.match(/^anilist:([1-9]\d*)$/)?.[1]);
+      if (!Number.isSafeInteger(id) || id < 1) continue;
+      const catalog = `${source[1] === 'show' ? 'tv' : 'movie'}/${source[2]}`;
+      let season = source[3] ? Number(source[3]) : null;
+      if (vSeasons && epRules && typeof epRules === 'object') {
+        const starts = Object.keys(epRules).map(range).filter(Boolean).map(entry => entry.start);
+        const minStart = starts.length ? Math.min(...starts) : null;
+        const owner = minStart != null ? vSeasons.find(entry => minStart >= entry.start && minStart <= entry.end) : null;
+        if (owner) season = owner.season;
+      }
+      const existing = byAnilist.get(id);
+      if (existing === undefined) byAnilist.set(id, { catalog, season });
+      else if (existing && existing.catalog !== catalog) byAnilist.set(id, null);
+      else if (existing && existing.season !== season && season !== null) {
+        byAnilist.set(id, { catalog, season: existing.season == null ? season : Math.min(existing.season, season) });
+      }
+    }
+  }
+  return { byAnilist, byTmdbShow };
+}
 
 export async function animeDubInfo() {
   if (dubsCache && Date.now() < dubsExpiry) return dubsCache;
   dubsRequest ??= (async () => {
-    const response = await fetch(dubsUrl, { signal: AbortSignal.timeout(10_000) });
+    const headers = dubsEtag && dubsCache ? { 'if-none-match': dubsEtag } : {};
+    const response = await fetch(dubsUrl, { headers, redirect: 'error', signal: AbortSignal.timeout(10_000) });
+    if (response.status === 304 && dubsCache) {
+      await response.body?.cancel();
+      dubsExpiry = Date.now() + day;
+      return dubsCache;
+    }
     if (!response.ok) {
       await response.body?.cancel();
       throw new Error('Anime dub metadata is temporarily unavailable.');
     }
+    dubsEtag = response.headers.get('etag') || '';
     const data = await response.json();
     const toIdSet = list => new Set((Array.isArray(list) ? list : []).map(Number).filter(id => Number.isSafeInteger(id) && id > 0));
     const dubbed = toIdSet(data?.dubbed);
@@ -54,13 +105,20 @@ export async function animeDubSchedules() {
   if (dubSchedulesCache && Date.now() < dubSchedulesExpiry) return dubSchedulesCache;
   dubSchedulesRequest ??= (async () => {
     const [feedRes, schedRes] = await Promise.allSettled([
-      fetch(dubFeedUrl, { signal: AbortSignal.timeout(10_000) }),
-      fetch(dubScheduleUrl, { signal: AbortSignal.timeout(10_000) }),
+      fetch(dubFeedUrl, { headers: dubFeedEtag && dubSchedulesCache ? { 'if-none-match': dubFeedEtag } : {}, redirect: 'error', signal: AbortSignal.timeout(10_000) }),
+      fetch(dubScheduleUrl, { headers: dubSchedEtag && dubSchedulesCache ? { 'if-none-match': dubSchedEtag } : {}, redirect: 'error', signal: AbortSignal.timeout(10_000) }),
     ]);
-    const feedByAnilist = new Map();
-    const feedByMal = new Map();
-    const schedByAnilist = new Map();
-    const schedByMal = new Map();
+    const feedUnchanged = feedRes.status === 'fulfilled' && feedRes.value.status === 304 && Boolean(dubSchedulesCache);
+    const schedUnchanged = schedRes.status === 'fulfilled' && schedRes.value.status === 304 && Boolean(dubSchedulesCache);
+    if (feedUnchanged && schedUnchanged) {
+      await Promise.all([feedRes.value.body?.cancel(), schedRes.value.body?.cancel()]);
+      dubSchedulesExpiry = Date.now() + scheduleTtl;
+      return dubSchedulesCache;
+    }
+    const feedByAnilist = feedUnchanged ? dubSchedulesCache.feedByAnilist : new Map();
+    const feedByMal = feedUnchanged ? dubSchedulesCache.feedByMal : new Map();
+    const schedByAnilist = schedUnchanged ? dubSchedulesCache.schedByAnilist : new Map();
+    const schedByMal = schedUnchanged ? dubSchedulesCache.schedByMal : new Map();
 
     const recordFeed = (map, id, ep, airedAt) => {
       if (!Number.isSafeInteger(id) || id < 1 || !Number.isSafeInteger(ep) || ep < 1 || typeof airedAt !== 'string') return;
@@ -72,7 +130,10 @@ export async function animeDubSchedules() {
       if (!episodes.has(ep)) episodes.set(ep, airedAt);
     };
 
-    if (feedRes.status === 'fulfilled' && feedRes.value.ok) {
+    if (feedUnchanged) {
+      await feedRes.value.body?.cancel();
+    } else if (feedRes.status === 'fulfilled' && feedRes.value.ok) {
+      dubFeedEtag = feedRes.value.headers.get('etag') || '';
       const entries = await feedRes.value.json().catch(() => []);
       if (Array.isArray(entries)) {
         for (const entry of entries) {
@@ -87,7 +148,10 @@ export async function animeDubSchedules() {
       await feedRes.value.body?.cancel();
     }
 
-    if (schedRes.status === 'fulfilled' && schedRes.value.ok) {
+    if (schedUnchanged) {
+      await schedRes.value.body?.cancel();
+    } else if (schedRes.status === 'fulfilled' && schedRes.value.ok) {
+      dubSchedEtag = schedRes.value.headers.get('etag') || '';
       const entries = await schedRes.value.json().catch(() => []);
       if (Array.isArray(entries)) {
         for (const entry of entries) {
@@ -121,15 +185,25 @@ export async function animeDubSchedules() {
 async function animeMappings() {
   if (mapping && Date.now() < mappingExpiry) return mapping;
   mappingRequest ??= (async () => {
-    const response = await fetch(mappingUrl, { signal: AbortSignal.timeout(12000) });
+    const headers = mappingEtag && mapping ? { 'if-none-match': mappingEtag } : {};
+    const response = await fetch(mappingUrl, { headers, signal: AbortSignal.timeout(12000) });
+    if (response.status === 304 && mapping) {
+      await response.body?.cancel();
+      mappingExpiry = Date.now() + day;
+      return mapping;
+    }
     if (!response.ok) {
       await response.body?.cancel();
       throw new Error('Anime episode mappings are temporarily unavailable.');
     }
+    mappingEtag = response.headers.get('etag') || '';
     const data = await response.json();
     const entries = Object.entries(data).filter(([key]) => /^tmdb_(?:show|movie):/.test(key));
     if (!entries.length) throw new Error('Anime episode mappings are invalid.');
     mapping = new Map(entries);
+    const indexes = buildMappingIndexes(entries);
+    mappingByAnilist = indexes.byAnilist;
+    mappingByTmdbShow = indexes.byTmdbShow;
     mappingExpiry = Date.now() + day;
     return mapping;
   })().catch(error => {
@@ -340,30 +414,11 @@ export async function animeMalSource(type, id, season, episode) {
 }
 
 export async function animeCatalogTitles(ids) {
+  await animeMappings();
   const matches = new Map();
-  const requested = new Set(ids);
-  for (const [descriptor, rules] of await animeMappings()) {
-    const source = descriptor.match(/^tmdb_(show|movie):([1-9]\d*)(?::s(\d+))?$/);
-    if (!source) continue;
-    const vSeasons = source[1] === 'show' && source[3] === '1' ? virtualSeasonsFromTargets(rules) : null;
-    for (const [target, epRules] of Object.entries(rules || {})) {
-      const id = Number(target.match(/^anilist:([1-9]\d*)$/)?.[1]);
-      if (!requested.has(id)) continue;
-      const catalog = `${source[1] === 'show' ? 'tv' : 'movie'}/${source[2]}`;
-      let season = source[3] ? Number(source[3]) : null;
-      if (vSeasons && epRules && typeof epRules === 'object') {
-        const starts = Object.keys(epRules).map(range).filter(Boolean).map(entry => entry.start);
-        const minStart = starts.length ? Math.min(...starts) : null;
-        const owner = minStart != null ? vSeasons.find(entry => minStart >= entry.start && minStart <= entry.end) : null;
-        if (owner) season = owner.season;
-      }
-      const existing = matches.get(id);
-      if (existing === undefined) matches.set(id, { catalog, season });
-      else if (existing && existing.catalog !== catalog) matches.set(id, null);
-      else if (existing && existing.season !== season && season !== null) {
-        matches.set(id, { catalog, season: existing.season == null ? season : Math.min(existing.season, season) });
-      }
-    }
+  if (!mappingByAnilist) return matches;
+  for (const id of ids) {
+    if (mappingByAnilist.has(id)) matches.set(id, mappingByAnilist.get(id));
   }
   return matches;
 }
@@ -376,6 +431,7 @@ async function fetchAnilistSchedulePage(id, page) {
   const response = await fetch('https://graphql.anilist.co', {
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json' },
+    redirect: 'error',
     body: JSON.stringify({ query: airingScheduleQuery, variables: { id, page } }),
     signal: AbortSignal.timeout(5500),
   });
@@ -621,7 +677,9 @@ export async function enrichAnimeSeason(id, season, seasonData, now = new Date()
 
 const emnexOrigin = 'https://api.emnexanime.site';
 const emnexServerPattern = /^[A-Za-z0-9._-]{1,32}$/;
+const maxEmnexQueue = 16;
 let emnexQueue = Promise.resolve();
+let emnexQueueDepth = 0;
 let lastEmnexAt = 0;
 
 function emnexApiKey() {
@@ -633,12 +691,17 @@ export function hasEmnexKey() {
 }
 
 function fetchEmnex(url, key, timeoutMs = 12_000) {
+  if (emnexQueueDepth >= maxEmnexQueue) {
+    return Promise.reject(Object.assign(new Error('EmnexAnime queue is busy.'), { upstreamStatus: 503 }));
+  }
+  emnexQueueDepth++;
   const run = async () => {
     const wait = Math.max(0, 550 - (Date.now() - lastEmnexAt));
     if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
     lastEmnexAt = Date.now();
     let response = await fetch(url, {
       headers: { 'x-api-key': key, accept: 'application/json' },
+      redirect: 'error',
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (response.status === 429) {
@@ -647,12 +710,13 @@ function fetchEmnex(url, key, timeoutMs = 12_000) {
       lastEmnexAt = Date.now();
       response = await fetch(url, {
         headers: { 'x-api-key': key, accept: 'application/json' },
+        redirect: 'error',
         signal: AbortSignal.timeout(timeoutMs),
       });
     }
     return response;
   };
-  const next = emnexQueue.then(run, run);
+  const next = emnexQueue.then(run, run).finally(() => { emnexQueueDepth = Math.max(0, emnexQueueDepth - 1); });
   emnexQueue = next.then(() => undefined, () => undefined);
   return next;
 }
@@ -781,6 +845,10 @@ export async function emnexEpisode(animeId, episode, { type = 'sub', provider = 
 
 export async function enrichAnimeDetails(id, details, loadSeason, now = new Date()) {
   if (!details) return details;
+  const dubDataPromise = Promise.all([
+    animeDubInfo().catch(() => ({ dubbed: new Set(), incomplete: new Set() })),
+    animeDubSchedules().catch(() => ({ feedByAnilist: new Map(), feedByMal: new Map(), schedByAnilist: new Map(), schedByMal: new Map() })),
+  ]);
   const mappings = await animeMappings().catch(() => null);
   let working = details;
   let virtualSeasons = null;
@@ -822,10 +890,7 @@ export async function enrichAnimeDetails(id, details, loadSeason, now = new Date
 
   // Attach show-level dub availability & upcoming dub episode summary for DetailsPage.
   if (mappings) {
-    const [dubInfo, dubSchedules] = await Promise.all([
-      animeDubInfo().catch(() => ({ dubbed: new Set(), incomplete: new Set() })),
-      animeDubSchedules().catch(() => ({ feedByAnilist: new Map(), feedByMal: new Map(), schedByAnilist: new Map(), schedByMal: new Map() })),
-    ]);
+    const [dubInfo, dubSchedules] = await dubDataPromise;
     let showHasDub = false;
     let nextDubEpisode = null;
     const checkTargets = (targets, seasonNum, offset = 0) => {
@@ -880,11 +945,8 @@ export async function enrichAnimeDetails(id, details, loadSeason, now = new Date
         }
       }
     };
-    const prefix = `tmdb_show:${id}:s`;
-    for (const [key, targets] of mappings) {
-      if (!key.startsWith(prefix)) continue;
-      const sNum = Number(key.slice(prefix.length));
-      if (!Number.isSafeInteger(sNum) || sNum < 1) continue;
+    const showSeasons = mappingByTmdbShow?.get(String(id)) || [];
+    for (const [sNum, targets] of showSeasons) {
       checkTargets(targets, sNum);
     }
     if (showHasDub) {

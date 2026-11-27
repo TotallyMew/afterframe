@@ -4,7 +4,7 @@ const nonSpaPrefixes = ['/api/', '/art/', '/assets/', '/icons/', '/stream/', '/c
 const nonSpaExact = new Set(['/manifest.webmanifest', '/sw.js']);
 
 export function normalizeRouteString(raw: string): string {
-  const trimmed = raw.replace(/^[#/]+/, '');
+  const trimmed = raw.replace(/^[#/\\]+/, '');
   if (!trimmed || trimmed === 'home') return 'home';
   const [rawPath, rawQuery = ''] = trimmed.split('?', 2);
   const path = rawPath.replace(/\/+$/, '') || 'home';

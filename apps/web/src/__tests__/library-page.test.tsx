@@ -56,6 +56,7 @@ function makeControls(overrides: Partial<LibraryControls> = {}): LibraryControls
     refresh: async () => {},
     toggleSaved: async () => true,
     toggleWatched: async () => {},
+    markEpisodesWatched: async () => true,
     rate: async () => true,
     setStatus: async () => true,
     setComicStatus: () => undefined,
@@ -118,6 +119,20 @@ describe('Reworked Library stats, folders, views, ratings, and history', () => {
     expect(reading.totalEntries).toBe(1);
     expect(reading.counts.watching).toBe(1);
     expect(reading.meanScore).toBe(10);
+  });
+
+  it('renders LibraryStats distribution bar as role="img" without nested interactive buttons', () => {
+    const controls = makeControls();
+    const { container } = render(
+      <ToastProvider>
+        <ConfirmProvider>
+          <LibraryPage path="watchlist" query="" controls={controls} />
+        </ConfirmProvider>
+      </ToastProvider>,
+    );
+    const bar = container.querySelector('.af-lib-bar[role="img"]');
+    expect(bar).not.toBeNull();
+    expect(bar?.querySelector('button')).toBeNull();
   });
 
   it('supports custom folders, status filtering, and Grid/List toggle in Library', () => {

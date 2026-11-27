@@ -1,4 +1,4 @@
-import { fetchWithRetry } from '../http-client.mjs';
+import { assertPublicHost, fetchWithRetry, readTextWithLimit } from '../http-client.mjs';
 
 const entities = { amp: '&', apos: "'", quot: '"', lt: '<', gt: '>', nbsp: ' ' };
 
@@ -38,7 +38,9 @@ export function seriesQueries(item, preferred = []) {
 }
 
 export async function sourceHtml(url, provider) {
-  const response = await fetchWithRetry(url, {
+  const parsed = new URL(url);
+  await assertPublicHost(parsed.hostname);
+  const response = await fetchWithRetry(parsed, {
     headers: { Accept: 'text/html', 'User-Agent': 'Afterframe/1.0' },
     redirect: 'error',
   }, { timeoutMs: 7000, retries: 1, hostKey: provider, circuitThreshold: 4, circuitCooldownMs: 60_000 });
@@ -46,5 +48,5 @@ export async function sourceHtml(url, provider) {
     await response.body?.cancel();
     throw new Error(`${provider} is temporarily unavailable.`);
   }
-  return response.text();
+  return readTextWithLimit(response, 3 * 1024 * 1024);
 }

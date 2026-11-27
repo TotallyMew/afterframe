@@ -1,7 +1,7 @@
 import { Dialog } from '@base-ui/react/dialog';
 import { preferenceDefaults, type PlaybackPosition, type SkipSegment } from '@afterframe/shared/playback';
 import type { SubtitleCue, SubtitleTrack } from '@afterframe/shared/subtitles';
-import { useState, type CSSProperties, type RefObject } from 'react';
+import { memo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
 import type { EpisodePosition } from '../catalog';
 import { Icon } from '../components';
 import type { LibraryControls } from '../library';
@@ -10,7 +10,7 @@ import { formatClock } from './route';
 import { SubtitleMenu, type CaptionStyle } from './SubtitleMenu';
 import { qualityOptions, speedOptions, type ActiveMedia, type EmnexAvailableTypes, type EmnexServerOption, type VideoWithAudioTracks } from './types';
 
-export function PlayerControls({
+export const PlayerControls = memo(function PlayerControls({
   media,
   useNativeVideo,
   isEmnex,
@@ -159,6 +159,23 @@ export function PlayerControls({
 }) {
   const [audioSheetOpen, setAudioSheetOpen] = useState(false);
   const [settingsSheetOpen, setSettingsSheetOpen] = useState(false);
+  const seekHoverRafRef = useRef(0);
+  const seekHoverClientXRef = useRef(0);
+
+  const handleSeekKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (!(position.duration > 0)) return;
+    if (event.key === 'PageUp' || event.key === 'PageDown') {
+      event.preventDefault();
+      const delta = event.key === 'PageUp' ? 30 : -30;
+      onSeekChange(Math.max(0, Math.min(position.duration, displayTime + delta)));
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      onSeekChange(0);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      onSeekChange(position.duration);
+    }
+  };
 
   const prefs = controls.library.preferences;
   const skipIntro = prefs.intro ?? preferenceDefaults.intro;
@@ -311,7 +328,7 @@ export function PlayerControls({
         type="range"
         min={0}
         max={position.duration || 1}
-        step={0.1}
+        step={5}
         value={displayTime}
         disabled={!(position.duration > 0)}
         aria-label="Seek"
@@ -321,8 +338,21 @@ export function PlayerControls({
         style={{ '--played': playedPct, '--buffered-track': bufferedCss || 'none' } as CSSProperties}
         onPointerDown={() => { onScrubStart(); onRevealControls(); }}
         onChange={event => onSeekChange(Number(event.currentTarget.value))}
-        onPointerMove={event => { if (event.pointerType !== 'touch') onSeekHover(event.clientX); }}
-        onPointerLeave={onSeekPreviewClear}
+        onKeyDown={handleSeekKeyDown}
+        onPointerMove={event => {
+          if (event.pointerType === 'touch') return;
+          seekHoverClientXRef.current = event.clientX;
+          if (!seekHoverRafRef.current) {
+            seekHoverRafRef.current = requestAnimationFrame(() => {
+              seekHoverRafRef.current = 0;
+              onSeekHover(seekHoverClientXRef.current);
+            });
+          }
+        }}
+        onPointerLeave={() => {
+          if (seekHoverRafRef.current) { cancelAnimationFrame(seekHoverRafRef.current); seekHoverRafRef.current = 0; }
+          onSeekPreviewClear();
+        }}
         onBlur={onSeekPreviewClear}
       />
     </div>
@@ -352,7 +382,7 @@ export function PlayerControls({
       </span>
 
       <div className="af-player-utilities">
-        <div className="af-player-inline-volume" aria-label="Volume controls">
+        <div className="af-player-inline-volume" role="group" aria-label="Volume controls">
           <button
             type="button"
             className="af-player-btn af-player-utility"
@@ -492,4 +522,4 @@ export function PlayerControls({
       </div>
     </div>
   </div>;
-}
+});

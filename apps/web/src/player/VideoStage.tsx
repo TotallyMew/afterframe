@@ -1529,12 +1529,47 @@ export function VideoStage({
   }, [media.episode, preferredSubtitleLang, chooseSubtitleTrack]);
 
   // Keyboard shortcuts (Space, Left/Right, J/L, Up/Down, M, C, S, T, E, F, Shift+N/P, 0-9)
+  const singleKeyEnabled = controls.library.preferences.singleKeyShortcuts !== false;
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
       if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
       if (event.target instanceof HTMLElement && event.target.closest('button, a, input, textarea, select, summary, iframe, [contenteditable]')) return;
       const key = event.key.toLowerCase();
+      if (key === ' ' && positionRef.current.duration > 0) {
+        event.preventDefault();
+        const playing = !(positionRef.current.paused || endedRef.current);
+        sendCommand(playing ? 'pause' : 'play');
+        showFeedback(playing ? 'Paused' : 'Playing');
+        return;
+      }
+      if ((key === 'arrowleft' || key === 'arrowright') && positionRef.current.duration > 0) {
+        event.preventDefault();
+        const delta = key === 'arrowleft' ? -10 : 10;
+        jumpPlayback(delta);
+        showFeedback(delta < 0 ? '−10s' : '+10s');
+        return;
+      }
+      if ((key === 'arrowup' || key === 'arrowdown') && positionRef.current.duration > 0) {
+        event.preventDefault();
+        const delta = key === 'arrowup' ? 0.1 : -0.1;
+        const base = mutedRef.current ? 0 : volumeRef.current;
+        const nextVol = Math.max(0, Math.min(1, Math.round((base + delta) * 20) / 20));
+        updateAudio(nextVol, nextVol === 0);
+        showFeedback(nextVol === 0 ? 'Muted' : `Volume ${Math.round(nextVol * 100)}%`);
+        return;
+      }
+      if (event.shiftKey && key === 'n' && adjacentRef.current.next) {
+        event.preventDefault();
+        onNavigateEpisodeRef.current(adjacentRef.current.next);
+        return;
+      }
+      if (event.shiftKey && key === 'p' && adjacentRef.current.previous) {
+        event.preventDefault();
+        onNavigateEpisodeRef.current(adjacentRef.current.previous);
+        return;
+      }
+      if (!singleKeyEnabled) return;
       if (key === 's' && activeSegment) {
         event.preventDefault();
         skipSegment(activeSegment);
@@ -1569,29 +1604,11 @@ export function VideoStage({
           void loadEmbedSubtitles(preferredSubtitleLang || 'English');
           showFeedback('Subtitles on');
         }
-      } else if (event.shiftKey && key === 'n' && adjacentRef.current.next) {
+      } else if ((key === 'j' || key === 'l') && positionRef.current.duration > 0) {
         event.preventDefault();
-        onNavigateEpisodeRef.current(adjacentRef.current.next);
-      } else if (event.shiftKey && key === 'p' && adjacentRef.current.previous) {
-        event.preventDefault();
-        onNavigateEpisodeRef.current(adjacentRef.current.previous);
-      } else if (key === ' ' && positionRef.current.duration > 0) {
-        event.preventDefault();
-        const playing = !(positionRef.current.paused || endedRef.current);
-        sendCommand(playing ? 'pause' : 'play');
-        showFeedback(playing ? 'Paused' : 'Playing');
-      } else if ((key === 'arrowleft' || key === 'arrowright' || key === 'j' || key === 'l') && positionRef.current.duration > 0) {
-        event.preventDefault();
-        const delta = key === 'arrowleft' || key === 'j' ? -10 : 10;
+        const delta = key === 'j' ? -10 : 10;
         jumpPlayback(delta);
         showFeedback(delta < 0 ? '−10s' : '+10s');
-      } else if ((key === 'arrowup' || key === 'arrowdown') && positionRef.current.duration > 0) {
-        event.preventDefault();
-        const delta = key === 'arrowup' ? 0.1 : -0.1;
-        const base = mutedRef.current ? 0 : volumeRef.current;
-        const nextVol = Math.max(0, Math.min(1, Math.round((base + delta) * 20) / 20));
-        updateAudio(nextVol, nextVol === 0);
-        showFeedback(nextVol === 0 ? 'Muted' : `Volume ${Math.round(nextVol * 100)}%`);
       } else if (/^[0-9]$/.test(key) && positionRef.current.duration > 0) {
         event.preventDefault();
         const target = (Number(key) / 10) * positionRef.current.duration;
@@ -1601,7 +1618,7 @@ export function VideoStage({
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [activeSegment, skipSegment, toggleFullscreen, onToggleTheatre, hasEpisodesDrawer, onToggleEpisodes, updateAudio, sendCommand, jumpPlayback, showFeedback, activeCues, nativeCaptionsOn, media.embed, media.nativeMedia, loadEmbedSubtitles, preferredSubtitleLang]);
+  }, [singleKeyEnabled, activeSegment, skipSegment, toggleFullscreen, onToggleTheatre, hasEpisodesDrawer, onToggleEpisodes, updateAudio, sendCommand, jumpPlayback, showFeedback, activeCues, nativeCaptionsOn, media.embed, media.nativeMedia, loadEmbedSubtitles, preferredSubtitleLang]);
 
   // Commit seek if pointer is released anywhere while dragging
   useEffect(() => {
@@ -1704,9 +1721,48 @@ export function VideoStage({
 
   const displayTime = scrubTime !== null ? scrubTime : position.currentTime;
   const captionLookupTime = position.currentTime - captionStyle.offset;
-  const activeCaptionText = activeCues
-    ? activeCues.cues.filter(c => captionLookupTime >= c.start && captionLookupTime < c.end).map(c => c.text).join('\n')
-    : '';
+  const activeCaptionText = (() => {
+    const cues = activeCues?.cues;
+    if (!cues?.length) return '';
+    // Binary search for the first cue whose end > captionLookupTime (cues are sorted by start time).
+    let low = 0;
+    let high = cues.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (cues[mid].start <= captionLookupTime) low = mid + 1;
+      else high = mid;
+    }
+    const matched: string[] = [];
+    for (let i = Math.max(0, low - 8); i < low; i++) {
+      const c = cues[i];
+      if (captionLookupTime >= c.start && captionLookupTime < c.end) matched.push(c.text);
+    }
+    return matched.join('\n');
+  })();
+  const lastRevealMoveRef = useRef(0);
+  const [liveAnnouncement, setLiveAnnouncement] = useState('');
+  const prevSegmentKeyRef = useRef('');
+  const prevCountdownActiveRef = useRef(false);
+  useEffect(() => {
+    const segKey = activeSegment ? `${activeSegment.kind}:${activeSegment.start}` : '';
+    if (segKey && segKey !== prevSegmentKeyRef.current) {
+      setLiveAnnouncement(`Skip ${segmentNames[activeSegment!.kind].toLowerCase()} available${singleKeyEnabled ? ', press S' : ''}`);
+    }
+    prevSegmentKeyRef.current = segKey;
+  }, [activeSegment, singleKeyEnabled]);
+  useEffect(() => {
+    const active = countdown !== null && Boolean(adjacent.next);
+    if (active && !prevCountdownActiveRef.current && adjacent.next) {
+      setLiveAnnouncement(`Up next: Episode ${adjacent.next.number} starting in ${countdown} seconds`);
+    }
+    prevCountdownActiveRef.current = active;
+  }, [countdown, adjacent.next]);
+  useEffect(() => {
+    if (actionFeedback?.label) setLiveAnnouncement(actionFeedback.label);
+  }, [actionFeedback]);
+  useEffect(() => {
+    if (undoSkip) setLiveAnnouncement(`Skipped ${segmentNames[undoSkip.kind].toLowerCase()}. Undo available.`);
+  }, [undoSkip]);
   const playedPct = position.duration > 0 ? `${(displayTime / position.duration) * 100}%` : '0%';
   const volumePct = `${Math.round(volume * 100)}%`;
   const titleText = displayEpisode?.title || displayItem.title;
@@ -1732,9 +1788,16 @@ export function VideoStage({
     <div
       ref={videoBoxRef}
       className={`af-video-box ${controlsActive ? 'controls-active' : ''} ${position.paused || ended ? 'is-paused' : ''} ${ended ? 'is-ended' : ''} ${hasPlayed ? 'has-played' : ''} ${autoplayBlocked ? 'is-autoplay-blocked' : ''}`}
-      onPointerMove={event => { if (event.pointerType !== 'touch') revealControls(); }}
+      onPointerMove={event => {
+        if (event.pointerType === 'touch') return;
+        const now = performance.now();
+        if (now - lastRevealMoveRef.current < 150) return;
+        lastRevealMoveRef.current = now;
+        revealControls();
+      }}
       onFocus={revealControls}
     >
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{liveAnnouncement}</p>
       {((!media.embed && media.nativeMedia) || isEmnex) && <video
         ref={videoRef}
         src={!media.embed ? nativeSrc : undefined}
@@ -1980,7 +2043,7 @@ export function VideoStage({
             {subTitleText && <p className="af-player-pause-desc">{subTitleText}</p>}
             {position.duration > 0 && <p className="af-player-remaining af-tabular">{formatClock(Math.max(0, position.duration - displayTime))} remaining</p>}
           </div>
-          {(position.duration > 0 || !media.embed) && <button
+          {(position.paused || ended || autoplayBlocked) && (position.duration > 0 || !media.embed) && <button
             type="button"
             className="af-pause-center-play"
             aria-label={ended ? 'Replay video' : 'Resume playback'}

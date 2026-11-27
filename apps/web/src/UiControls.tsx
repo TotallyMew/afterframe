@@ -130,23 +130,27 @@ export function AfSelect({
 export function FilterPopover({
   label = 'More filters',
   activeCount = 0,
+  open,
+  onOpenChange,
   children,
 }: {
   label?: string;
   activeCount?: number;
+  open?: boolean;
+  onOpenChange?: (next: boolean) => void;
   children: ReactNode;
 }) {
   const hostRef = useRef<HTMLSpanElement>(null);
   const titleId = useId();
   return (
     <span className="af-more-filters-wrap" ref={hostRef}>
-      <Popover.Root>
+      <Popover.Root open={open} onOpenChange={onOpenChange}>
         <Popover.Trigger className={`af-button af-secondary af-more-filters-trigger ${activeCount > 0 ? 'has-active' : ''}`}>
           <svg className="af-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="M4 6h16M7 12h10M10 18h4" />
           </svg>
           <span>{label}</span>
-          {activeCount > 0 && <span className="af-filter-badge" aria-label={`${activeCount} active`}>{activeCount}</span>}
+          {activeCount > 0 && <span className="af-filter-badge">{activeCount}<span className="sr-only"> active</span></span>}
           <svg className="af-filter-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <path d="m6 9 6 6 6-6" />
           </svg>
@@ -190,7 +194,7 @@ export function MobileFilterSheet({
           <path d="M4 6h16M7 12h10M10 18h4" />
         </svg>
         <span>{title}</span>
-        {activeCount > 0 && <span className="af-filter-badge" aria-label={`${activeCount} active`}>{activeCount}</span>}
+        {activeCount > 0 && <span className="af-filter-badge">{activeCount}<span className="sr-only"> active</span></span>}
       </Dialog.Trigger>
       <Dialog.Portal>
         <Dialog.Backdrop className="af-scrim af-sheet-scrim" />

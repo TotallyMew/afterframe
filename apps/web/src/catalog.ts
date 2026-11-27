@@ -284,6 +284,11 @@ export function writeBrowseCache<T>(key: string, data: T): void {
   } catch { /* Storage is optional; in-memory cache still holds the loaded pages. */ }
 }
 
+export function clearBrowseCache(): void {
+  browseCache.clear();
+  try { sessionStorage.removeItem(browseStorageKey); } catch { /* ignore */ }
+}
+
 export function rememberRoute(invoker: Element | null = null) {
   const focused = invoker ?? document.activeElement;
   const focus = focused instanceof HTMLAnchorElement ? focused.getAttribute('href') : focused?.getAttribute('aria-label');

@@ -7,6 +7,9 @@ let omdbKey = process.env.OMDB_API_KEY?.trim();
 const requests = new Map();
 const memory = new Map();
 const writes = new Map();
+const missingRatings = new Map();
+const missingRatingsLimit = 500;
+const missingRatingsTtl = 3 * 60_000;
 let schema;
 let quotaDay;
 let used = 0;
@@ -17,7 +20,8 @@ async function dbQuery(sql, values) {
   try {
     schema ??= pool.query(`CREATE TABLE IF NOT EXISTS afterframe_metadata (
       cache_key text PRIMARY KEY, payload jsonb NOT NULL, expires_at timestamptz NOT NULL
-    )`).catch(error => { schema = undefined; throw error; });
+    );
+    CREATE INDEX IF NOT EXISTS afterframe_metadata_expires ON afterframe_metadata (expires_at)`).catch(error => { schema = undefined; throw error; });
     await schema;
     return await pool.query(sql, values);
   } catch {
@@ -31,6 +35,7 @@ function writeMemory(key, payload, expires) {
   memory.delete(key);
   if (memory.size >= memoryLimit) memory.delete(memory.keys().next().value);
   memory.set(key, { payload, expires });
+  if (key.startsWith('imdb:') || key.startsWith('title:v2:')) missingRatings.clear();
 }
 
 export function peekMetadata(key) {
@@ -112,7 +117,7 @@ export async function imdbRating(id, strict = false) {
 function requestOmdb(key, id) {
   const url = new URL('https://www.omdbapi.com/');
   url.search = new URLSearchParams({ apikey: key, i: id }).toString();
-  return fetch(url, { signal: AbortSignal.timeout(4000) });
+  return fetch(url, { redirect: 'error', signal: AbortSignal.timeout(4000) });
 }
 
 export function hasOmdbKey() {
@@ -140,13 +145,19 @@ export async function validateOmdbKey(key) {
 
 export async function cachedRatings(keys) {
   const ratings = {};
+  const now = Date.now();
+  const missing = [];
   for (const key of keys) {
     const details = peekMetadata(`title:v2:${key}:`) || peekMetadata(`title:${key}:`) || peekMetadata(`basic:${key}:`);
     const id = details?.external_ids?.imdb_id || details?.imdb_id;
     const rating = peekMetadata(`imdb:${id}`);
-    if (rating) ratings[key.replace(':', '-')] = rating;
+    const cardKey = key.replace(':', '-');
+    if (rating) {
+      ratings[cardKey] = rating;
+    } else if ((missingRatings.get(key) || 0) <= now) {
+      missing.push(key);
+    }
   }
-  const missing = keys.filter(key => !ratings[key.replace(':', '-')]);
   if (!missing.length) return ratings;
   const result = await dbQuery(`SELECT regexp_replace(t.cache_key, '^(?:title:v2:|title:|basic:)|:$', '', 'g') AS title, r.payload
     FROM afterframe_metadata t JOIN afterframe_metadata r ON r.cache_key =
@@ -155,12 +166,24 @@ export async function cachedRatings(keys) {
     ORDER BY t.expires_at`,
   [missing.flatMap(key => [`title:v2:${key}:`, `title:${key}:`, `basic:${key}:`])]);
   for (const row of result?.rows || []) ratings[row.title.replace(':', '-')] = row.payload;
+  if (result) {
+    for (const key of missing) {
+      if (!ratings[key.replace(':', '-')]) {
+        if (missingRatings.size >= missingRatingsLimit) {
+          const oldest = missingRatings.keys().next().value;
+          if (oldest) missingRatings.delete(oldest);
+        }
+        missingRatings.set(key, now + missingRatingsTtl);
+      }
+    }
+  }
   return ratings;
 }
 
 export function refreshMetadataPeriodically(refreshTitle) {
   if (!pool) return () => {};
   const timer = setInterval(async () => {
+    await dbQuery("DELETE FROM afterframe_metadata WHERE expires_at < now() - interval '7 days'");
     const result = await dbQuery(`SELECT cache_key FROM afterframe_metadata
       WHERE (cache_key LIKE 'title:v2:%' OR cache_key LIKE 'imdb:%')
       AND expires_at <= now() AND expires_at >= $1

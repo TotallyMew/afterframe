@@ -80,6 +80,7 @@
 }
 
 ::selection { background: var(--af-selection); color: var(--af-canvas); }
+::placeholder { color: var(--af-secondary-ink); opacity: 1; }
 
 @media (max-width: 45rem) {
   :root { --af-bar-height: 3.8125rem; }

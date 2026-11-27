@@ -8,6 +8,8 @@ import { migrateAccounts } from './account-migrations.mjs';
 const sqliteSchema = `
   PRAGMA foreign_keys = ON;
   PRAGMA busy_timeout = 3000;
+  PRAGMA journal_mode = WAL;
+  PRAGMA synchronous = NORMAL;
   CREATE TABLE IF NOT EXISTS accounts (
     id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
     salt TEXT NOT NULL, password_hash TEXT NOT NULL
@@ -16,11 +18,14 @@ const sqliteSchema = `
     token_hash TEXT PRIMARY KEY, account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     expires INTEGER NOT NULL
   );
+  CREATE INDEX IF NOT EXISTS sessions_account ON sessions (account_id);
+  CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions (expires);
   CREATE TABLE IF NOT EXISTS library (
     account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
     kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
     PRIMARY KEY (account_id, kind, key)
   );
+  CREATE INDEX IF NOT EXISTS library_saved ON library (account_id) WHERE kind = 'saved';
   CREATE TABLE IF NOT EXISTS provider_credentials (
     provider TEXT PRIMARY KEY, credential TEXT NOT NULL
   );
@@ -43,6 +48,8 @@ const postgresSchema = `
     kind TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, sequence BIGINT GENERATED ALWAYS AS IDENTITY,
     PRIMARY KEY (account_id, kind, key)
   );
+  CREATE INDEX IF NOT EXISTS library_account_seq ON library (account_id, sequence);
+  CREATE INDEX IF NOT EXISTS library_saved ON library (account_id) WHERE kind = 'saved';
   CREATE TABLE IF NOT EXISTS provider_credentials (provider TEXT PRIMARY KEY, credential TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS recovery_codes (
     account_id INTEGER PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
@@ -98,7 +105,15 @@ function sqliteStorage(path) {
 }
 
 async function postgresStorage(connectionString) {
-  const pool = new pg.Pool({ connectionString, connectionTimeoutMillis: 5000, allowExitOnIdle: true });
+  const poolMax = Math.min(30, Math.max(2, Number(process.env.AFTERFRAME_PG_MAX) || 10));
+  const pool = new pg.Pool({
+    connectionString,
+    max: poolMax,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 5000,
+    statement_timeout: 10_000,
+    allowExitOnIdle: true,
+  });
   pool.on('error', error => console.error('Account database connection error:', error.code || error.name));
   const scope = new AsyncLocalStorage();
   const query = (sql, args) => (scope.getStore() || pool).query(sql, args);
@@ -150,6 +165,6 @@ export async function openAccountStorage() {
   if (process.env.AFTERFRAME_ACCOUNTS_DATABASE_URL) return postgresStorage(process.env.AFTERFRAME_ACCOUNTS_DATABASE_URL);
   if (process.env.AFTERFRAME_DB) return sqliteStorage(process.env.AFTERFRAME_DB);
   const directory = new URL('../../../afterframe/data/', import.meta.url);
-  mkdirSync(directory, { recursive: true });
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
   return sqliteStorage(fileURLToPath(new URL('accounts.sqlite', directory)));
 }

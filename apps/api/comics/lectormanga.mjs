@@ -57,11 +57,13 @@ export async function lectorPageList(item, chapterId) {
   const number = chapterId.slice('lector-'.length);
   return cacheMetadata(`comics:lector:pages:${slug}:${number}`, 10 * minute, async () => {
     const result = await sourceHtml(`${origin}/comics/${slug}/capitulo-${number}`, 'Lector Manga');
-    const images = [...result.matchAll(/<img\b[^>]*\bclass="[^"]*\breader-page-img\b[^"]*"[^>]*>/gi)].map(([tag]) => {
+    const images = [];
+    for (const [tag] of result.matchAll(/<img\b[^<>]{1,1000}>/gi)) {
+      if (!/\bclass="[^"]*\breader-page-img\b[^"]*"/i.test(tag)) continue;
       const url = URL.parse(tag.match(/\bsrc="([^"]+)"/i)?.[1] || '');
-      return url?.origin === 'https://media.lector-mangas.lat' && !url.username && !url.password && !url.search
-        && !url.hash && readerImagePath.test(url.pathname) ? url.href : null;
-    });
+      images.push(url?.origin === 'https://media.lector-mangas.lat' && !url.username && !url.password && !url.search
+        && !url.hash && readerImagePath.test(url.pathname) ? url.href : null);
+    }
     if (!images.length || images.some(url => !url)) throw new Error('Lector Manga pages are temporarily unavailable.');
     return images;
   });

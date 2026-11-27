@@ -111,8 +111,10 @@
 }
 
 .af-account-confirm h4 { font-weight: 650; }
+.af-account-confirm-field { display: grid; gap: var(--af-space-1); }
+.af-account-confirm-field label { font-size: var(--af-type-secondary); font-weight: 650; }
 .af-account-recovery output { overflow-wrap: anywhere; user-select: all; font-family: monospace; }
-.af-account-feedback[role=alert] { color: var(--af-selection); }
+.af-account-feedback[role=alert] { color: var(--af-danger); }
 
 .af-account-notice {
   position: fixed;

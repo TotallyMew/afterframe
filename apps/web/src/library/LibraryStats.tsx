@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { computeLibraryStats, readingStatuses, watchStatuses, type Library, type WatchStatus } from '../library';
 
 const statusOrder: readonly WatchStatus[] = ['watching', 'completed', 'hold', 'dropped', 'planned'];
@@ -23,12 +24,19 @@ export function LibraryStats({
   onSelectStatus: (status: WatchStatus | '') => void;
   onSelectType?: (type: '' | 'movie' | 'tv' | 'anime') => void;
 }) {
-  const overall = computeLibraryStats(library, mode, '');
+  const overall = useMemo(() => computeLibraryStats(library, mode, ''), [library, mode]);
+  const stats = useMemo(
+    () => (mediaType ? computeLibraryStats(library, mode, mediaType) : overall),
+    [library, mode, mediaType, overall],
+  );
   if (!overall.totalEntries && !overall.episodes && !overall.ratedCount) return null;
 
-  const stats = mediaType ? computeLibraryStats(library, mode, mediaType) : overall;
   const labels = mode === 'reading' ? readingStatuses : watchStatuses;
   const barTotal = Math.max(1, stats.totalEntries);
+  const barSummary = statusOrder
+    .filter(status => stats.counts[status] > 0)
+    .map(status => `${stats.counts[status]} ${labels[status]}`)
+    .join(', ');
 
   return (
     <section className="af-lib-stats" aria-label={mode === 'reading' ? 'Reading statistics' : 'Library statistics'}>
@@ -66,20 +74,22 @@ export function LibraryStats({
         </div>
       </div>
 
-      <div className={`af-lib-bar ${activeStatus ? 'has-selection' : ''}`} role="img" aria-label="Status distribution bar">
+      <div
+        className={`af-lib-bar ${activeStatus ? 'has-selection' : ''}`}
+        role="img"
+        aria-label={barSummary ? `Status distribution: ${barSummary}` : 'Status distribution bar'}
+      >
         {statusOrder.map(status => {
           const count = stats.counts[status];
           if (!count) return null;
           const pct = (count / barTotal) * 100;
           return (
-            <button
+            <span
               key={status}
-              type="button"
               className={`af-lib-bar-seg is-${status} ${activeStatus === status ? 'is-active' : ''}`}
               style={{ width: `${pct}%` }}
               title={`${labels[status]}: ${count}`}
-              aria-label={`Filter by ${labels[status]} (${count})`}
-              onClick={() => onSelectStatus(activeStatus === status ? '' : status)}
+              aria-hidden="true"
             />
           );
         })}

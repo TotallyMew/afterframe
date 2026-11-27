@@ -21,7 +21,7 @@ export interface PlaybackPosition {
 
 export const preferenceDefaults: Readonly<Record<
   'intro' | 'recap' | 'credits' | 'autoplay' | 'resume' | 'autoAddWatching' | 'volume' | 'subtitles' | 'blur' | 'hideSynopsis' |
-  'reducedMotion' | 'compact' | 'confirmRemoval' | 'notifyEpisodes' | 'notifySeasonStarts' | 'notifySeasonSchedules',
+  'reducedMotion' | 'compact' | 'confirmRemoval' | 'singleKeyShortcuts' | 'notifyEpisodes' | 'notifySeasonStarts' | 'notifySeasonSchedules',
   boolean
 >>;
 

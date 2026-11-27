@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { libraryItemHref, resumeHref, timeCode, webHref } from '../catalog';
-import { ActionLink, Artwork, Icon } from '../components';
+import { ActionLink, Artwork, Icon, tmdbImageSet, tmdbImageSize } from '../components';
 import { useConfirm } from '../ConfirmDialog';
 import { EmptyState } from '../EmptyState';
 import type { History, LibraryControls } from '../library';
@@ -34,11 +34,12 @@ export function LibraryHistory({ controls }: { controls: LibraryControls }) {
 
   const rewatched = useMemo(() => {
     const ids = new Set<string>();
-    for (let i = 0; i < rawHistory.length; i++) {
+    const seenCompleted = new Set<string>();
+    for (let i = rawHistory.length - 1; i >= 0; i--) {
       const [id, entry] = rawHistory[i];
-      if (entry.completed && rawHistory.slice(i + 1).some(([, prior]) => prior.mediaKey === entry.mediaKey && prior.completed)) {
-        ids.add(id);
-      }
+      if (!entry.completed) continue;
+      if (seenCompleted.has(entry.mediaKey)) ids.add(id);
+      else seenCompleted.add(entry.mediaKey);
     }
     return ids;
   }, [rawHistory]);
@@ -99,14 +100,16 @@ export function LibraryHistory({ controls }: { controls: LibraryControls }) {
   return (
     <div className="af-lib-section">
       <div className="af-lib-toolbar">
-        <input
-          type="search"
-          className="af-input af-lib-search"
-          placeholder="Search viewing history…"
-          aria-label="Search viewing history"
-          value={search}
-          onChange={event => setSearch(event.target.value)}
-        />
+        <label className="af-lib-search-wrap">
+          <span className="sr-only">Search viewing history</span>
+          <input
+            type="search"
+            className="af-input af-lib-search"
+            placeholder="Search viewing history…"
+            value={search}
+            onChange={event => setSearch(event.target.value)}
+          />
+        </label>
         <div className="af-filters" role="group" aria-label="Filter history">
           {([['all', 'All'], ['movie', 'Movies'], ['tv', 'TV Shows'], ['completed', 'Completed']] as const).map(([value, label]) => (
             <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)}>
@@ -134,14 +137,19 @@ export function LibraryHistory({ controls }: { controls: LibraryControls }) {
               {entries.map(([id, entry]) => {
                 const pct = entry.duration > 0 ? Math.min(100, Math.round((entry.coverage / entry.duration) * 100)) : 0;
                 const canResume = !entry.completed && entry.time > 5 && entry.time < entry.duration - 2;
-                const thumb = entry.item.backdrop || entry.item.poster;
+                const thumb = entry.item.backdrop
+                  ? tmdbImageSize(entry.item.backdrop, 'w300')
+                  : tmdbImageSize(entry.item.poster, 'w185');
+                const thumbSrcSet = entry.item.backdrop
+                  ? tmdbImageSet(entry.item.backdrop, [300, 780])
+                  : tmdbImageSet(entry.item.poster, [185, 342]);
                 const stamp = label === 'Today' || label === 'Yesterday'
                   ? timeOfDay.format(new Date(entry.updated))
                   : shortDate.format(new Date(entry.updated));
                 return (
                   <article className="af-history-row" key={id}>
                     <a className="af-history-thumb" href={libraryItemHref(entry.item)} tabIndex={-1} aria-hidden="true">
-                      <Artwork src={thumb} loading="lazy" fallback={<Icon name="film" />} />
+                      <Artwork src={thumb} srcSet={thumbSrcSet} sizes="120px" loading="lazy" decoding="async" fallback={<Icon name="film" />} />
                     </a>
                     <div className="af-history-copy">
                       <div className="af-history-title-line">

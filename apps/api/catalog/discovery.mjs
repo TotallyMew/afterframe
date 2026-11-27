@@ -49,8 +49,7 @@ export async function recommendations(library, tmdb, tmdbEnabled) {
       }
     }
     const favoriteGenres = [...genres].sort((a, b) => b[1] - a[1]).slice(0, 2);
-    for (let idx = 0; idx < favoriteGenres.length; idx++) {
-      const favorite = favoriteGenres[idx][0];
+    const genreResults = await Promise.all(favoriteGenres.map(async ([favorite], idx) => {
       const [type, genre] = favorite.split(':');
       const page1 = await cacheMetadata(`recommend-genre:${favorite}`, 3600000, () => tmdb(`/discover/${type}`, { with_genres: genre, sort_by: 'popularity.desc', include_adult: 'false', page: 1 })).catch(() => null);
       let candidates = (page1?.results || []).map(item => ({ ...item, media_type: type }));
@@ -58,6 +57,9 @@ export async function recommendations(library, tmdb, tmdbEnabled) {
         const page2 = await cacheMetadata(`recommend-genre:${favorite}:2`, 3600000, () => tmdb(`/discover/${type}`, { with_genres: genre, sort_by: 'popularity.desc', include_adult: 'false', page: 2 })).catch(() => null);
         if (page2?.results?.length) candidates = [...candidates, ...page2.results.map(item => ({ ...item, media_type: type }))];
       }
+      return { idx, candidates };
+    }));
+    for (const { idx, candidates } of genreResults) {
       const items = filter(candidates, shown, sectionLimit);
       if (items.length) sections.push({ label: idx === 0 ? 'Based on genres you watch' : 'More from your favorite genres', items });
     }
@@ -189,7 +191,7 @@ export async function seasonalAnime(params, tmdb = null, tmdbEnabled = false) {
   if (variables.max) variables.max++;
   for (const key of ['genre', 'theme']) {
     const value = params.get(key)?.trim();
-    if (value?.length > 60) throw invalid(`Invalid anime ${key}.`);
+    if (value && (value.length > 60 || !/^[A-Za-z0-9 '&:/.,+-]+$/.test(value))) throw invalid(`Invalid anime ${key}.`);
     if (value) variables[key] = value;
   }
   const audio = params.get('audio') || '';
@@ -203,6 +205,7 @@ export async function seasonalAnime(params, tmdb = null, tmdbEnabled = false) {
   const fetchAnilistPage = async pageNum => cacheMetadata(`anime-season:v3:${JSON.stringify({ ...variables, page: pageNum })}`, 20 * 60000, async () => {
     const response = await fetch('https://graphql.anilist.co', {
       method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json' },
+      redirect: 'error',
       body: JSON.stringify({ query: seasonalQuery, variables: { ...variables, page: pageNum } }), signal: AbortSignal.timeout(9000),
     });
     if (!response.ok) {
@@ -249,7 +252,7 @@ export async function seasonalAnime(params, tmdb = null, tmdbEnabled = false) {
     // Client-side audio filters scan cached AniList pages to yield exact 20-item pages without skipping entries.
     const targetStart = (variables.page - 1) * pageSize;
     const targetEnd = variables.page * pageSize;
-    const maxPage = Math.min(100, variables.page * 4);
+    const maxPage = Math.min(20, variables.page * 3);
     const allFiltered = [];
     let anilistPage = 1;
     while (anilistPage <= maxPage) {
@@ -260,7 +263,7 @@ export async function seasonalAnime(params, tmdb = null, tmdbEnabled = false) {
       anilistPage++;
     }
     collected.push(...allFiltered.slice(targetStart, targetEnd));
-    nextPage = allFiltered.length > targetEnd || (hasNextPage && anilistPage < 100 && collected.length > 0)
+    nextPage = allFiltered.length > targetEnd || (hasNextPage && anilistPage < maxPage && collected.length > 0)
       ? variables.page + 1
       : null;
   }
@@ -269,20 +272,25 @@ export async function seasonalAnime(params, tmdb = null, tmdbEnabled = false) {
     const match = mapped.get(item.id);
     return { ...item, catalog: match?.catalog ?? undefined, catalogSeason: match?.season ?? undefined, mal: null };
   });
-  if (tmdbEnabled && typeof tmdb === 'function') {
-    const unmapped = results.filter(item => !item.catalog).slice(0, 8);
-    for (let start = 0; start < unmapped.length; start += 4) {
-      await Promise.all(unmapped.slice(start, start + 4).map(async item => {
-        const found = await fallbackAnimeCatalog(item, tmdb);
-        if (found?.catalog) {
-          item.catalog = found.catalog;
-          if (found.season) item.catalogSeason = found.season;
-        }
-      }));
-    }
-  }
-  for (let start = 0; start < results.length; start += 6) {
-    await Promise.all(results.slice(start, start + 6).map(async item => { item.mal = await malRating('anime', item.idMal); }));
-  }
+  await Promise.all([
+    (async () => {
+      if (!tmdbEnabled || typeof tmdb !== 'function') return;
+      const unmapped = results.filter(item => !item.catalog).slice(0, 8);
+      for (let start = 0; start < unmapped.length; start += 4) {
+        await Promise.all(unmapped.slice(start, start + 4).map(async item => {
+          const found = await fallbackAnimeCatalog(item, tmdb);
+          if (found?.catalog) {
+            item.catalog = found.catalog;
+            if (found.season) item.catalogSeason = found.season;
+          }
+        }));
+      }
+    })(),
+    (async () => {
+      for (let start = 0; start < results.length; start += 6) {
+        await Promise.all(results.slice(start, start + 6).map(async item => { item.mal = await malRating('anime', item.idMal); }));
+      }
+    })(),
+  ]);
   return { results, nextPage };
 }

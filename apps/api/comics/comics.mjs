@@ -1,6 +1,6 @@
 import { readFile, stat } from 'node:fs/promises';
 import { cacheMetadata, peekMetadata } from '../catalog/metadata.mjs';
-import { fetchWithRetry } from '../http-client.mjs';
+import { assertPublicHost, fetchWithRetry } from '../http-client.mjs';
 import { lectorChapters, lectorPageList } from './lectormanga.mjs';
 import { scansChapters, scansPageList } from './mangascans.mjs';
 import { comicChapterIdPattern, comicChapterIdSource, comicIdSource } from '@afterframe/shared/comic-ids';
@@ -86,9 +86,12 @@ function comic({ id, attributes, relationships }) {
   const lastChapter = /^\d+(?:\.\d+)?$/.test(rawLastChapter) ? rawLastChapter : undefined;
   const cachedChapterCount = !lastChapter ? peekMetadata(`comics:chcount:v1:${id}`) : undefined;
   const chapterCount = typeof cachedChapterCount === 'string' && cachedChapterCount ? cachedChapterCount : undefined;
+  const malId = /^[1-9]\d{0,9}$/.test(attributes.links?.mal) ? Number(attributes.links.mal) : null;
+  const cachedMal = malId ? peekMetadata(`mal:manga:${malId}`) : undefined;
+  const mal = typeof cachedMal === 'number' && cachedMal > 0 ? cachedMal : undefined;
   return {
-    id, key: `comic-${id}`, type: 'comic', format, poster,
-    malId: /^[1-9]\d{0,9}$/.test(attributes.links?.mal) ? Number(attributes.links.mal) : null,
+    id, key: `comic-${id}`, type: 'comic', format, poster, malId,
+    ...(mal ? { mal } : {}),
     title: attributes.title.en || attributes.altTitles?.find(title => title.en)?.en || englishText(attributes.title, original),
     year: attributes.year, status: attributes.status, author,
     ...(lastChapter ? { lastChapter } : {}),
@@ -282,11 +285,24 @@ function nativeChapterFeed(id, language, offset = 0) {
 
 function nativeChapters(id, language) {
   return cacheMetadata(`comics:native-chapters:${id}:${language}:${blockedGroupKey}`, 5 * minute, async () => {
-    const entries = [];
-    for (let offset = 0; offset + feedLimit <= maxFeed; offset += feedLimit) {
-      const result = await nativeChapterFeed(id, language, offset);
-      entries.push(...result.entries);
-      if (!result.count || offset + feedLimit >= result.total) break;
+    const first = await nativeChapterFeed(id, language, 0);
+    const entries = [...first.entries];
+    if (!first.count || feedLimit >= first.total) return entries;
+    const offsets = [];
+    for (let offset = feedLimit; offset < Math.min(first.total, maxFeed) && offset + feedLimit <= maxFeed; offset += feedLimit) {
+      offsets.push(offset);
+    }
+    const pages = new Array(offsets.length);
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < offsets.length) {
+        const idx = cursor++;
+        pages[idx] = await nativeChapterFeed(id, language, offsets[idx]);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, offsets.length) }, worker));
+    for (const page of pages) {
+      if (page?.entries?.length) entries.push(...page.entries);
     }
     return entries;
   });
@@ -405,12 +421,15 @@ export async function comicPageResponse(pathname, signal) {
   if (!url) return null;
   let valid = false;
   try {
+    await assertPublicHost(new URL(url).hostname);
     const response = await fetch(url, {
       headers: { Accept: 'image/*', 'User-Agent': 'Afterframe/1.0' },
       redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
     });
     const contentType = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase();
-    valid = response.ok && imageTypes.has(contentType);
+    const contentLength = Number(response.headers.get('content-length'));
+    const tooLarge = Number.isFinite(contentLength) && contentLength > 25 * 1024 * 1024;
+    valid = response.ok && imageTypes.has(contentType) && !tooLarge;
     if (valid) return response;
     await response.body?.cancel();
     return null;
@@ -547,14 +566,20 @@ async function chapterCounts(search) {
   const raw = (search.get('ids') || '').split(',').map(value => value.trim().toLowerCase());
   const ids = [...new Set(raw.filter(id => comicIdPattern.test(id)))].slice(0, 24);
   const counts = {};
-  for (const id of ids) {
-    try {
-      const count = await mangaChapterCount(id);
-      if (count) counts[id] = count;
-    } catch (error) {
-      if (error?.status === 429) break;
+  let cursor = 0;
+  let rateLimited = false;
+  const worker = async () => {
+    while (cursor < ids.length && !rateLimited) {
+      const id = ids[cursor++];
+      try {
+        const count = await mangaChapterCount(id);
+        if (count) counts[id] = count;
+      } catch (error) {
+        if (error?.status === 429) rateLimited = true;
+      }
     }
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(3, ids.length) }, worker));
   return { counts };
 }
 
@@ -590,14 +615,17 @@ export async function comicsApi(pathname, search) {
   }
 }
 
-export async function comicCoverResponse(pathname) {
+export async function comicCoverResponse(pathname, signal) {
   const cover = pathname.match(coverPath)?.[1];
   if (!cover) return null;
+  const timeout = AbortSignal.timeout(10_000);
   const response = await fetch(`https://uploads.mangadex.org/covers/${cover}`, {
     headers: { Accept: 'image/jpeg', 'User-Agent': 'Afterframe/1.0' },
-    redirect: 'error', signal: AbortSignal.timeout(10_000),
+    redirect: 'error', signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   });
-  if (response.ok && response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() === 'image/jpeg') return response;
+  const contentLength = Number(response.headers.get('content-length'));
+  const tooLarge = Number.isFinite(contentLength) && contentLength > 10 * 1024 * 1024;
+  if (response.ok && !tooLarge && response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() === 'image/jpeg') return response;
   await response.body?.cancel();
   return null;
 }

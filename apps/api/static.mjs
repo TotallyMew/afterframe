@@ -1,8 +1,13 @@
 import { createReadStream, existsSync } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
+import { compressBuffer, negotiateEncoding } from './http-settings.mjs';
+
+const compressibleExts = new Set(['.html', '.js', '.css', '.svg', '.webmanifest', '.vtt']);
+const compressedCache = new Map();
+const MAX_COMPRESSED_CACHE = 64;
 
 const publicDirectory = fileURLToPath(new URL('../../afterframe/public/', import.meta.url));
 const webDirectory = resolve(process.env.AFTERFRAME_WEB_DIST || fileURLToPath(new URL('../web/dist/', import.meta.url)));
@@ -45,7 +50,33 @@ export async function serveFile(request, response, pathname, sendJson) {
     response.writeHead(304, cacheHeaders);
     return response.end();
   }
-  response.writeHead(statusCode, { ...cacheHeaders, 'content-type': mime[extname(path)], 'content-length': info.size });
+  const ext = extname(path);
+  const preferredEncoding = compressibleExts.has(ext) && info.size >= 1024 && info.size <= 2 * 1024 * 1024
+    ? negotiateEncoding(request.headers['accept-encoding'])
+    : null;
+  if (preferredEncoding) {
+    const cacheKey = `${file}:${info.size}:${info.mtimeMs}:${preferredEncoding}`;
+    let payload = compressedCache.get(cacheKey);
+    if (!payload) {
+      const raw = await readFile(file);
+      payload = await compressBuffer(raw, preferredEncoding);
+      if (compressedCache.size >= MAX_COMPRESSED_CACHE) {
+        const oldest = compressedCache.keys().next().value;
+        if (oldest) compressedCache.delete(oldest);
+      }
+      compressedCache.set(cacheKey, payload);
+    }
+    const headers = {
+      ...cacheHeaders,
+      'content-type': mime[ext],
+      'content-length': payload.buffer.length,
+      vary: 'Accept-Encoding',
+      ...(payload.encoding ? { 'content-encoding': payload.encoding } : {}),
+    };
+    response.writeHead(statusCode, headers);
+    return response.end(request.method === 'HEAD' ? undefined : payload.buffer);
+  }
+  response.writeHead(statusCode, { ...cacheHeaders, 'content-type': mime[ext], 'content-length': info.size });
   if (request.method === 'HEAD') return response.end();
   await pipeline(createReadStream(file), response);
 }

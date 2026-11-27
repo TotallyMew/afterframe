@@ -7,13 +7,14 @@ import { Artwork, Icon, MutationStatus } from '../components';
 import { progressPercent, type LibraryControls } from '../library';
 
 export function PlayerEpisodeRow({
-  item, episode, current, backHref, controls,
+  item, episode, current, backHref, controls, historyDurationSec,
 }: {
   item: Title;
   episode: Episode;
   current: boolean;
   backHref?: string;
   controls: LibraryControls;
+  historyDurationSec?: number;
 }) {
   const key = episodeKey(item, episode);
   const marked = Boolean(controls.library.watched[key]);
@@ -25,6 +26,7 @@ export function PlayerEpisodeRow({
   const progress = !marked ? controls.library.progress[key] : undefined;
   const hasProgress = Boolean(progress && progress.time > 5 && progress.time < progress.duration);
   const knownSec = controls.library.progress[key]?.duration
+    || historyDurationSec
     || Object.values(controls.library.history).find(entry => entry.mediaKey === key && entry.duration > 0)?.duration;
   const runtimeLabel = knownSec && knownSec > 0 ? `${Math.max(1, Math.round(knownSec / 60))} min` : episode.runtime ? `~${episode.runtime} min` : '';
   const status = [`Episode ${episode.episode_number}`, runtimeLabel, !available && episode.air_date ? `Airs ${formatDate(episode.air_date)}` : ''].filter(Boolean).join(' · ');
@@ -34,7 +36,7 @@ export function PlayerEpisodeRow({
 
   return <article className={`af-episode af-episode-card ${current ? 'is-current' : ''} ${marked ? 'is-watched' : ''}`} aria-current={current ? 'true' : undefined}>
     <div className="af-episode-media">
-      {image && protect ? <button type="button" className="af-still" aria-label={`${revealed ? 'Hide' : 'Reveal'} thumbnail for ${episode.name}`}
+      {image && protect ? <button type="button" className="af-still" aria-label={`Reveal thumbnail for ${episode.name}`}
         aria-pressed={revealed} onClick={() => setRevealed(value => !value)}>
         <Artwork src={image} className={revealed ? undefined : 'af-blurred'} loading="lazy" fallback={<span className="af-still-fallback" aria-hidden="true"><Icon name="film" /></span>} />
         <span className="af-eye"><Icon name="eye" /><span>{revealed ? 'Hide' : 'Reveal'}</span></span>
@@ -54,7 +56,7 @@ export function PlayerEpisodeRow({
           <span className="af-meta af-tabular">{status}</span>
         </div>
         <button type="button" className="af-icon-button af-watched af-watched-inline" aria-pressed={marked}
-          aria-label={`${marked ? 'Watched' : 'Mark watched'}: ${episode.name}`}
+          aria-label={`Mark ${episode.name} watched`}
           disabled={!controls.ready || controls.isPending(key)}
           onClick={() => { if (marked) setRevealed(false); void controls.toggleWatched(item, key); }}>
           <span>{marked && <Icon name="check" />}</span>

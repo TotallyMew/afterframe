@@ -1,7 +1,7 @@
 import { isAnime } from '@afterframe/shared/discover';
 import { useState } from 'react';
 import { comicCover, libraryItemHref, webHref, type Comic, type Title } from '../catalog';
-import { ActionLink, Artwork, Icon } from '../components';
+import { ActionLink, Artwork, Icon, tmdbImageSet } from '../components';
 import { EmptyState } from '../EmptyState';
 import { savedRating, type LibraryControls } from '../library';
 import { AfSelect } from '../UiControls';
@@ -143,9 +143,17 @@ export function LibraryRatings({ controls }: { controls: LibraryControls }) {
               <article className="af-lib-card af-lib-rating-card" key={item.key}>
                 <a className="af-lib-card-link" href={libraryItemHref(item)}>
                   <span className="af-poster">
-                    <Artwork src={poster} loading="lazy" decoding="async" fallback={<Icon name={item.type === 'comic' ? 'book' : 'film'} />} />
-                    <span className="af-poster-rating-pill" aria-label={`Rated ${score} out of 10`}>
-                      <span aria-hidden="true">★</span> {score}
+                    <Artwork
+                      src={poster}
+                      srcSet={item.type === 'comic' ? undefined : tmdbImageSet(item.poster, [185, 342, 500])}
+                      sizes="(max-width: 480px) 46vw, (max-width: 760px) 31vw, 220px"
+                      loading="lazy"
+                      decoding="async"
+                      fallback={<Icon name={item.type === 'comic' ? 'book' : 'film'} />}
+                    />
+                    <span className="af-poster-rating-pill">
+                      <span className="sr-only">Rated {score} out of 10</span>
+                      <span aria-hidden="true">★ {score}</span>
                     </span>
                   </span>
                   <strong title={item.title}>{item.title}</strong>

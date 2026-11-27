@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { clearBrowseCache } from '../catalog';
 import { Home, trimOverview } from '../Home';
 import type { LibraryControls } from '../library';
 
@@ -16,6 +17,7 @@ function makeControls(): LibraryControls {
     refresh: async () => {},
     toggleSaved: async () => true,
     toggleWatched: async () => {},
+    markEpisodesWatched: async () => true,
     rate: async () => true,
     setStatus: async () => true,
     setComicStatus: () => undefined,
@@ -51,6 +53,7 @@ function makeControls(): LibraryControls {
 describe('Home cached IMDb rating hydration', () => {
   afterEach(() => {
     cleanup();
+    clearBrowseCache();
     vi.restoreAllMocks();
   });
 

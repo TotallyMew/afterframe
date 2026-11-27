@@ -103,27 +103,41 @@ export function FolderBar({
                   <Popover.Close className="af-text-link af-popover-done" type="button">Cancel</Popover.Close>
                 </div>
                 <form className="af-folder-create-inline" onSubmit={handleCreate}>
-                  <input
-                    type="text"
-                    className="af-input"
-                    placeholder="e.g. Favorites, Weekend Binge…"
-                    aria-label="Folder name"
-                    maxLength={50}
-                    autoFocus
-                    value={newName}
-                    onChange={event => setNewName(event.target.value)}
-                  />
+                  <label className="af-sr-field">
+                    <span className="sr-only">Folder name</span>
+                    <input
+                      type="text"
+                      className="af-input"
+                      placeholder="e.g. Favorites, Weekend Binge…"
+                      maxLength={50}
+                      autoFocus
+                      value={newName}
+                      onChange={event => setNewName(event.target.value)}
+                    />
+                  </label>
                   <div className="af-folder-create-row">
                     <div className="af-folder-swatches" role="radiogroup" aria-label="Folder color">
-                      {folderColors.map(swatch => (
+                      {folderColors.map((swatch, idx) => (
                         <button
                           key={swatch}
                           type="button"
                           className={`af-folder-swatch is-${swatch} ${newColor === swatch ? 'is-selected' : ''}`}
                           role="radio"
                           aria-checked={newColor === swatch}
+                          tabIndex={newColor === swatch ? 0 : -1}
                           aria-label={`Color ${swatch}`}
                           onClick={() => setNewColor(swatch)}
+                          onKeyDown={event => {
+                            let nextIdx = -1;
+                            if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIdx = (idx + 1) % folderColors.length;
+                            else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIdx = (idx - 1 + folderColors.length) % folderColors.length;
+                            else if (event.key === 'Home') nextIdx = 0;
+                            else if (event.key === 'End') nextIdx = folderColors.length - 1;
+                            if (nextIdx < 0) return;
+                            event.preventDefault();
+                            setNewColor(folderColors[nextIdx]);
+                            event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[nextIdx]?.focus();
+                          }}
                         />
                       ))}
                     </div>
@@ -158,25 +172,40 @@ export function FolderBar({
                     <Popover.Close className="af-text-link af-popover-done" type="button">Cancel</Popover.Close>
                   </div>
                   <form className="af-folder-create-inline" onSubmit={handleRename}>
-                    <input
-                      type="text"
-                      className="af-input"
-                      aria-label="Edit folder name"
-                      maxLength={50}
-                      value={editName}
-                      onChange={event => setEditName(event.target.value)}
-                    />
+                    <label className="af-sr-field">
+                      <span className="sr-only">Edit folder name</span>
+                      <input
+                        type="text"
+                        className="af-input"
+                        placeholder="Folder name"
+                        maxLength={50}
+                        value={editName}
+                        onChange={event => setEditName(event.target.value)}
+                      />
+                    </label>
                     <div className="af-folder-create-row">
                       <div className="af-folder-swatches" role="radiogroup" aria-label="Folder color">
-                        {folderColors.map(swatch => (
+                        {folderColors.map((swatch, idx) => (
                           <button
                             key={swatch}
                             type="button"
                             className={`af-folder-swatch is-${swatch} ${editColor === swatch ? 'is-selected' : ''}`}
                             role="radio"
                             aria-checked={editColor === swatch}
+                            tabIndex={editColor === swatch ? 0 : -1}
                             aria-label={`Color ${swatch}`}
                             onClick={() => setEditColor(swatch)}
+                            onKeyDown={event => {
+                              let nextIdx = -1;
+                              if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIdx = (idx + 1) % folderColors.length;
+                              else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIdx = (idx - 1 + folderColors.length) % folderColors.length;
+                              else if (event.key === 'Home') nextIdx = 0;
+                              else if (event.key === 'End') nextIdx = folderColors.length - 1;
+                              if (nextIdx < 0) return;
+                              event.preventDefault();
+                              setEditColor(folderColors[nextIdx]);
+                              event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[nextIdx]?.focus();
+                            }}
                           />
                         ))}
                       </div>

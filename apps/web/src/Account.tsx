@@ -49,6 +49,7 @@ export function AccountProvider({ controls, children }: { controls: LibraryContr
   const [username, setUsername] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [confirmation, setConfirmation] = useState<SecurityAction>();
+  const [securityPassword, setSecurityPassword] = useState('');
   const [pending, setPending] = useState<Action>();
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
@@ -172,8 +173,14 @@ export function AccountProvider({ controls, children }: { controls: LibraryContr
 
   function signOut() {
     if (controls.libraryBusy) return;
+    const previousId = account?.id;
     void runAction('signout', async () => {
       await post('/api/account/signout', {});
+      try {
+        if (previousId != null) localStorage.removeItem(`afterframe.pendingPlayback.${previousId}`);
+        localStorage.removeItem('afterframe.recentSearches');
+        localStorage.removeItem('afterframe.animeShowAudio');
+      } catch { /* ignore */ }
       controls.updateAccount(null, null);
       notify('Signed out.');
       close();
@@ -182,12 +189,18 @@ export function AccountProvider({ controls, children }: { controls: LibraryContr
 
   function dismissConfirmation() {
     restoreSecurityFocus.current = true;
+    setSecurityPassword('');
     setConfirmation(undefined);
   }
 
   function performSecurityAction(action: SecurityAction) {
+    if (action === 'recovery-code' && securityPassword.length < 8) {
+      setError('Enter your current password to generate a recovery code.');
+      return;
+    }
     void runAction(action, async () => {
-      const result = await post<{ code?: string }>(`/api/account/${action}`, {});
+      const payload = action === 'recovery-code' ? { password: securityPassword } : {};
+      const result = await post<{ code?: string }>(`/api/account/${action}`, payload);
       if (action === 'recovery-code' && result.code) setRecoveryCode(result.code);
       setStatus(action === 'recovery-code' ? 'Recovery code generated.' : 'Other devices are signed out.');
       dismissConfirmation();
@@ -266,8 +279,24 @@ export function AccountProvider({ controls, children }: { controls: LibraryContr
                 {confirmation && <div className="af-account-confirm">
                   <h4 ref={confirmationHeading} tabIndex={-1}>{securityActions[confirmation].label}?</h4>
                   <p className="af-meta">{securityActions[confirmation].description}</p>
+                  {confirmation === 'recovery-code' && (
+                    <label className="af-account-confirm-field">
+                      <span>Current password</span>
+                      <input
+                        className="af-input"
+                        type="password"
+                        autoComplete="current-password"
+                        minLength={8}
+                        maxLength={128}
+                        required
+                        disabled={Boolean(pending)}
+                        value={securityPassword}
+                        onChange={event => setSecurityPassword(event.target.value)}
+                      />
+                    </label>
+                  )}
                   <div className="af-actions">
-                    <button type="button" className="af-button af-primary" disabled={Boolean(pending)}
+                    <button type="button" className="af-button af-primary" disabled={Boolean(pending) || (confirmation === 'recovery-code' && securityPassword.length < 8)}
                       onClick={() => performSecurityAction(confirmation)}>{securityActions[confirmation].label}</button>
                     <button type="button" className="af-button af-secondary" disabled={Boolean(pending)} onClick={dismissConfirmation}>Cancel</button>
                   </div>
@@ -289,15 +318,19 @@ export function AccountProvider({ controls, children }: { controls: LibraryContr
                 <label htmlFor="af-account-recovery-code">Recovery code</label>
                 <input id="af-account-recovery-code" className="af-input" name="code" type="password"
                   autoComplete="one-time-code" autoCapitalize="none" spellCheck={false} minLength={48} maxLength={48}
-                  pattern="[A-Fa-f0-9]{48}" required readOnly={Boolean(pending)} />
+                  pattern="[A-Fa-f0-9]{48}" required readOnly={Boolean(pending)}
+                  aria-invalid={Boolean(error)}
+                  aria-describedby={error ? 'af-account-recovery-hint af-account-error' : 'af-account-recovery-hint'} />
+                <p id="af-account-recovery-hint" className="af-meta">Enter your 48-character recovery code (letters A–F and numbers 0–9).</p>
               </>}
               <label htmlFor="af-account-password">{mode === 'reset' ? 'New password' : 'Password'}</label>
               <div className="af-account-password">
                 <input className="af-input" id="af-account-password" name="password" type={showPassword ? 'text' : 'password'}
                   autoComplete={mode === 'signin' ? 'current-password' : 'new-password'} minLength={8} maxLength={128}
-                  aria-describedby={mode === 'signin' ? undefined : 'af-account-password-hint'}
+                  aria-invalid={Boolean(error)}
+                  aria-describedby={[mode !== 'signin' ? 'af-account-password-hint' : '', error ? 'af-account-error' : ''].filter(Boolean).join(' ') || undefined}
                   required readOnly={Boolean(pending)} />
-                <button className="af-password-toggle" type="button" aria-pressed={showPassword}
+                <button className="af-password-toggle" type="button" aria-pressed={showPassword} aria-label="Show password"
                   onClick={() => setShowPassword(value => !value)}>{showPassword ? 'Hide' : 'Show'}</button>
               </div>
               {mode !== 'signin' && <p id="af-account-password-hint" className="af-meta">Use at least 8 characters.</p>}
@@ -312,7 +345,7 @@ export function AccountProvider({ controls, children }: { controls: LibraryContr
                   onClick={() => switchMode('signin')}>Back to sign in</button>}
               </div>
             </form>}
-            {error && <p className="af-account-feedback" role="alert" tabIndex={-1} ref={feedback}>{error}</p>}
+            {error && <p id="af-account-error" className="af-account-feedback" role="alert" tabIndex={-1} ref={feedback}><span className="sr-only">Error: </span>{error}</p>}
             {(pendingMessage || status) && <p className="af-account-feedback af-meta" role="status">{pendingMessage || status}</p>}
           </div>
         </Dialog.Popup>

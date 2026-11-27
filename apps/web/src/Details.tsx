@@ -43,14 +43,18 @@ export function orderSeasons(seasons: readonly Season[] | undefined): Season[] {
   return [...regular, ...specials];
 }
 
-function pickTitleLogo(logos?: DetailsImage[]): string | undefined {
+function pickTitleLogo(logos?: DetailsImage[]): { url: string; width?: number; height?: number } | undefined {
   if (!logos?.length) return undefined;
   const preferred = logos.filter(entry => entry.iso_639_1 === 'en' && entry.file_path && !entry.file_path.endsWith('.svg'));
   const pool = preferred.length
     ? preferred
     : logos.filter(entry => (!entry.iso_639_1 || entry.iso_639_1 === 'en') && entry.file_path && !entry.file_path.endsWith('.svg'));
   const best = [...pool].sort((a, b) => (b.vote_average ?? 0) - (a.vote_average ?? 0))[0];
-  return best ? imagePath(best.file_path, 'w500') : undefined;
+  const url = best ? imagePath(best.file_path, 'w500') : undefined;
+  if (!url || !best) return undefined;
+  const width = best.width && best.width > 0 ? best.width : undefined;
+  const height = best.height && best.height > 0 ? best.height : undefined;
+  return { url, width, height };
 }
 
 function pickTrailer(videos?: DetailsVideo[]): DetailsVideo | undefined {
@@ -101,6 +105,7 @@ function TrailerModal({ video, title, open, onOpenChange }: {
             title={`${title} ${video.name || 'Trailer'}`}
             allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
             allowFullScreen
+            sandbox="allow-scripts allow-same-origin allow-presentation"
             referrerPolicy="strict-origin-when-cross-origin"
           />
         </div>}
@@ -197,12 +202,15 @@ function EpisodeRatingsHeatmap({ item }: { item: Title }) {
                 <th scope="row" className="af-heatmap-row">E{epNum}</th>
                 {populated.map(s => {
                   const ep = s.episodes.find(e => e.episode_number === epNum);
-                  if (!ep) return <td key={s.season_number} className="af-heatmap-empty" aria-hidden="true" />;
+                  if (!ep) return <td key={s.season_number} className="af-heatmap-empty"><span className="sr-only">No episode</span></td>;
                   const score = ep.vote_average;
                   const playable = isAired(ep);
                   if (score == null) {
                     return <td key={s.season_number} className="af-heatmap-empty">
-                      <span className="af-heatmap-unrated" title={`S${s.season_number} E${ep.episode_number}: ${ep.name}`}>–</span>
+                      <span className="af-heatmap-unrated" title={`S${s.season_number} E${ep.episode_number}: ${ep.name}`}>
+                        <span aria-hidden="true">–</span>
+                        <span className="sr-only">Not rated</span>
+                      </span>
                     </td>;
                   }
                   const tier = ratingTier(score);
@@ -268,7 +276,7 @@ function EpisodeRow({
 
   return <article className={`af-episode af-episode-card ${isResumeTarget ? 'is-resume' : ''} ${marked ? 'is-watched' : ''}`}>
     <div className="af-episode-media">
-      {image && protect ? <button type="button" className="af-still" aria-label={`${revealed ? 'Hide' : 'Reveal'} thumbnail for ${episode.name}`}
+      {image && protect ? <button type="button" className="af-still" aria-label={`Reveal thumbnail for ${episode.name}`}
         aria-pressed={revealed} onClick={() => setRevealed(value => !value)}>
         <Artwork src={image} className={revealed ? undefined : 'af-blurred'} loading="lazy" fallback={<span className="af-still-fallback" aria-hidden="true"><Icon name="film" /></span>} />
         <span className="af-eye"><Icon name="eye" /><span>{revealed ? 'Hide' : 'Reveal'}</span></span>
@@ -287,7 +295,7 @@ function EpisodeRow({
           {isResumeTarget && <span className="af-ep-state-tag">Resume</span>}
           <span className="af-meta af-tabular">{status}</span>
         </div>
-        <button type="button" className="af-icon-button af-watched af-watched-inline" aria-label={`${marked ? 'Watched' : 'Mark watched'}: ${episode.name}`} aria-pressed={marked}
+        <button type="button" className="af-icon-button af-watched af-watched-inline" aria-label={`Mark ${episode.name} as watched`} aria-pressed={marked}
           disabled={!controls.ready || controls.isPending(key)} onClick={() => { if (marked) setRevealed(false); void controls.toggleWatched(item, key); }}>
           <span>{marked && <Icon name="check" />}</span>
         </button>
@@ -370,9 +378,8 @@ function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readS
     if (!unwatchedAired.length || markingSeason || !controls.ready) return;
     setMarkingSeason(true);
     try {
-      for (const ep of unwatchedAired) {
-        await controls.toggleWatched(item, episodeKey(item, ep), { force: true, skipConfirm: true });
-      }
+      const episodeIds = unwatchedAired.map(ep => episodeKey(item, ep).slice(item.key.length + 1));
+      await controls.markEpisodesWatched(item, episodeIds);
     } finally {
       setMarkingSeason(false);
     }
@@ -416,18 +423,35 @@ function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readS
     </header>
 
     {seasons.length > 1 && <div className="af-season-tabs" role="tablist" aria-label="Seasons">
-      {seasons.map(option => (
+      {seasons.map((option, idx) => (
         <button
           key={option.season_number}
           type="button"
           role="tab"
           aria-selected={season === option.season_number}
+          tabIndex={season === option.season_number ? 0 : -1}
           className="af-season-tab"
           onClick={() => {
             setSelected(option.season_number);
             setRange(0);
             setShowAllMobile(false);
             setError('');
+          }}
+          onKeyDown={event => {
+            let nextIdx = -1;
+            if (event.key === 'ArrowRight') nextIdx = (idx + 1) % seasons.length;
+            else if (event.key === 'ArrowLeft') nextIdx = (idx - 1 + seasons.length) % seasons.length;
+            else if (event.key === 'Home') nextIdx = 0;
+            else if (event.key === 'End') nextIdx = seasons.length - 1;
+            if (nextIdx < 0) return;
+            event.preventDefault();
+            const target = seasons[nextIdx];
+            setSelected(target.season_number);
+            setRange(0);
+            setShowAllMobile(false);
+            setError('');
+            const tabs = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+            tabs?.[nextIdx]?.focus();
           }}
         >
           {option.name}
@@ -615,7 +639,7 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
 
   const saved = controls.library.saved[item.key];
   const marked = Boolean(watched[item.key]);
-  const logoUrl = !logoFailed ? pickTitleLogo(details.images?.logos) : undefined;
+  const logo = !logoFailed ? pickTitleLogo(details.images?.logos) : undefined;
   const trailer = pickTrailer(details.videos?.results);
   const resumePct = resume && resume.duration > 0 ? progressPercent(resume) : 0;
 
@@ -627,9 +651,9 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
         <div className="af-details-main af-hero-split">
           {!item.backdrop && item.poster && <Artwork className="af-fallback-poster" src={item.poster} fallback={<span className="af-fallback-poster af-art-fallback"><Icon name="film" /></span>} />}
           <div className="af-copy">
-            {logoUrl ? <>
+            {logo ? <>
               <h1 className="sr-only">{item.title}</h1>
-              <img className="af-title-logo" src={logoUrl} alt="" decoding="async" fetchPriority="high" onError={() => setLogoFailed(true)} />
+              <img className="af-title-logo" src={logo.url} width={logo.width} height={logo.height} alt="" decoding="async" fetchPriority="high" onError={() => setLogoFailed(true)} />
             </> : <h1>{item.title}</h1>}
             <div className="af-meta af-details-meta af-title-facts af-tabular">
               <span>{type === 'tv' ? 'TV series' : 'Movie'}</span>

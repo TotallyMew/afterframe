@@ -201,7 +201,11 @@ test('playback conflicts, release deduplication and one-time recovery', async ()
 
   assert.equal(releaseEvents(item.id, { ...fresh, air_date: '2025-12-01' }, null, date).events.length, 0);
 
-  const recovery = await call('recovery-code', {}, firstSession);
+  const recoveryWithoutPassword = await call('recovery-code', {}, firstSession);
+  assert.equal(recoveryWithoutPassword.code, 400);
+  const recoveryWrongPassword = await call('recovery-code', { password: 'wrong-password-123' }, firstSession);
+  assert.equal(recoveryWrongPassword.code, 401);
+  const recovery = await call('recovery-code', { password: credentials.password }, firstSession);
   assert.match(recovery.body.code, /^[a-f0-9]{48}$/);
   const reset = { ...credentials, code: recovery.body.code, password: 'updated-test-password' };
   assert.equal((await call('reset', reset)).code, 200);

@@ -18,6 +18,7 @@ function makeControls(overrides: Partial<LibraryControls> = {}): LibraryControls
     refresh: async () => {},
     toggleSaved: async () => true,
     toggleWatched: vi.fn(async () => {}),
+    markEpisodesWatched: vi.fn(async () => true),
     rate: async () => true,
     setStatus: async () => true,
     setComicStatus: () => undefined,

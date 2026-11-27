@@ -16,6 +16,7 @@ function makeControls(overrides: Partial<LibraryControls> = {}): LibraryControls
     refresh: async () => {},
     toggleSaved: async () => true,
     toggleWatched: vi.fn(async () => {}),
+    markEpisodesWatched: vi.fn(async () => true),
     rate: async () => true,
     setStatus: async () => true,
     setComicStatus: () => undefined,
@@ -70,8 +71,8 @@ describe('PlayerPage regressions', () => {
     const route = parsePlayerRoute('movie/550/watch')!;
     const loadingControls = makeControls({ state: 'loading', ready: false });
     const { rerender, container } = render(<PlayerPage route={route} controls={loadingControls} />);
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith('/api/movie/550/playback', expect.anything()));
     expect(container.querySelector('iframe')).toBeNull();
-    expect(fetchSpy).not.toHaveBeenCalled();
 
     const readyControls = makeControls({
       state: 'account',

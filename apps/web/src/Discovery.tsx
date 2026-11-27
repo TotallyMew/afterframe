@@ -73,6 +73,7 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
   const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
   const [rangeError, setRangeError] = useState('');
+  const [moreOpen, setMoreOpen] = useState(false);
 
   useEffect(() => {
     if (!loading && entries.length) {
@@ -125,14 +126,17 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
         tabs={[['anime', 'Seasonal'], ['anime?view=all', 'All anime']]} />
       <form className="af-field-bar" onSubmit={event => {
         event.preventDefault();
+        const formEl = event.currentTarget;
         const next = new URLSearchParams();
-        for (const [key, value] of new FormData(event.currentTarget)) if (typeof value === 'string' && value.trim()) next.set(key, value.trim());
+        for (const [key, value] of new FormData(formEl)) if (typeof value === 'string' && value.trim()) next.set(key, value.trim());
         if (next.has('min') && next.has('max') && Number(next.get('min')) > Number(next.get('max'))) {
           setRangeError('Minimum episodes must be less than or equal to maximum episodes.');
-          event.currentTarget.querySelector<HTMLInputElement>('[name=min]')?.focus();
+          setMoreOpen(true);
+          requestAnimationFrame(() => formEl.querySelector<HTMLInputElement>('[name=min]')?.focus());
           return;
         }
         setRangeError('');
+        setMoreOpen(false);
         if (!next.size || next.toString() === 'sort=POPULARITY_DESC') next.set('view', 'all');
         navigate(routeWithParams('anime', next));
       }}>
@@ -141,7 +145,7 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
         <SelectField label="Format" name="format" empty="Any format" value={params.get('format') || ''} options={formats} />
         <SelectField label="Status" name="status" empty="Any status" value={params.get('status') || ''} options={statuses} />
         <SelectField label="Audio" name="audio" empty="Any audio" value={params.get('audio') || ''} options={audioOptions} />
-        <FilterPopover activeCount={moreAnimeCount}>
+        <FilterPopover activeCount={moreAnimeCount} open={moreOpen} onOpenChange={setMoreOpen}>
           <SelectField
             label="Genre"
             name="genre"
@@ -157,7 +161,7 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
             options={themeSuggestions.map(name => [name, name] as const)}
           />
           <InputField label="Minimum episodes" name="min" placeholder="Any" aria-invalid={Boolean(rangeError)} aria-describedby={rangeError ? 'episode-range-error' : undefined} type="number" min="1" max="5000" defaultValue={params.get('min') || ''} />
-          <InputField label="Maximum episodes" name="max" placeholder="Any" type="number" min="1" max="5000" defaultValue={params.get('max') || ''} />
+          <InputField label="Maximum episodes" name="max" placeholder="Any" aria-invalid={Boolean(rangeError)} aria-describedby={rangeError ? 'episode-range-error' : undefined} type="number" min="1" max="5000" defaultValue={params.get('max') || ''} />
           <SelectField label="Sort by" name="sort" value={params.get('sort') || 'POPULARITY_DESC'} options={sorts} />
         </FilterPopover>
         <button className="af-button af-primary" type="submit">Apply filters</button>
@@ -175,7 +179,7 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
       sort: value => value === 'POPULARITY_DESC' ? '' : sorts.find(([key]) => key === value)?.[1] ?? '',
     }} />
     {rangeError && <p id="episode-range-error" className="af-state" role="alert">{rangeError}</p>}
-    {entries.length > 0 && <div className="af-poster-grid">{entries.map(entry => {
+    {entries.length > 0 && <div className="af-poster-grid">{entries.map((entry, index) => {
       const title = entry.title?.english || entry.title?.romaji || 'Anime';
       const matched = /^(movie|tv)\/[1-9]\d{0,9}$/.test(entry.catalog || '');
       const linkParams = new URLSearchParams();
@@ -209,9 +213,10 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
       const hasUpcoming = Boolean(next && nextDate && nextDate.getTime() > Date.now());
       return <article className="af-media-card af-anime-card" key={entry.id}><a href={href}>
         <span className="af-poster">
-          <Artwork src={cover} loading="lazy" fallback={<Icon name="film" />} />
+          <Artwork src={cover} loading={index < 6 ? 'eager' : 'lazy'} fallback={<Icon name="film" />} />
           {entry.mal != null && entry.mal > 0 && (
-            <span className="af-poster-badge" aria-label={`MyAnimeList score ${entry.mal.toFixed(2)}`}>
+            <span className="af-poster-badge">
+              <span className="sr-only">MyAnimeList score </span>
               <span aria-hidden="true">★</span> {entry.mal.toFixed(1)}
             </span>
           )}

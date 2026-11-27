@@ -188,6 +188,7 @@ function GeneralSettings({ controls, onSectionChange }: { controls: LibraryContr
         <Toggle controls={controls} name="reducedMotion" label="Always reduce motion" description="When off, Afterframe follows your system preference." />
         <Toggle controls={controls} name="compact" label="Compact episode list" />
         <Toggle controls={controls} name="confirmRemoval" label="Confirm removals and resets in Library" />
+        <Toggle controls={controls} name="singleKeyShortcuts" label="Single-key keyboard shortcuts" description="Allow single-letter shortcuts (/, ?, S, F, M). Modifier shortcuts like Ctrl/Cmd+K and Escape always work." />
       </>}
       {section === 'Notifications' && <>
         {!controls.account && (
@@ -253,7 +254,7 @@ function Integration({ definition, connected, managed, open, onSaved }: {
         {error && <p id={`af-settings-error-${definition.provider}`} role="alert">{error}</p>}
         <div className="af-actions">
           <button className="af-button af-primary" type="submit" disabled={pending}>{definition.action}</button>
-          <a className="af-text-link" href={definition.url} target="_blank" rel="noopener noreferrer">Get {definition.provider === 'tmdb' ? 'a catalog' : 'a ratings'} key</a>
+          <a className="af-text-link" href={definition.url} target="_blank" rel="noopener noreferrer">Get {definition.provider === 'tmdb' ? 'a catalog' : 'a ratings'} key<span className="sr-only"> (opens in new tab)</span></a>
         </div>
       </form>
     </details>}

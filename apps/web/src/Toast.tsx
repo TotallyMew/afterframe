@@ -47,6 +47,8 @@ export function ToastProvider({
   libraryFeedback?: { message: string; onUndo?: () => void };
 }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const [politeAnnouncement, setPoliteAnnouncement] = useState('');
+  const [alertAnnouncement, setAlertAnnouncement] = useState('');
   const timers = useRef(new Map<string, number>());
   const paused = useRef(false);
 
@@ -75,7 +77,7 @@ export function ToastProvider({
   const notify = useCallback((input: ToastOptions | string) => {
     const options: ToastOptions = typeof input === 'string' ? { message: input } : input;
     const id = options.id || `toast-${++counter}`;
-    const duration = options.duration ?? (options.action ? 6000 : 4200);
+    const duration = options.duration ?? (options.action ? 20_000 : 4200);
     const item: ToastItem = {
       id,
       message: options.message,
@@ -87,6 +89,8 @@ export function ToastProvider({
       const filtered = current.filter(existing => existing.id !== id);
       return [...filtered.slice(-2), item];
     });
+    if (item.tone === 'error') setAlertAnnouncement(item.message);
+    else setPoliteAnnouncement(item.action ? `${item.message} (${item.action.label} available in Notifications)` : item.message);
     scheduleDismiss(id, duration);
     return id;
   }, [scheduleDismiss]);
@@ -110,7 +114,7 @@ export function ToastProvider({
       message: msg,
       tone: 'success',
       action: libraryFeedback?.onUndo ? { label: 'Undo', onAction: libraryFeedback.onUndo } : undefined,
-      duration: libraryFeedback?.onUndo ? 6500 : 4000,
+      duration: libraryFeedback?.onUndo ? 20_000 : 4000,
     });
   }, [libraryFeedback?.message, libraryFeedback?.onUndo, notify, dismiss]);
 
@@ -137,12 +141,13 @@ export function ToastProvider({
 
   return <ToastContext.Provider value={{ notify, dismiss }}>
     {children}
-    {toasts.length > 0 && <div
+    <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{politeAnnouncement}</div>
+    <div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true">{alertAnnouncement}</div>
+    <div
       className="af-toast-region"
       role="region"
       aria-label="Notifications"
-      aria-live="polite"
-      aria-atomic="false"
+      hidden={toasts.length === 0}
       onMouseEnter={handlePause}
       onMouseLeave={handleResume}
       onFocusCapture={handlePause}
@@ -152,7 +157,6 @@ export function ToastProvider({
         <div
           key={toast.id}
           className={`af-toast af-toast-${toast.tone}`}
-          role={toast.tone === 'error' ? 'alert' : 'status'}
         >
           <span className="af-toast-message">{toast.message}</span>
           <div className="af-toast-actions">
@@ -179,6 +183,6 @@ export function ToastProvider({
           </div>
         </div>
       ))}
-    </div>}
+    </div>
   </ToastContext.Provider>;
 }

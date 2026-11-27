@@ -6,6 +6,10 @@ services:
     environment:
       PORT: ${AFTERFRAME_PORT:-4173}
       AFTERFRAME_API_URL: http://api:8080
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "127.0.0.1:${AFTERFRAME_PORT:-4173}:${AFTERFRAME_PORT:-4173}"
     depends_on:
@@ -23,14 +27,18 @@ services:
     environment:
       PORT: 8080
       AFTERFRAME_WEB_PORT: ${AFTERFRAME_PORT:-4173}
-      AFTERFRAME_ACCOUNTS_DATABASE_URL: postgresql://afterframe:afterframe-local@db:5432/afterframe
-      DATABASE_URL: postgresql://afterframe:afterframe-local@db:5432/afterframe
+      AFTERFRAME_ACCOUNTS_DATABASE_URL: postgresql://afterframe:${POSTGRES_PASSWORD:-afterframe-local}@db:5432/afterframe
+      DATABASE_URL: postgresql://afterframe:${POSTGRES_PASSWORD:-afterframe-local}@db:5432/afterframe
       TMDB_READ_TOKEN: ${TMDB_READ_TOKEN:-}
       TMDB_API_KEY: ${TMDB_API_KEY:-}
       OMDB_API_KEY: ${OMDB_API_KEY:-}
       MAL_CLIENT_ID: ${MAL_CLIENT_ID:-}
       EMNEX_API_KEY: ${EMNEX_API_KEY:-}
       AFTERFRAME_REGISTRATION: ${AFTERFRAME_REGISTRATION:-}
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       db:
         condition: service_healthy
@@ -44,7 +52,7 @@ services:
     environment:
       POSTGRES_DB: afterframe
       POSTGRES_USER: afterframe
-      POSTGRES_PASSWORD: afterframe-local
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-afterframe-local}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:

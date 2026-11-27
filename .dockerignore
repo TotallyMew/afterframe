@@ -10,5 +10,7 @@
 **/*.log
 android
 docs
+**/test
+**/__tests__
 UI_UX_AUDIT.md
 audit-evidence

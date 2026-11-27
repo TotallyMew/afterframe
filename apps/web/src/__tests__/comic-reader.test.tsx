@@ -81,10 +81,16 @@ describe('ComicReader', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Double' }));
     expect(stage.dataset.layout).toBe('double');
 
+    // Close modal before interacting with the background page navigation (focus-trapped modal)
+    fireEvent.click(screen.getByRole('button', { name: 'Close reader menu' }));
+
     // Offset cover keeps page 1 solo; Next page moves to spread 2-3
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }));
     expect(screen.getByAltText('Manga page 2')).toBeTruthy();
     expect(screen.getByAltText('Manga page 3')).toBeTruthy();
+
+    // Re-open Settings modal to adjust direction, dim/grayscale, and layout
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
 
     // Flip direction to Left to Right
     fireEvent.click(screen.getByRole('button', { name: 'Left to Right' }));
@@ -101,7 +107,7 @@ describe('ComicReader', () => {
     // Switch to Long strip to show all 4 pages stacked
     fireEvent.click(screen.getByRole('button', { name: 'Long strip' }));
     expect(stage.dataset.layout).toBe('scroll');
-    expect(screen.getByAltText('Manga page 4')).toBeTruthy();
+    expect(container.querySelector('img[alt="Manga page 4"]')).toBeTruthy();
 
     // Switch to Chapters tab in the centered modal
     fireEvent.click(screen.getByRole('tab', { name: 'Chapters' }));
@@ -113,6 +119,8 @@ describe('ComicReader', () => {
     expect(shell.classList.contains('is-hud-hidden')).toBe(false);
     fireEvent.click(container.querySelector('.af-reader-stage') as HTMLElement);
     expect(shell.classList.contains('is-hud-hidden')).toBe(true);
+    expect(screen.getByRole('heading', { level: 1, name: 'Chapter 1' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Show reader controls' })).toBeTruthy();
     fireEvent.click(container.querySelector('.af-reader-stage') as HTMLElement);
     expect(shell.classList.contains('is-hud-hidden')).toBe(false);
 

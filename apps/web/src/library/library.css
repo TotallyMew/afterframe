@@ -180,7 +180,7 @@
   gap: 7px;
   min-block-size: 2.25rem;
   padding: 5px 12px;
-  border: 1px solid var(--af-divider);
+  border: 1px solid var(--af-control-edge);
   border-radius: 999px;
   background: var(--af-panel);
   color: var(--af-secondary-ink);
@@ -210,7 +210,7 @@
   flex: none;
   display: inline-block;
 }
-.af-folder-dot.is-ember, .af-folder-swatch.is-ember { background: var(--af-action); }
+.af-folder-dot.is-ember, .af-folder-swatch.is-ember { background: var(--af-danger); }
 .af-folder-dot.is-gold, .af-folder-swatch.is-gold { background: var(--af-gold); }
 .af-folder-dot.is-sage, .af-folder-swatch.is-sage { background: var(--af-success); }
 .af-folder-dot.is-steel, .af-folder-swatch.is-steel { background: var(--af-info); }
@@ -297,7 +297,7 @@
   gap: 7px;
   min-block-size: 2.35rem;
   padding: 6px 12px;
-  border: 1px solid var(--af-divider);
+  border: 1px solid var(--af-control-edge);
   border-radius: var(--af-radius);
   background: var(--af-panel);
   color: var(--af-secondary-ink);
@@ -344,6 +344,8 @@
   align-content: start;
   gap: 0;
   min-inline-size: 0;
+  content-visibility: auto;
+  contain-intrinsic-size: 280px;
 }
 .af-lib-poster-wrap { position: relative; }
 .af-lib-card-link { display: block; }
@@ -383,12 +385,12 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  min-block-size: 26px;
   max-inline-size: calc(100% - 4.75rem);
   padding: 4px 8px;
-  border: 1px solid color-mix(in srgb, var(--af-ink) 16%, transparent);
+  border: 1px solid var(--af-control-edge);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--af-canvas) 88%, transparent);
-  backdrop-filter: blur(8px);
+  background: color-mix(in srgb, var(--af-canvas) 92%, transparent);
   color: var(--af-ink);
   font-size: .7rem;
   font-weight: 650;
@@ -418,14 +420,13 @@ button.af-poster-status:hover {
   gap: 3px;
   padding: 3px 7px;
   border-radius: var(--af-radius-sm);
-  background: color-mix(in srgb, var(--af-canvas) 88%, transparent);
-  backdrop-filter: blur(6px);
+  background: color-mix(in srgb, var(--af-canvas) 92%, transparent);
   color: var(--af-ink);
   font-size: var(--af-type-caption);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
-.af-poster-rating-pill > span { color: var(--af-gold); }
+.af-poster-rating-pill > span[aria-hidden="true"] { color: var(--af-gold); }
 .af-lib-rating-card .af-poster-rating-pill {
   position: absolute;
   top: var(--af-space-2);
@@ -435,9 +436,8 @@ button.af-poster-status:hover {
 .af-card-more {
   min-inline-size: 2rem;
   min-block-size: 2rem;
-  border: 1px solid color-mix(in srgb, var(--af-ink) 18%, transparent);
-  background: color-mix(in srgb, var(--af-canvas) 88%, transparent);
-  backdrop-filter: blur(6px);
+  border: 1px solid var(--af-control-edge);
+  background: color-mix(in srgb, var(--af-canvas) 92%, transparent);
   color: var(--af-ink);
 }
 .af-card-more:hover { border-color: var(--af-selection); color: var(--af-selection); background: var(--af-canvas); }
@@ -511,7 +511,7 @@ button.af-poster-status:hover {
 }
 .af-score-btn {
   min-block-size: 2rem;
-  border: 1px solid var(--af-divider);
+  border: 1px solid var(--af-control-edge);
   border-radius: var(--af-radius-sm);
   background: var(--af-canvas);
   font-size: var(--af-type-supplemental);
@@ -544,6 +544,8 @@ button.af-poster-status:hover {
   gap: var(--af-space-3) var(--af-space-4);
   padding: var(--af-space-3) var(--af-space-4);
   border-bottom: 1px solid var(--af-divider);
+  content-visibility: auto;
+  contain-intrinsic-size: 76px;
   transition: background-color var(--af-duration-fast) var(--af-ease-out);
 }
 .af-lib-row:last-child { border-bottom: 0; }

@@ -3,8 +3,8 @@ import {
   catalogGenres, formatDate, navigate, normalizeTitles, readBrowseCache, request, routeWithParams, titleHref, webHref, writeBrowseCache,
   type CatalogRating, type Comic, type MediaType, type RatingCoverage, type Title, type TitleResults,
 } from './catalog';
-import { Artwork, CatalogProblem, Icon, Loading, MediaCard, SaveButton, Score, Shelf } from './components';
-import { ComicCard } from './Comics';
+import { Artwork, CatalogProblem, Icon, Loading, MediaCard, SaveButton, Score, Shelf, tmdbImageSet, tmdbImageSize } from './components';
+import { ComicCard } from './ComicCard';
 import type { LibraryControls } from './library';
 import { AfSelect, FilterPopover, MobileFilterSheet, useMediaQuery } from './UiControls';
 
@@ -139,7 +139,13 @@ function Releases({ items, controls }: { items: Title[]; controls: LibraryContro
         {releaseDay.format(new Date(item.date!))}
       </time> : <span className="af-release-date">TBD</span>}
       <a href={titleHref(item)} className="af-release-image" tabIndex={-1} aria-hidden="true">
-        <Artwork src={item.backdrop || item.poster} loading="lazy" fallback={<Icon name="film" />} />
+        <Artwork
+          src={tmdbImageSize(item.backdrop || item.poster, 'w300')}
+          srcSet={tmdbImageSet(item.backdrop || item.poster, [300, 780])}
+          sizes="180px"
+          loading="lazy"
+          fallback={<Icon name="film" />}
+        />
       </a>
       <div className="af-release-copy">
         <h3><a href={titleHref(item)}>{item.title}</a></h3>
@@ -325,8 +331,14 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
     const values = new FormData(event.currentTarget);
     const from = Number(values.get('from'));
     const to = Number(values.get('to'));
-    if (from && to && from > to) { setFormError('The starting year must come before the ending year.'); form.current?.querySelector<HTMLInputElement>('[name=from]')?.focus(); return false; }
+    if (from && to && from > to) {
+      setFormError('The starting year must come before the ending year.');
+      setMoreFiltersOpen(true);
+      requestAnimationFrame(() => form.current?.querySelector<HTMLInputElement>('[name=from]')?.focus());
+      return false;
+    }
     setFormError('');
+    setMoreFiltersOpen(false);
     navigate(filterRoute(path, values, params));
     return true;
   }
@@ -339,6 +351,7 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
   const totalFilterCount = ['category', 'genre', 'decade', 'imdb', 'from', 'to', 'runtime'].filter(key => Boolean(params.get(key))).length;
   const isCompactBrowse = useMediaQuery('(max-width: 640px)');
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
 
   function submitMobile(event: FormEvent<HTMLFormElement>) {
     if (submit(event)) setMobileFiltersOpen(false);
@@ -378,7 +391,7 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
             {!search && !releases && <SelectField label="Sort by" name="sort" value={params.get('sort') || 'popular'} options={sortOptions} />}
             {!releases && <div className="af-mobile-year-pair">
               <InputField label="From year" aria-describedby={formError ? 'year-error' : undefined} aria-invalid={Boolean(formError)} name="from" type="number" min="1870" max="2099" defaultValue={params.get('from') || ''} />
-              <InputField label="Through year" name="to" type="number" min="1870" max="2099" defaultValue={params.get('to') || ''} />
+              <InputField label="Through year" aria-describedby={formError ? 'year-error' : undefined} aria-invalid={Boolean(formError)} name="to" type="number" min="1870" max="2099" defaultValue={params.get('to') || ''} />
             </div>}
             {!search && <SelectField label={type === 'tv' ? 'Episode runtime' : 'Runtime'} name="runtime" empty="Any length" value={params.get('runtime') || ''} options={runtimeOptions} />}
             <button type="submit" className="af-button af-primary af-sheet-submit">Apply filters</button>
@@ -391,9 +404,9 @@ export function Catalogue({ route, controls }: { route: string; controls: Librar
         {!releases && <SelectField label="Decade" name="decade" empty="Any decade" value={params.get('decade') || ''} options={decadeOptions} />}
         {!search && <SelectField label="Minimum IMDb rating" name="imdb" empty="Any rating" value={imdbValue} options={imdbOptions} />}
         {!search && !releases && <SelectField label="Sort by" name="sort" value={params.get('sort') || 'popular'} options={sortOptions} />}
-        <FilterPopover activeCount={moreFilterCount}>
-          {!releases && <><InputField label="From year" aria-describedby={formError ? "year-error" : undefined} aria-invalid={Boolean(formError)} name="from" type="number" min="1870" max="2099" defaultValue={params.get('from') || ''} />
-            <InputField label="Through year" name="to" type="number" min="1870" max="2099" defaultValue={params.get('to') || ''} /></>}
+        <FilterPopover activeCount={moreFilterCount} open={moreFiltersOpen} onOpenChange={setMoreFiltersOpen}>
+          {!releases && <><InputField label="From year" aria-describedby={formError ? 'year-error' : undefined} aria-invalid={Boolean(formError)} name="from" type="number" min="1870" max="2099" defaultValue={params.get('from') || ''} />
+            <InputField label="Through year" aria-describedby={formError ? 'year-error' : undefined} aria-invalid={Boolean(formError)} name="to" type="number" min="1870" max="2099" defaultValue={params.get('to') || ''} /></>}
           {!search && <SelectField label={type === 'tv' ? 'Episode runtime' : 'Runtime'} name="runtime" empty="Any length" value={params.get('runtime') || ''} options={runtimeOptions} />}
         </FilterPopover>
         <button type="submit" className="af-button af-primary">Apply filters</button>

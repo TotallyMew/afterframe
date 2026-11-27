@@ -179,7 +179,39 @@
   color: var(--af-selection);
 }
 
-.af-reader-cap-label h1 {
+.af-reader-reveal-btn {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  left: 14px;
+  z-index: 20;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 1px solid var(--af-control-edge);
+  border-radius: 999px;
+  background: var(--af-panel);
+  color: var(--af-ink);
+  font-size: var(--af-type-caption);
+  font-weight: 650;
+}
+
+.af-reader-reveal-btn:focus-visible {
+  width: auto;
+  height: auto;
+  min-block-size: 36px;
+  padding: 6px 14px;
+  margin: 0;
+  overflow: visible;
+  clip-path: none;
+  box-shadow: 0 8px 24px #0008;
+}
+
+.af-reader-cap-label h1,
+.af-reader-cap-title {
   font-family: var(--af-sans);
   font-size: var(--af-type-caption);
   font-weight: 650;
@@ -669,7 +701,7 @@
 .af-reader-segmented button {
   min-block-size: 2.25rem;
   padding: 4px 8px;
-  border: 1px solid var(--af-divider);
+  border: 1px solid var(--af-control-edge);
   border-radius: var(--af-radius);
   background: var(--af-canvas);
   color: var(--af-secondary-ink);

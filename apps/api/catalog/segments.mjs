@@ -198,7 +198,7 @@ async function loadAniSkipSegments(type, id, season, episode, durationSec) {
       url.searchParams.append('types', skipType);
     }
     url.searchParams.set('episodeLength', '0');
-    const response = await fetch(url, { signal: AbortSignal.timeout(4500) });
+    const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(4500) });
     if (!response.ok) {
       await response.body?.cancel();
       return null;
@@ -277,7 +277,7 @@ async function loadSkipDbSegments(type, imdbId, season, episode, durationSec) {
       url.searchParams.set('season', season);
       url.searchParams.set('episode', episode);
     }
-    const response = await fetch(url, { signal: AbortSignal.timeout(4500) });
+    const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(4500) });
     if (!response.ok) {
       await response.body?.cancel();
       return null;
@@ -354,7 +354,7 @@ async function loadTheIntroDbSegments(type, id, season, episode, durationMs) {
       details: 'true',
       ...(type === 'tv' ? { season, episode } : {}),
     }).toString();
-    const response = await fetch(upstream, { signal: AbortSignal.timeout(5000) });
+    const response = await fetch(upstream, { redirect: 'error', signal: AbortSignal.timeout(5000) });
     if (!response.ok) {
       await response.body?.cancel();
       return null;
@@ -423,7 +423,7 @@ async function loadIntroDbSegments(type, imdbId, season, episode, durationSec) {
     url.searchParams.set('imdb_id', imdbId);
     url.searchParams.set('season', season);
     url.searchParams.set('episode', episode);
-    const response = await fetch(url, { signal: AbortSignal.timeout(4500) });
+    const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(4500) });
     if (!response.ok) {
       await response.body?.cancel();
       return null;

@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  normalizeTitle, normalizeTitles, playHref, request, resumeHref, titleHref, today, webHref,
+  normalizeTitle, normalizeTitles, playHref, readBrowseCache, request, resumeHref, titleHref, today, webHref, writeBrowseCache,
   type CatalogRating, type Comic, type MediaType, type RawTitle, type Title, type TitleResults,
 } from './catalog';
+import { ComicCard, readerHref } from './ComicCard';
 import { ActionLink, Artwork, CatalogProblem, HeroBackdrop, Icon, Loading, MediaCard, SaveButton, Score, Shelf } from './components';
-import { ComicCard, readerHref } from './Comics';
 import { progressPercent, resumeEntries, resumeFor, type LibraryControls } from './library';
 import { useToast } from './Toast';
 
@@ -38,22 +38,40 @@ const shelves: readonly [ShelfKey, string][] = [
   ...collections.map(([key]): [ShelfKey, string] => [key, `/api/home?section=${key}`]),
 ];
 
+type CachedHome = {
+  data: Partial<Record<ShelfKey, ShelfResult>>;
+  ratings: Record<string, CatalogRating>;
+  recentComics: Comic[];
+};
+
 export function Home({ controls }: { controls: LibraryControls }) {
   const { notify } = useToast();
-  const [data, setData] = useState<Partial<Record<ShelfKey, ShelfResult>>>({});
+  const [cached] = useState(() => readBrowseCache<CachedHome>('home:shelves'));
+  const [data, setData] = useState<Partial<Record<ShelfKey, ShelfResult>>>(cached?.data ?? {});
   const [filter, setFilter] = useState<MediaType | 'all'>('all');
   const [trendingByType, setTrendingByType] = useState<Partial<Record<MediaType, Title[]>>>({});
   const [featuredKey, setFeaturedKey] = useState('');
   const [featureDir, setFeatureDir] = useState<1 | -1>(1);
   const [expandedOverviewKey, setExpandedOverviewKey] = useState('');
-  const [ratings, setRatings] = useState<Record<string, CatalogRating>>({});
+  const [ratings, setRatings] = useState<Record<string, CatalogRating>>(cached?.ratings ?? {});
   const [featuredDetails, setFeaturedDetails] = useState<Title>();
-  const [recentComics, setRecentComics] = useState<Comic[]>([]);
+  const [recentComics, setRecentComics] = useState<Comic[]>(cached?.recentComics ?? []);
   const [comicsError, setComicsError] = useState('');
   const [comicsAttempt, setComicsAttempt] = useState(0);
 
   const jobs = useRef<Partial<Record<ShelfKey, AbortController>>>({});
   const [retrying, setRetrying] = useState<Partial<Record<ShelfKey, boolean>>>({});
+
+  useEffect(() => {
+    const loadedShelves = Object.entries(data).filter(([, value]) => value && 'titles' in value);
+    if (loadedShelves.length > 0 || recentComics.length > 0) {
+      writeBrowseCache<CachedHome>('home:shelves', {
+        data: Object.fromEntries(loadedShelves),
+        ratings,
+        recentComics,
+      });
+    }
+  }, [data, ratings, recentComics]);
 
   function loadShelf(key: ShelfKey) {
     const path = shelves.find(([name]) => name === key)?.[1];
@@ -74,12 +92,16 @@ export function Home({ controls }: { controls: LibraryControls }) {
 
   useEffect(() => {
     document.title = 'Afterframe · Movies, TV & Manga';
-    for (const [key] of shelves) loadShelf(key);
+    for (const [key] of shelves) {
+      if (cached?.data[key] && 'titles' in cached.data[key]!) continue;
+      loadShelf(key);
+    }
     const currentJobs = jobs.current;
     return () => { for (const task of Object.values(currentJobs)) task?.abort(); };
-  }, []);
+  }, [cached]);
 
   useEffect(() => {
+    if (cached && cached.recentComics.length > 0 && comicsAttempt === 0) return;
     const task = new AbortController();
     request<{ results: Comic[] }>('/api/comics/updates', { signal: task.signal })
       .then(async res => {
@@ -99,7 +121,7 @@ export function Home({ controls }: { controls: LibraryControls }) {
         if (!task.signal.aborted) setComicsError(problem instanceof Error ? problem.message : 'Manga is temporarily unavailable.');
       });
     return () => task.abort();
-  }, [comicsAttempt]);
+  }, [comicsAttempt, cached]);
 
   useEffect(() => {
     if (filter === 'all' || trendingByType[filter]) return;
@@ -125,9 +147,11 @@ export function Home({ controls }: { controls: LibraryControls }) {
   useEffect(() => {
     if (!ratingKeys) return;
     const task = new AbortController();
-    request<{ ratings: Record<string, CatalogRating> }>(`/api/imdb/cached?titles=${ratingKeys}`, { signal: task.signal })
-      .then(({ ratings }) => { if (!task.signal.aborted) setRatings(current => ({ ...ratings, ...current })); }).catch(() => {});
-    return () => task.abort();
+    const timer = window.setTimeout(() => {
+      request<{ ratings: Record<string, CatalogRating> }>(`/api/imdb/cached?titles=${ratingKeys}`, { signal: task.signal })
+        .then(({ ratings }) => { if (!task.signal.aborted) setRatings(current => ({ ...ratings, ...current })); }).catch(() => {});
+    }, 80);
+    return () => { clearTimeout(timer); task.abort(); };
   }, [ratingKeys]);
 
   function shelfTitles(key: ShelfKey) {
@@ -248,6 +272,7 @@ export function Home({ controls }: { controls: LibraryControls }) {
         <span className="af-feature-title-placeholder" aria-hidden="true" />
         <p className="af-meta" role="status">Loading the catalog…</p>
       </div>
+      <div className="af-feature-choices" aria-hidden="true" />
     </div> : <div className="af-wrap af-title-page">
       <h1>Home</h1>
       {error ? <CatalogProblem error={error} retry={retry} />
@@ -293,7 +318,7 @@ export function Home({ controls }: { controls: LibraryControls }) {
             <button type="button" key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</button>)}
         </div>
       }>
-        {trending.length ? trending.slice(0, 12).map(item => <MediaCard key={item.key} item={withRating(item)} controls={controls} landscape />)
+        {trending.length ? trending.slice(0, 12).map((item, idx) => <MediaCard key={item.key} item={withRating(item)} controls={controls} landscape eager={idx < 4} />)
           : <p className="af-state">No trending titles for this filter.</p>}
       </Shelf>}
       {collections.map(([key, label, path]) => shelfTitles(key).length ? <Shelf title={label} key={key} href={webHref(path)}>

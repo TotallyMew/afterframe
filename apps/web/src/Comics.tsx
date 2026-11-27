@@ -1,15 +1,15 @@
 import { comicEditionCredit, comicLanguage, groupComicEditions } from '@afterframe/shared/comic-display';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { comicCover, comicDetailsHref, navigate, previousBrowse, readBrowseCache, request, routeWithParams, webHref, writeBrowseCache, type Comic } from './catalog';
-import { currentLocationHref, currentSearchParams } from './router';
+import { comicCover, navigate, previousBrowse, readBrowseCache, request, routeWithParams, webHref, writeBrowseCache, type Comic } from './catalog';
 import { InputField, PageHeading, ResultsSummary, RouteTabs, SelectField } from './Catalogue';
-import { ActionLink, Artwork, Icon, Loading, RatingProblem, SaveButton, Score, Shelf, useOptionalRating } from './components';
+import { ComicCard, comicFacts, comicFormatOptions as formats, comicHref, comicStatusOptions as statuses, readerHref, releasedAgo } from './ComicCard';
+import { ActionLink, Icon, Loading, RatingProblem, SaveButton, Score, Shelf, useOptionalRating } from './components';
 import { readingStatuses, savedRating, type LibraryControls, type WatchStatus } from './library';
 import { FolderPickerPopover } from './library/FolderPickerPopover';
 import { AfSelect, MobileFilterSheet, useMediaQuery } from './UiControls';
 
-const formats = [['', 'All'], ['manga', 'Manga'], ['manhwa', 'Manhwa'], ['manhua', 'Manhua']] as const;
-const statuses = [['ongoing', 'Ongoing'], ['completed', 'Completed'], ['hiatus', 'On hiatus'], ['cancelled', 'Cancelled']] as const;
+export { ComicCard, comicHref, readerHref, releasedAgo };
+
 const sorts = [['popular', 'Popularity'], ['trending', 'Trending'], ['updated', 'Latest updates'], ['newest', 'Newly added'], ['rating', 'Top rated'], ['year', 'Publication year'], ['title', 'Title A–Z']] as const;
 const quickSorts = [['trending', 'Trending'], ['updated', 'Latest updates'], ['newest', 'Newly added'], ['rating', 'Top rated']] as const;
 const readingStatusOptions = Object.entries(readingStatuses).map(([value, label]) => ({ value, label }));
@@ -20,69 +20,6 @@ const comicRatingOptions = [
 const fullDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const shortDate = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 
-export function releasedAgo(iso?: string, now = Date.now()) {
-  const time = iso ? Date.parse(iso) : NaN;
-  if (Number.isNaN(time)) return '';
-  const minutes = Math.max(0, Math.round((now - time) / 60_000));
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.round(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  if (days < 30) return `${Math.round(days / 7)}w ago`;
-  if (days < 365) return `${Math.round(days / 30)}mo ago`;
-  return `${Math.round(days / 365)}y ago`;
-}
-
-function LatestRelease({ item }: { item: Comic }) {
-  const ago = releasedAgo(item.latestAt);
-  if (!ago) return null;
-  const chapter = item.latestChapter ? `Ch. ${item.latestChapter}` : 'Updated';
-  return <time className="af-poster-airing af-poster-latest" dateTime={item.latestAt}
-    title={`${item.latestChapter ? `Chapter ${item.latestChapter}` : 'Latest chapter'} released ${fullDate.format(new Date(item.latestAt!))}`}>
-    {chapter} · {ago}
-  </time>;
-}
-
-export function comicHref(item: Pick<Comic, 'id'>) {
-  return comicDetailsHref(item.id);
-}
-
-export function readerHref(item: Pick<Comic, 'id'>, chapter: string, language: string, page = 1, position = 1) {
-  const variables = new URLSearchParams({ lang: language });
-  if (page > 1) variables.set('page', String(page));
-  if (position > 1) variables.set('position', String(position));
-  const prior = currentLocationHref();
-  const back = prior.startsWith('/comic/') ? currentSearchParams().get('back') : prior;
-  if (back) variables.set('back', back);
-  return webHref(routeWithParams(`comic/${encodeURIComponent(item.id)}/read/${encodeURIComponent(chapter)}`, variables));
-}
-
-function comicFacts(item: Comic, includeChapters = true) {
-  const format = formats.find(([key]) => key && key === item.format)?.[1] ?? 'Manga';
-  const status = statuses.find(([key]) => key === item.status)?.[1];
-  const chapters = includeChapters ? (item.chapterCount || item.lastChapter) : '';
-  const chapterLabel = chapters ? `${chapters} ch` : '';
-  return [format, chapterLabel || item.year, status].filter(Boolean).join(' · ');
-}
-
-export function ComicCard({ item, controls, href, context, eager, onDismiss }: {
-  item: Comic; controls: LibraryControls; href?: string; context?: string; eager?: boolean; onDismiss?: () => void;
-}) {
-  const cover = comicCover(item.poster);
-  return <article className="af-media-card"><a href={href || comicHref(item)}>
-    <span className="af-poster"><Artwork src={cover} loading={eager ? 'eager' : 'lazy'} decoding="async" fallback={<Icon name="book" />} />{!context && <LatestRelease item={item} />}</span>
-    <strong>{item.title}</strong><span className="af-card-meta">{context || comicFacts(item)}</span>
-    {!context && <Score mal={item.mal} />}
-  </a>
-    {onDismiss ? <button type="button" className="af-icon-button af-card-save af-card-dismiss"
-      aria-label={`Remove ${item.title} from Continue reading`} title="Remove from Continue reading"
-      onClick={onDismiss}><Icon name="close" /></button>
-      : <SaveButton item={item} controls={controls} compact />}
-  </article>;
-}
-
 type ComicsResults = { results: Comic[]; nextPage?: number | null };
 type CachedComics = {
   items: Comic[];
@@ -91,6 +28,7 @@ type CachedComics = {
   recent: Comic[];
   trending: Comic[];
   chapterCounts: Record<string, string>;
+  malRatings: Record<string, number>;
 };
 
 export function ComicsPage({ query, controls }: { query: string; controls: LibraryControls }) {
@@ -111,6 +49,8 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
   const [updateAttempt, setUpdateAttempt] = useState(0);
   const [chapterCounts, setChapterCounts] = useState<Record<string, string>>(cached?.chapterCounts ?? {});
   const requestedCountsRef = useRef<Set<string>>(new Set(Object.keys(cached?.chapterCounts ?? {})));
+  const [malRatings, setMalRatings] = useState<Record<string, number>>(cached?.malRatings ?? {});
+  const requestedMalRef = useRef<Set<string>>(new Set(Object.keys(cached?.malRatings ?? {})));
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const isCompactBrowse = useMediaQuery('(max-width: 640px)');
   const type = params.get('type') || '';
@@ -123,9 +63,9 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
 
   useEffect(() => {
     if (!loading && items.length) {
-      writeBrowseCache<CachedComics>(cacheKey, { items, page, nextPage, recent, trending, chapterCounts });
+      writeBrowseCache<CachedComics>(cacheKey, { items, page, nextPage, recent, trending, chapterCounts, malRatings });
     }
-  }, [cacheKey, items, page, nextPage, recent, trending, chapterCounts, loading]);
+  }, [cacheKey, items, page, nextPage, recent, trending, chapterCounts, malRatings, loading]);
 
   useEffect(() => {
     if (cached && page === cached.page && attempt === 0) return;
@@ -215,11 +155,44 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
     };
   }, [recent, trending, items]);
 
-  const withChapterCount = (item: Comic) => (
-    item.chapterCount || item.lastChapter || !chapterCounts[item.id]
-      ? item
-      : { ...item, chapterCount: chapterCounts[item.id] }
-  );
+  useEffect(() => {
+    const requested = requestedMalRef.current;
+    const missing = [...new Set([...recent, ...trending, ...items]
+      .filter(item => item.malId && !item.mal && !requested.has(String(item.malId)))
+      .map(item => String(item.malId)))];
+    if (!missing.length) return;
+    const task = new AbortController();
+    const { signal } = task;
+    for (const id of missing) requested.add(id);
+    const pending = new Set(missing);
+    void (async () => {
+      for (let i = 0; i < missing.length; i += 20) {
+        if (signal.aborted) break;
+        const batch = missing.slice(i, i + 20);
+        try {
+          const data = await request<{ ratings?: Record<string, number> }>(`/api/mal/manga/batch?ids=${batch.join(',')}`, { signal });
+          for (const id of batch) pending.delete(id);
+          if (!signal.aborted && data.ratings && Object.keys(data.ratings).length) {
+            setMalRatings(current => ({ ...current, ...data.ratings }));
+          }
+        } catch {
+          if (signal.aborted) break;
+          for (const id of batch) pending.delete(id);
+        }
+      }
+    })();
+    return () => {
+      task.abort();
+      for (const id of pending) requested.delete(id);
+    };
+  }, [recent, trending, items]);
+
+  const withChapterCount = (item: Comic) => {
+    const chapterCount = item.chapterCount || item.lastChapter ? item.chapterCount : chapterCounts[item.id];
+    const mal = item.mal ?? (item.malId ? malRatings[String(item.malId)] : undefined);
+    if (chapterCount === item.chapterCount && mal === item.mal) return item;
+    return { ...item, ...(chapterCount ? { chapterCount } : {}), ...(mal ? { mal } : {}) };
+  };
 
   function withParam(name: string, value: string) {
     const update = new URLSearchParams(params);
@@ -242,7 +215,10 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
             if (val) update.set('q', val); else update.delete('q');
             navigate(routeWithParams('comics', update));
           }}>
-            <input name="q" className="af-select af-input" type="search" placeholder="Search manga…" aria-label="Find manga" maxLength={180} defaultValue={text} />
+            <label className="af-sr-field">
+              <span className="sr-only">Find manga</span>
+              <input name="q" className="af-select af-input" type="search" placeholder="Search manga…" maxLength={180} defaultValue={text} />
+            </label>
           </form>
           <MobileFilterSheet open={mobileFiltersOpen} onOpenChange={setMobileFiltersOpen} title="Filters" activeCount={comicFilterCount}>
             <form className="af-mobile-filter-form" onSubmit={event => {
@@ -358,7 +334,19 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
   useEffect(() => {
     const task = new AbortController();
     request<{ results: Comic[] }>(`/api/comics/${id}/related`, { signal: task.signal })
-      .then(result => { if (!task.signal.aborted && Array.isArray(result.results)) setRelated(result.results); })
+      .then(result => {
+        if (task.signal.aborted || !Array.isArray(result.results)) return;
+        setRelated(result.results);
+        const ids = result.results.flatMap(entry => entry.malId && !entry.mal ? [String(entry.malId)] : []);
+        if (!ids.length) return;
+        request<{ ratings?: Record<string, number> }>(`/api/mal/manga/batch?ids=${ids.join(',')}`, { signal: task.signal })
+          .then(({ ratings }) => {
+            if (task.signal.aborted || !ratings) return;
+            setRelated(current => current.map(entry => (
+              entry.malId && ratings[String(entry.malId)] ? { ...entry, mal: ratings[String(entry.malId)] } : entry
+            )));
+          }).catch(() => {});
+      })
       .catch(() => {});
     return () => task.abort();
   }, [id]);
@@ -487,14 +475,16 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
             </p>}
           </div>
           <div className="af-actions af-chapter-controls">
-            <input
-              type="search"
-              className="af-select af-input af-chapter-search"
-              placeholder="Search chapter # or title"
-              aria-label="Search chapters"
-              value={chapterQuery}
-              onChange={event => setChapterQuery(event.target.value)}
-            />
+            <label className="af-sr-field">
+              <span className="sr-only">Search chapters</span>
+              <input
+                type="search"
+                className="af-select af-input af-chapter-search"
+                placeholder="Search chapter # or title"
+                value={chapterQuery}
+                onChange={event => setChapterQuery(event.target.value)}
+              />
+            </label>
             <button
               type="button"
               className="af-button af-secondary"

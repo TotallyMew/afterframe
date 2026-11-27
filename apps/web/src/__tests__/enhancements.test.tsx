@@ -24,6 +24,7 @@ function makeControls(overrides: Partial<LibraryControls> = {}): LibraryControls
     refresh: async () => {},
     toggleSaved: async () => true,
     toggleWatched: async () => {},
+    markEpisodesWatched: async () => true,
     rate: async () => true,
     setStatus: async () => true,
     setComicStatus: () => undefined,
@@ -74,6 +75,30 @@ describe('Afterframe web enhancements', () => {
     expect(normalizeBackParam('/comic/abc-123')).toBe('/comic/abc-123');
     expect(normalizeBackParam('/edition/archive-night')).toBe('/edition/archive-night');
     expect(normalizeBackParam('//evil.example/phish')).toBeNull();
+    expect(normalizeRouteString('\\\\evil.example/phish')).toBe('evil.example/phish');
+  });
+
+  it('respects singleKeyShortcuts: false for / and ? while keeping Ctrl+K active', () => {
+    const controls = makeControls({
+      library: {
+        saved: {}, watched: {}, ratings: {}, progress: {},
+        preferences: { singleKeyShortcuts: false },
+        reading: {}, history: {}, notifications: {},
+      },
+    });
+    const onOpenChange = vi.fn();
+    render(
+      <>
+        <Header controls={controls} route="home" />
+        <ShortcutsDialog open={false} onOpenChange={onOpenChange} singleKeyShortcuts={false} />
+      </>,
+    );
+    fireEvent.keyDown(window, { key: '/' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    fireEvent.keyDown(window, { key: '?' });
+    expect(onOpenChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+    expect(screen.getByRole('dialog')).toBeTruthy();
   });
 
   it('surfaces My Library matches and quick commands inside the Command Palette', async () => {

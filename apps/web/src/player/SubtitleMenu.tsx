@@ -1,6 +1,6 @@
 import { Dialog } from '@base-ui/react/dialog';
 import { playbackLanguage, samePlaybackLanguage, type SubtitleCue, type SubtitleTrack } from '@afterframe/shared/subtitles';
-import { useMemo, useState, type RefObject } from 'react';
+import { useMemo, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from 'react';
 import { Icon } from '../components';
 import type { LibraryControls } from '../library';
 import { PlayerGlyph } from './PlayerGlyph';
@@ -115,13 +115,21 @@ export function SubtitleMenu({
 
   const formattedOffset = `${captionStyle.offset > 0 ? '+' : ''}${captionStyle.offset.toFixed(1)}s`;
 
+  const handleTabKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 'tracks' : event.key === 'End' ? 'style' : tab === 'tracks' ? 'style' : 'tracks';
+    setTab(next);
+    document.getElementById(`af-sub-tab-${next}`)?.focus();
+  };
+
   const body = <>
-    {isEmbed && <div className="af-player-tabs" role="tablist" aria-label="Subtitle options">
-      <button type="button" role="tab" aria-selected={tab === 'tracks'} onClick={() => setTab('tracks')}>Tracks</button>
-      <button type="button" role="tab" aria-selected={tab === 'style'} onClick={() => setTab('style')}>Style &amp; sync</button>
+    {isEmbed && <div className="af-player-tabs" role="tablist" aria-label="Subtitle options" onKeyDown={handleTabKey}>
+      <button id="af-sub-tab-tracks" type="button" role="tab" aria-selected={tab === 'tracks'} aria-controls="af-sub-panel-tracks" tabIndex={tab === 'tracks' ? 0 : -1} onClick={() => setTab('tracks')}>Tracks</button>
+      <button id="af-sub-tab-style" type="button" role="tab" aria-selected={tab === 'style'} aria-controls="af-sub-panel-style" tabIndex={tab === 'style' ? 0 : -1} onClick={() => setTab('style')}>Style &amp; sync</button>
     </div>}
 
-    {tab === 'tracks' || !isEmbed ? <>
+    {tab === 'tracks' || !isEmbed ? <div role={isEmbed ? 'tabpanel' : undefined} id={isEmbed ? 'af-sub-panel-tracks' : undefined} aria-labelledby={isEmbed ? 'af-sub-tab-tracks' : undefined}>
       {!isEmbed && <button type="button" className="af-subtitle-choice" aria-pressed={nativeCaptionsOn} onClick={() => {
         const track = videoRef.current?.textTracks[0];
         if (track) {
@@ -132,22 +140,24 @@ export function SubtitleMenu({
       }}><span>English (auto-generated)</span>{nativeCaptionsOn && <Icon name="check" />}</button>}
       {isEmbed && <>
         {orderedLanguages.length >= 6 && (
-          <input
-            type="search"
-            className="af-player-sub-search"
-            placeholder="Filter language"
-            aria-label="Filter subtitle language"
-            value={langFilter}
-            onChange={event => {
-              const next = event.target.value;
-              setLangFilter(next);
-              const q = next.trim().toLowerCase();
-              if (q) {
-                const firstMatch = orderedLanguages.find(l => l.toLowerCase().includes(q));
-                if (firstMatch && firstMatch !== subLang) onSelectLanguage(firstMatch);
-              }
-            }}
-          />
+          <label className="af-player-sub-search-wrap">
+            <span className="sr-only">Filter subtitle language</span>
+            <input
+              type="search"
+              className="af-player-sub-search"
+              placeholder="Filter language"
+              value={langFilter}
+              onChange={event => {
+                const next = event.target.value;
+                setLangFilter(next);
+                const q = next.trim().toLowerCase();
+                if (q) {
+                  const firstMatch = orderedLanguages.find(l => l.toLowerCase().includes(q));
+                  if (firstMatch && firstMatch !== subLang) onSelectLanguage(firstMatch);
+                }
+              }}
+            />
+          </label>
         )}
         {orderedLanguages.length > 0 && <label className="af-player-language">
           <span>Language</span>
@@ -185,7 +195,7 @@ export function SubtitleMenu({
         </div>
         {subStatus && <p className="af-meta" role="status">{subStatus}</p>}
       </>}
-    </> : <div className="af-sub-style-panel">
+    </div> : <div className="af-sub-style-panel" role="tabpanel" id="af-sub-panel-style" aria-labelledby="af-sub-tab-style">
       <div>
         <p className="af-meta">Text size</p>
         <div className="af-player-choice-group" role="group" aria-label="Subtitle size">
@@ -207,7 +217,7 @@ export function SubtitleMenu({
       <div>
         <div className="af-sub-sync-head">
           <span className="af-meta">Timing offset</span>
-          <span className="af-tabular af-sub-sync-val">{formattedOffset}</span>
+          <span className="af-tabular af-sub-sync-val" role="status" aria-live="polite">{formattedOffset}</span>
         </div>
         <div className="af-player-choice-group af-sub-sync-row" role="group" aria-label="Subtitle timing offset">
           <button type="button" onClick={() => onChangeCaptionStyle({ ...captionStyle, offset: Math.max(-15, Math.round((captionStyle.offset - 0.5) * 10) / 10) })}>−0.5s</button>

@@ -1,7 +1,7 @@
 export const preferenceDefaults = {
   intro: true, recap: true, credits: true, autoplay: true, resume: true, autoAddWatching: true,
   volume: true, subtitles: true, blur: true, hideSynopsis: true,
-  reducedMotion: false, compact: false, confirmRemoval: true,
+  reducedMotion: false, compact: false, confirmRemoval: true, singleKeyShortcuts: true,
   notifyEpisodes: true, notifySeasonStarts: true, notifySeasonSchedules: true,
 };
 

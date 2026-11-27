@@ -91,26 +91,40 @@ export function FolderPickerPopover({
               <p className="af-meta af-folder-empty-hint">No folders yet. Create one below.</p>
             )}
             <form className="af-folder-create-inline" onSubmit={handleCreate}>
-              <input
-                type="text"
-                className="af-input"
-                placeholder="New folder name…"
-                aria-label="New folder name"
-                maxLength={50}
-                value={newName}
-                onChange={event => setNewName(event.target.value)}
-              />
+              <label className="af-sr-field">
+                <span className="sr-only">New folder name</span>
+                <input
+                  type="text"
+                  className="af-input"
+                  placeholder="New folder name…"
+                  maxLength={50}
+                  value={newName}
+                  onChange={event => setNewName(event.target.value)}
+                />
+              </label>
               <div className="af-folder-create-row">
                 <div className="af-folder-swatches" role="radiogroup" aria-label="Folder color">
-                  {folderColors.map(swatch => (
+                  {folderColors.map((swatch, idx) => (
                     <button
                       key={swatch}
                       type="button"
                       className={`af-folder-swatch is-${swatch} ${color === swatch ? 'is-selected' : ''}`}
                       role="radio"
                       aria-checked={color === swatch}
+                      tabIndex={color === swatch ? 0 : -1}
                       aria-label={`Color ${swatch}`}
                       onClick={() => setColor(swatch)}
+                      onKeyDown={event => {
+                        let nextIdx = -1;
+                        if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIdx = (idx + 1) % folderColors.length;
+                        else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIdx = (idx - 1 + folderColors.length) % folderColors.length;
+                        else if (event.key === 'Home') nextIdx = 0;
+                        else if (event.key === 'End') nextIdx = folderColors.length - 1;
+                        if (nextIdx < 0) return;
+                        event.preventDefault();
+                        setColor(folderColors[nextIdx]);
+                        event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[nextIdx]?.focus();
+                      }}
                     />
                   ))}
                 </div>

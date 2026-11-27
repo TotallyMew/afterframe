@@ -1,5 +1,6 @@
+import { Dialog } from '@base-ui/react/dialog';
 import { comicEditionCredit, comicLanguage, groupComicEditions } from '@afterframe/shared/comic-display';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type PointerEvent } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type PointerEvent } from 'react';
 import { navigate, request, routeWithParams, webHref, type Comic } from './catalog';
 import { ActionLink, Icon, Loading } from './components';
 import type { LibraryControls } from './library';
@@ -111,12 +112,13 @@ function Transcript({ transcript, count }: { transcript: ChapterContent['transcr
   </details>;
 }
 
-function ReaderImage({ page, src, visible, described, onLoad }: { page: number; src: string; visible: boolean; described: boolean; onLoad: (page: number) => void }) {
+const ReaderImage = memo(function ReaderImage({ page, src, visible, described, onLoad }: { page: number; src: string; visible: boolean; described: boolean; onLoad: (page: number) => void }) {
   const [attempt, setAttempt] = useState(0);
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [ratio, setRatio] = useState<string>();
   const address = src && attempt ? `${src}${src.includes('?') ? '&' : '?'}retry=${attempt}` : src;
-  return <div className="af-reader-page" data-page-number={page} data-page-loaded={loaded || undefined}>
+  return <div className="af-reader-page" data-page-number={page} data-page-loaded={loaded || undefined} style={ratio ? { aspectRatio: ratio } : undefined}>
     {failed || !address ? <div className="af-reader-page-state" role="status">
       <p>Page {page} could not be loaded.</p>
       {address && <button className="af-button af-secondary" type="button" onClick={() => { setFailed(false); setAttempt(value => value + 1); }}>Retry page {page}</button>}
@@ -124,10 +126,16 @@ function ReaderImage({ page, src, visible, described, onLoad }: { page: number; 
       {!loaded && visible && <p className="af-reader-page-state" role="status">Loading page {page}…</p>}
       <img key={address} src={address} alt={`Manga page ${page}`} aria-describedby={described ? `comic-transcript-page-${page}` : undefined}
         aria-hidden={!loaded || undefined} loading={visible ? 'eager' : 'lazy'} decoding="async"
-        onLoad={() => { setLoaded(true); onLoad(page); }} onError={() => { setLoaded(false); setFailed(true); }} />
+        onLoad={event => {
+          const { naturalWidth, naturalHeight } = event.currentTarget;
+          if (naturalWidth > 0 && naturalHeight > 0) setRatio(`${naturalWidth} / ${naturalHeight}`);
+          setLoaded(true);
+          onLoad(page);
+        }}
+        onError={() => { setLoaded(false); setFailed(true); }} />
     </>}
   </div>;
-}
+});
 
 function ExpandIcon({ expanded }: { expanded: boolean }) {
   return <svg className="af-icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -446,6 +454,13 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
     }
   };
 
+  const modalInvokerRef = useRef<HTMLElement | null>(null);
+  const modalCloseRef = useRef<HTMLButtonElement>(null);
+  const openModalTab = (next: 'settings' | 'chapters' | null, invoker?: HTMLElement | null) => {
+    if (next && invoker) modalInvokerRef.current = invoker;
+    setDrawerTab(next);
+  };
+  const singleKeyEnabled = controls.library.preferences.singleKeyShortcuts !== false;
   const shortcutsRef = useRef<(event: globalThis.KeyboardEvent) => void>(() => {});
   shortcutsRef.current = (event: globalThis.KeyboardEvent) => {
     const target = event.target instanceof Element ? event.target : null;
@@ -455,11 +470,20 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
     if (openDialog && !shellRef.current?.contains(openDialog)) return;
     const key = event.key.toLowerCase();
     if (key === 'escape' && drawerTab) { event.preventDefault(); setDrawerTab(null); return; }
+    if (layout !== 'scroll' && !openDialog && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+      if (target?.closest('button, a, summary')) return;
+      event.preventDefault();
+      const leftPressed = event.key === 'ArrowLeft';
+      if ((direction === 'rtl' && leftPressed) || (direction === 'ltr' && !leftPressed)) stepForward();
+      else stepBackward();
+      return;
+    }
+    if (!singleKeyEnabled || target?.closest('button, a, summary')) return;
     if (openDialog && key !== 'g' && key !== 's') return;
     if (key === 'f') { event.preventDefault(); void toggleFullscreen(); return; }
     if (key === 'm' || key === 'x') { event.preventDefault(); toggleHud(); return; }
-    if (key === 'g') { event.preventDefault(); setDrawerTab(current => current === 'chapters' ? null : 'chapters'); return; }
-    if (key === 's') { event.preventDefault(); setDrawerTab(current => current === 'settings' ? null : 'settings'); return; }
+    if (key === 'g') { event.preventDefault(); openModalTab(drawerTab === 'chapters' ? null : 'chapters', document.activeElement as HTMLElement | null); return; }
+    if (key === 's') { event.preventDefault(); openModalTab(drawerTab === 'settings' ? null : 'settings', document.activeElement as HTMLElement | null); return; }
     if (key === '+' || key === '=') { event.preventDefault(); adjustZoom(zoom + 0.25); return; }
     if (key === '-') { event.preventDefault(); adjustZoom(zoom - 0.25); return; }
     if (key === '0') { event.preventDefault(); adjustZoom(1); return; }
@@ -472,12 +496,6 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
       });
       return;
     }
-    if (layout !== 'scroll' && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
-      event.preventDefault();
-      const leftPressed = event.key === 'ArrowLeft';
-      if ((direction === 'rtl' && leftPressed) || (direction === 'ltr' && !leftPressed)) stepForward();
-      else stepBackward();
-    }
   };
 
   useEffect(() => {
@@ -489,9 +507,9 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
     };
   }, []);
 
-  const markLoaded = (num: number) => {
+  const markLoaded = useCallback((num: number) => {
     setLoaded(current => current.has(num) ? current : new Set([...current, num]));
-  };
+  }, []);
 
   const handleStagePointerDown = (event: PointerEvent<HTMLDivElement>) => {
     if (layout !== 'scroll' || zoom > 1) return;
@@ -530,8 +548,22 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
 
   const activeSet = useMemo(() => new Set(visiblePages), [visiblePages]);
 
-  return <section className="af-comic-reader" data-layout={layout} data-oled={oledMode || undefined}>
-    <div className={`af-reader-shell ${hudShown ? '' : 'is-hud-hidden'}`} data-layout={layout} ref={shellRef} tabIndex={0} aria-label="Chapter reader">
+  const handleModalTabKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 'settings' : event.key === 'End' ? 'chapters' : drawerTab === 'settings' ? 'chapters' : 'settings';
+    setDrawerTab(next);
+    document.getElementById(`af-reader-tab-${next}`)?.focus();
+  };
+
+  return <section className="af-comic-reader" aria-label="Chapter reader" data-layout={layout} data-oled={oledMode || undefined}>
+    <h1 className="sr-only" tabIndex={-1}>{chapter.label}</h1>
+    <div className={`af-reader-shell ${hudShown ? '' : 'is-hud-hidden'}`} data-layout={layout} ref={shellRef}>
+      {!hudShown && (
+        <button type="button" className="af-reader-reveal-btn" onClick={() => setHudVisible(true)}>
+          Show reader controls
+        </button>
+      )}
 
       {/* Subtle Floating Top-Left Back Pill */}
       <div className="af-reader-float af-reader-float-back" aria-hidden={!hudShown || undefined}>
@@ -553,9 +585,9 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
             aria-expanded={drawerTab === 'chapters'}
             title={`${chapter.label}${chapter.title ? ` · ${chapter.title}` : ''} — Open chapters`}
             tabIndex={hudShown ? 0 : -1}
-            onClick={() => setDrawerTab(t => t === 'chapters' ? null : 'chapters')}
+            onClick={event => openModalTab(drawerTab === 'chapters' ? null : 'chapters', event.currentTarget)}
           >
-            <h1>{chapter.label}</h1>
+            <span className="af-reader-cap-title">{chapter.label}</span>
           </button>
           {neighbors?.next
             ? <a className="af-reader-cap-arrow" href={neighboringHref(item.id, neighbors.next, back)} aria-label="Next chapter" title="Next chapter" tabIndex={hudShown ? 0 : -1}><Icon name="right" /></a>
@@ -572,7 +604,7 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
           title="Chapters (G)"
           aria-expanded={drawerTab === 'chapters'}
           tabIndex={hudShown ? 0 : -1}
-          onClick={() => setDrawerTab(t => t === 'chapters' ? null : 'chapters')}
+          onClick={event => openModalTab(drawerTab === 'chapters' ? null : 'chapters', event.currentTarget)}
         >
           <Icon name="book" />
         </button>
@@ -583,7 +615,7 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
           title="Reader settings (S)"
           aria-expanded={drawerTab === 'settings'}
           tabIndex={hudShown ? 0 : -1}
-          onClick={() => setDrawerTab(t => t === 'settings' ? null : 'settings')}
+          onClick={event => openModalTab(drawerTab === 'settings' ? null : 'settings', event.currentTarget)}
         >
           <Icon name="settings" />
         </button>
@@ -600,7 +632,7 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
         <button
           type="button"
           className="af-reader-dock-btn"
-          aria-label={nativeFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          aria-label="Fullscreen"
           title={nativeFullscreen ? 'Exit fullscreen (F)' : 'Fullscreen (F)'}
           aria-pressed={nativeFullscreen}
           tabIndex={hudShown ? 0 : -1}
@@ -610,12 +642,11 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
         </button>
       </nav>
 
-      {/* Ultra-Thin 3px Clickable Edge Progress Bar (stays quietly visible even when HUD is hidden) */}
+      {/* Ultra-Thin Visual Edge Progress Bar (decorative pointer scrub; keyboard/AT use bottom range slider) */}
       {progressPos !== 'off' && total > 1 && (
         <div
           className={`af-reader-edge-rail is-${progressPos}`}
-          role="navigation"
-          aria-label="Page position"
+          aria-hidden="true"
         >
           {total <= 80 ? (
             pages.map((_, idx) => {
@@ -623,12 +654,9 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
               const isCurrent = layout === 'scroll' ? num === page : activeSet.has(num);
               const isRead = num < page;
               return (
-                <button
+                <span
                   key={num}
-                  type="button"
-                  tabIndex={-1}
                   className={`af-reader-edge-tick ${isCurrent ? 'is-current' : isRead ? 'is-read' : ''}`}
-                  aria-label={`Jump to page ${num}`}
                   title={`Page ${num} / ${total}`}
                   onClick={event => { event.stopPropagation(); jump(num); }}
                 />
@@ -738,7 +766,7 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
         </div>
 
         {layout !== 'scroll' && (
-          <div className="af-reader-zoom-pill" aria-label="Zoom controls">
+          <div className="af-reader-zoom-pill" role="group" aria-label="Zoom controls">
             <button type="button" className="af-reader-cap-arrow" aria-label="Zoom out" disabled={zoom <= 1} onClick={() => adjustZoom(zoom - 0.25)}>−</button>
             <button type="button" className="af-reader-zoom-val" aria-label="Reset zoom" onClick={() => adjustZoom(1)}>{zoom.toFixed(1)}×</button>
             <button type="button" className="af-reader-cap-arrow" aria-label="Zoom in" disabled={zoom >= 3} onClick={() => adjustZoom(zoom + 0.25)}>+</button>
@@ -746,21 +774,49 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
         )}
       </div>}
 
-      {/* Centered Translucent Settings & Chapters Modal (MangaFire-style) */}
-      {drawerTab && <>
-        <div className="af-reader-modal-scrim" onClick={() => setDrawerTab(null)} aria-hidden="true" />
-        <div className="af-reader-modal" role="dialog" aria-modal="true" aria-label="Reader menu">
-          <div className="af-reader-modal-head">
-            <div className="af-reader-modal-tabs" role="tablist">
-              <button type="button" role="tab" aria-selected={drawerTab === 'settings'} onClick={() => setDrawerTab('settings')}>Settings</button>
-              <button type="button" role="tab" aria-selected={drawerTab === 'chapters'} onClick={() => setDrawerTab('chapters')}>Chapters</button>
+      {/* Centered Translucent Settings & Chapters Modal (Base UI Dialog for focus trap & restoration) */}
+      <Dialog.Root open={drawerTab !== null} onOpenChange={next => { if (!next) setDrawerTab(null); }}>
+        <Dialog.Portal>
+          <Dialog.Backdrop className="af-reader-modal-scrim" />
+          <Dialog.Popup
+            className="af-reader-modal"
+            aria-label="Reader menu"
+            initialFocus={modalCloseRef}
+            finalFocus={() => modalInvokerRef.current?.isConnected ? modalInvokerRef.current : document.getElementById('main')}
+          >
+            <Dialog.Title className="sr-only">Reader menu</Dialog.Title>
+            <div className="af-reader-modal-head">
+              <div className="af-reader-modal-tabs" role="tablist" aria-label="Reader menu sections" onKeyDown={handleModalTabKey}>
+                <button
+                  id="af-reader-tab-settings"
+                  type="button"
+                  role="tab"
+                  aria-selected={drawerTab === 'settings'}
+                  aria-controls="af-reader-panel-settings"
+                  tabIndex={drawerTab === 'settings' ? 0 : -1}
+                  onClick={() => setDrawerTab('settings')}
+                >Settings</button>
+                <button
+                  id="af-reader-tab-chapters"
+                  type="button"
+                  role="tab"
+                  aria-selected={drawerTab === 'chapters'}
+                  aria-controls="af-reader-panel-chapters"
+                  tabIndex={drawerTab === 'chapters' ? 0 : -1}
+                  onClick={() => setDrawerTab('chapters')}
+                >Chapters</button>
+              </div>
+              <Dialog.Close ref={modalCloseRef} className="af-icon-button af-reader-modal-close" aria-label="Close reader menu">
+                <Icon name="close" />
+              </Dialog.Close>
             </div>
-            <button type="button" className="af-icon-button af-reader-modal-close" aria-label="Close reader menu" onClick={() => setDrawerTab(null)}>
-              <Icon name="close" />
-            </button>
-          </div>
 
-          <div className="af-reader-modal-body">
+            <div
+              className="af-reader-modal-body"
+              role="tabpanel"
+              id={`af-reader-panel-${drawerTab ?? 'settings'}`}
+              aria-labelledby={`af-reader-tab-${drawerTab ?? 'settings'}`}
+            >
             {drawerTab === 'settings' ? <>
               <div className="af-reader-control-group">
                 <span className="af-reader-control-label">Page style</span>
@@ -866,9 +922,9 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
               <div className="af-reader-control-group">
                 <span className="af-reader-control-label">Zoom ({Math.round(zoom * 100)}%)</span>
                 <div className="af-reader-segmented" role="group" aria-label="Zoom">
-                  <button type="button" disabled={zoom <= 1} onClick={() => adjustZoom(zoom - 0.25)}>−</button>
+                  <button type="button" aria-label="Zoom out" disabled={zoom <= 1} onClick={() => adjustZoom(zoom - 0.25)}>−</button>
                   <button type="button" aria-pressed={zoom === 1} onClick={() => adjustZoom(1)}>100%</button>
-                  <button type="button" disabled={zoom >= 3} onClick={() => adjustZoom(zoom + 0.25)}>+</button>
+                  <button type="button" aria-label="Zoom in" disabled={zoom >= 3} onClick={() => adjustZoom(zoom + 0.25)}>+</button>
                 </div>
               </div>
 
@@ -888,14 +944,16 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
                 <span className="af-meta">{comicLanguage(chapter.language)} · {total} {total === 1 ? 'page' : 'pages'}{credit ? ` · ${credit}` : ''}</span>
               </div>
               {navError && <p className="af-meta" role="alert">{navError} <button type="button" className="af-text-link" onClick={() => { setNavError(''); setNavigationAttempt(v => v + 1); }}>Retry</button></p>}
-              {chapterList.length > 0 && <input
-                type="search"
-                className="af-select af-input af-reader-chapter-search"
-                placeholder="Search chapter # or title"
-                aria-label="Search chapters"
-                value={chapterFilter}
-                onChange={event => setChapterFilter(event.target.value)}
-              />}
+              {chapterList.length > 0 && <label className="af-reader-chapter-search-wrap">
+                <span className="sr-only">Search chapters</span>
+                <input
+                  type="search"
+                  className="af-select af-input af-reader-chapter-search"
+                  placeholder="Search chapter # or title"
+                  value={chapterFilter}
+                  onChange={event => setChapterFilter(event.target.value)}
+                />
+              </label>}
               {chapterList.length > 0 ? <div className="af-reader-chapter-list">
                 {chapterList.filter(entry => {
                   const needle = chapterFilter.trim().toLowerCase();
@@ -917,9 +975,10 @@ function ChapterReader({ data: { item, chapter, pages, transcript }, listPage, r
               </div> : <p className="af-meta">Loading chapter list…</p>}
               <a className="af-text-link" href={listHref}><Icon name="book" /> Back to manga details</a>
             </>}
-          </div>
-        </div>
-      </>}
+            </div>
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
 
     {/* Clean end-of-chapter footer & accessible transcript */}
