@@ -2,13 +2,13 @@ import { comicEditionCredit, comicLanguage, groupComicEditions } from '@afterfra
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { comicCover, navigate, previousBrowse, readBrowseCache, request, routeWithParams, webHref, writeBrowseCache, type Comic } from './catalog';
 import { InputField, PageHeading, ResultsSummary, RouteTabs, SelectField } from './Catalogue';
-import { ComicCard, comicFacts, comicFormatOptions as formats, comicHref, comicStatusOptions as statuses, readerHref, releasedAgo } from './ComicCard';
+import { ComicCard, comicFacts, comicFormatOptions as formats, comicStatusOptions as statuses, readerHref, releasedAgo } from './ComicCard';
 import { ActionLink, Icon, Loading, RatingProblem, SaveButton, Score, Shelf, useOptionalRating } from './components';
 import { readingStatuses, savedRating, type LibraryControls, type WatchStatus } from './library';
 import { FolderPickerPopover } from './library/FolderPickerPopover';
 import { AfSelect, MobileFilterSheet, useMediaQuery } from './UiControls';
 
-export { ComicCard, comicHref, readerHref, releasedAgo };
+export { ComicCard, comicHref, readerHref, releasedAgo } from './ComicCard';
 
 const sorts = [['popular', 'Popularity'], ['trending', 'Trending'], ['updated', 'Latest updates'], ['newest', 'Newly added'], ['rating', 'Top rated'], ['year', 'Publication year'], ['title', 'Title A–Z']] as const;
 const quickSorts = [['trending', 'Trending'], ['updated', 'Latest updates'], ['newest', 'Newly added'], ['rating', 'Top rated']] as const;
@@ -31,7 +31,153 @@ type CachedComics = {
   malRatings: Record<string, number>;
 };
 
-export function ComicsPage({ query, controls }: { query: string; controls: LibraryControls }) {
+interface BatchFetchOptions<T> {
+  ids: string[];
+  batchSize: number;
+  signal: AbortSignal;
+  pending: Set<string>;
+  fetchBatch: (batch: string[], signal: AbortSignal) => Promise<Record<string, T> | undefined>;
+  onData: (values: Record<string, T>) => void;
+}
+
+async function runBatchStep<T>(options: BatchFetchOptions<T>, index = 0): Promise<void> {
+  const { ids, batchSize, signal, pending, fetchBatch, onData } = options;
+  if (signal.aborted || index >= ids.length) return;
+  const batch = ids.slice(index, index + batchSize);
+  try {
+    const values = await fetchBatch(batch, signal);
+    for (const id of batch) pending.delete(id);
+    if (!signal.aborted && values && Object.keys(values).length) {
+      onData(values);
+    }
+  } catch {
+    if (signal.aborted) return;
+    for (const id of batch) pending.delete(id);
+  }
+  await runBatchStep(options, index + batchSize);
+}
+
+function appendFormFilters(target: URLSearchParams, form: HTMLFormElement) {
+  for (const [key, value] of new FormData(form)) {
+    if (typeof value === 'string' && value.trim()) target.set(key, value.trim());
+  }
+}
+
+function ComicsFilterBar({
+  isCompactBrowse,
+  params,
+  type,
+  text,
+  selectedGenre,
+  genreOptions,
+  comicFilterCount,
+  genresFailed,
+  onRetryGenres,
+  mobileFiltersOpen,
+  onMobileFiltersOpenChange,
+}: Readonly<{
+  isCompactBrowse: boolean;
+  params: URLSearchParams;
+  type: string;
+  text: string;
+  selectedGenre: string;
+  genreOptions: readonly (readonly [string, string])[];
+  comicFilterCount: number;
+  genresFailed: boolean;
+  onRetryGenres: () => void;
+  mobileFiltersOpen: boolean;
+  onMobileFiltersOpenChange: (open: boolean) => void;
+}>) {
+  const sortPlaceholder = text ? 'Relevance' : 'Default order';
+  const statusValue = params.get('status') || '';
+  const sortValue = params.get('sort') || '';
+
+  if (isCompactBrowse) {
+    return (
+      <div className="af-mobile-browse-bar af-mobile-comic-bar">
+        <form className="af-mobile-search-inline" onSubmit={event => {
+          event.preventDefault();
+          const update = new URLSearchParams(params);
+          update.delete('page');
+          const rawQuery = new FormData(event.currentTarget).get('q');
+          const val = typeof rawQuery === 'string' ? rawQuery.trim() : '';
+          if (val) update.set('q', val); else update.delete('q');
+          navigate(routeWithParams('comics', update));
+        }}>
+          <label className="af-sr-field">
+            <span className="sr-only">Find manga</span>
+            <input name="q" className="af-select af-input" type="search" placeholder="Search manga…" maxLength={180} defaultValue={text} />
+          </label>
+        </form>
+        <MobileFilterSheet open={mobileFiltersOpen} onOpenChange={onMobileFiltersOpenChange} title="Filters" activeCount={comicFilterCount}>
+          <form className="af-mobile-filter-form" onSubmit={event => {
+            event.preventDefault();
+            const update = new URLSearchParams();
+            if (type) update.set('type', type);
+            if (text) update.set('q', text);
+            appendFormFilters(update, event.currentTarget);
+            onMobileFiltersOpenChange(false);
+            navigate(routeWithParams('comics', update));
+          }}>
+            <div className="af-facet-with-status">
+              <SelectField label="Genre" name="genre" empty="All genres" value={selectedGenre} options={genreOptions} />
+              {genresFailed && <output className="af-meta">Genres are unavailable. <button type="button" className="af-text-link" onClick={onRetryGenres}>Retry genres</button></output>}
+            </div>
+            <SelectField label="Status" name="status" empty="Any status" value={statusValue} options={statuses} />
+            <SelectField label="Sort by" name="sort" empty={sortPlaceholder} value={sortValue} options={sorts} />
+            <button className="af-button af-primary af-sheet-submit" type="submit">Apply filters</button>
+          </form>
+        </MobileFilterSheet>
+      </div>
+    );
+  }
+
+  return (
+    <form className="af-field-bar" onSubmit={event => {
+      event.preventDefault();
+      const update = new URLSearchParams();
+      if (type) update.set('type', type);
+      appendFormFilters(update, event.currentTarget);
+      navigate(routeWithParams('comics', update));
+    }}>
+      <div className="af-catalog-search"><InputField name="q" label="Find manga" type="search" placeholder="Search manga…" maxLength={180} defaultValue={text} /></div>
+      <div className="af-facet-with-status">
+        <SelectField label="Genre" name="genre" empty="All genres" value={selectedGenre} options={genreOptions} />
+        {genresFailed && <output className="af-meta">Genres are unavailable. <button type="button" className="af-text-link" onClick={onRetryGenres}>Retry genres</button></output>}
+      </div>
+      <SelectField label="Status" name="status" empty="Any status" value={statusValue} options={statuses} />
+      <SelectField label="Sort by" name="sort" empty={sortPlaceholder} value={sortValue} options={sorts} />
+      <button className="af-button af-primary" type="submit">Apply filters</button>
+    </form>
+  );
+}
+
+function mergeComicMetadata(
+  item: Comic,
+  chapterCounts: Record<string, string>,
+  malRatings: Record<string, number>,
+): Comic {
+  const chapterCount = item.chapterCount || item.lastChapter ? item.chapterCount : chapterCounts[item.id];
+  const mal = item.mal ?? (item.malId ? malRatings[String(item.malId)] : undefined);
+  if (chapterCount === item.chapterCount && mal === item.mal) return item;
+  return { ...item, ...(chapterCount ? { chapterCount } : {}), ...(mal ? { mal } : {}) };
+}
+
+function withComicsParam(params: URLSearchParams, name: string, value: string): string {
+  const update = new URLSearchParams(params);
+  update.delete('page');
+  if (value) update.set(name, value); else update.delete(name);
+  return routeWithParams('comics', update);
+}
+
+function findLatestRelease(chapters?: Chapters): string | undefined {
+  return chapters?.results.reduce<string | undefined>(
+    (latest, entry) => (entry.releasedAt && (!latest || entry.releasedAt > latest) ? entry.releasedAt : latest),
+    undefined,
+  );
+}
+
+export function ComicsPage({ query, controls }: Readonly<{ query: string; controls: LibraryControls }>) {
   const params = new URLSearchParams(query);
   const cacheKey = `comics:${query}`;
   const [cached] = useState(() => readBrowseCache<CachedComics>(cacheKey));
@@ -80,7 +226,7 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
         setItems(current => page === 1 ? value.results : [...new Map([...current, ...value.results].map(item => [item.key, item])).values()]);
         setNextPage(value.nextPage ?? null);
       })
-      .catch(problem => { if (!signal.aborted) setError(problem.message); })
+      .catch(error_ => { if (!signal.aborted) setError(error_.message); })
       .finally(() => { if (!signal.aborted) setLoading(false); });
     return () => task.abort();
   }, [query, page, attempt, cached]);
@@ -130,25 +276,19 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
       .map(item => item.id))];
     if (!missing.length) return;
     const task = new AbortController();
-    const { signal } = task;
     for (const id of missing) requested.add(id);
     const pending = new Set(missing);
-    void (async () => {
-      for (let i = 0; i < missing.length; i += 8) {
-        if (signal.aborted) break;
-        const batch = missing.slice(i, i + 8);
-        try {
-          const data = await request<{ counts?: Record<string, string> }>(`/api/comics/counts?ids=${encodeURIComponent(batch.join(','))}`, { signal });
-          for (const id of batch) pending.delete(id);
-          if (!signal.aborted && data.counts && Object.keys(data.counts).length) {
-            setChapterCounts(current => ({ ...current, ...data.counts }));
-          }
-        } catch {
-          if (signal.aborted) break;
-          for (const id of batch) pending.delete(id);
-        }
-      }
-    })();
+    runBatchStep({
+      ids: missing,
+      batchSize: 8,
+      signal: task.signal,
+      pending,
+      fetchBatch: async (batch, signal) => {
+        const data = await request<{ counts?: Record<string, string> }>(`/api/comics/counts?ids=${encodeURIComponent(batch.join(','))}`, { signal });
+        return data.counts;
+      },
+      onData: counts => setChapterCounts(current => ({ ...current, ...counts })),
+    }).catch(() => {});
     return () => {
       task.abort();
       for (const id of pending) requested.delete(id);
@@ -162,102 +302,49 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
       .map(item => String(item.malId)))];
     if (!missing.length) return;
     const task = new AbortController();
-    const { signal } = task;
     for (const id of missing) requested.add(id);
     const pending = new Set(missing);
-    void (async () => {
-      for (let i = 0; i < missing.length; i += 20) {
-        if (signal.aborted) break;
-        const batch = missing.slice(i, i + 20);
-        try {
-          const data = await request<{ ratings?: Record<string, number> }>(`/api/mal/manga/batch?ids=${batch.join(',')}`, { signal });
-          for (const id of batch) pending.delete(id);
-          if (!signal.aborted && data.ratings && Object.keys(data.ratings).length) {
-            setMalRatings(current => ({ ...current, ...data.ratings }));
-          }
-        } catch {
-          if (signal.aborted) break;
-          for (const id of batch) pending.delete(id);
-        }
-      }
-    })();
+    runBatchStep({
+      ids: missing,
+      batchSize: 20,
+      signal: task.signal,
+      pending,
+      fetchBatch: async (batch, signal) => {
+        const data = await request<{ ratings?: Record<string, number> }>(`/api/mal/manga/batch?ids=${batch.join(',')}`, { signal });
+        return data.ratings;
+      },
+      onData: ratings => setMalRatings(current => ({ ...current, ...ratings })),
+    }).catch(() => {});
     return () => {
       task.abort();
       for (const id of pending) requested.delete(id);
     };
   }, [recent, trending, items]);
 
-  const withChapterCount = (item: Comic) => {
-    const chapterCount = item.chapterCount || item.lastChapter ? item.chapterCount : chapterCounts[item.id];
-    const mal = item.mal ?? (item.malId ? malRatings[String(item.malId)] : undefined);
-    if (chapterCount === item.chapterCount && mal === item.mal) return item;
-    return { ...item, ...(chapterCount ? { chapterCount } : {}), ...(mal ? { mal } : {}) };
-  };
+  const withChapterCount = (item: Comic) => mergeComicMetadata(item, chapterCounts, malRatings);
+  const withParam = (name: string, value: string) => withComicsParam(params, name, value);
 
-  function withParam(name: string, value: string) {
-    const update = new URLSearchParams(params);
-    update.delete('page');
-    if (value) update.set(name, value); else update.delete(name);
-    return routeWithParams('comics', update);
-  }
+  let loadMoreLabel = 'Load more manga';
+  if (error) loadMoreLabel = 'Retry loading more';
+  else if (loading) loadMoreLabel = 'Loading more…';
 
   return <div className="af-wrap af-directory">
     <PageHeading title="Manga" />
     <div className="af-catalog-tools">
       <RouteTabs tabs={formats.map(([key, label]) => [withParam('type', key), label])} active={withParam('type', type)} label="Manga formats" />
-      {isCompactBrowse ? (
-        <div className="af-mobile-browse-bar af-mobile-comic-bar">
-          <form className="af-mobile-search-inline" onSubmit={event => {
-            event.preventDefault();
-            const update = new URLSearchParams(params);
-            update.delete('page');
-            const val = String(new FormData(event.currentTarget).get('q') || '').trim();
-            if (val) update.set('q', val); else update.delete('q');
-            navigate(routeWithParams('comics', update));
-          }}>
-            <label className="af-sr-field">
-              <span className="sr-only">Find manga</span>
-              <input name="q" className="af-select af-input" type="search" placeholder="Search manga…" maxLength={180} defaultValue={text} />
-            </label>
-          </form>
-          <MobileFilterSheet open={mobileFiltersOpen} onOpenChange={setMobileFiltersOpen} title="Filters" activeCount={comicFilterCount}>
-            <form className="af-mobile-filter-form" onSubmit={event => {
-              event.preventDefault();
-              const update = new URLSearchParams();
-              if (type) update.set('type', type);
-              if (text) update.set('q', text);
-              for (const [key, value] of new FormData(event.currentTarget)) if (typeof value === 'string' && value.trim()) update.set(key, value.trim());
-              setMobileFiltersOpen(false);
-              navigate(routeWithParams('comics', update));
-            }}>
-              <div className="af-facet-with-status">
-                <SelectField label="Genre" name="genre" empty="All genres" value={selectedGenre} options={genreOptions} />
-                {auxError.genres && <p className="af-meta" role="status">Genres are unavailable. <button type="button" className="af-text-link" onClick={() => setGenreAttempt(value => value + 1)}>Retry genres</button></p>}
-              </div>
-              <SelectField label="Status" name="status" empty="Any status" value={params.get('status') || ''} options={statuses} />
-              <SelectField label="Sort by" name="sort" empty={text ? 'Relevance' : 'Default order'} value={params.get('sort') || ''} options={sorts} />
-              <button className="af-button af-primary af-sheet-submit" type="submit">Apply filters</button>
-            </form>
-          </MobileFilterSheet>
-        </div>
-      ) : (
-        <form className="af-field-bar" onSubmit={event => {
-          event.preventDefault();
-          const update = new URLSearchParams();
-          if (type) update.set('type', type);
-          for (const [key, value] of new FormData(event.currentTarget)) if (typeof value === 'string' && value.trim()) update.set(key, value.trim());
-          navigate(routeWithParams('comics', update));
-        }}>
-          <div className="af-catalog-search"><InputField name="q" label="Find manga" type="search" placeholder="Search manga…" maxLength={180} defaultValue={text} /></div>
-          <div className="af-facet-with-status">
-            <SelectField label="Genre" name="genre" empty="All genres" value={selectedGenre} options={genreOptions} />
-            {auxError.genres && <p className="af-meta" role="status">Genres are unavailable. <button type="button" className="af-text-link" onClick={() => setGenreAttempt(value => value + 1)}>Retry genres</button></p>}
-          </div>
-          <SelectField label="Status" name="status" empty="Any status" value={params.get('status') || ''} options={statuses} />
-          <SelectField label="Sort by" name="sort" empty={text ? 'Relevance' : 'Default order'} value={params.get('sort') || ''} options={sorts} />
-          <button className="af-button af-primary" type="submit">Apply filters</button>
-        </form>
-      )}
+      <ComicsFilterBar
+        isCompactBrowse={isCompactBrowse}
+        params={params}
+        type={type}
+        text={text}
+        selectedGenre={selectedGenre}
+        genreOptions={genreOptions}
+        comicFilterCount={comicFilterCount}
+        genresFailed={auxError.genres}
+        onRetryGenres={() => setGenreAttempt(value => value + 1)}
+        mobileFiltersOpen={mobileFiltersOpen}
+        onMobileFiltersOpenChange={setMobileFiltersOpen}
+      />
     </div>
     {auxError.updates && <p className="af-state" role="alert">Recently updated manga could not load. <button type="button" className="af-text-link" onClick={() => setUpdateAttempt(value => value + 1)}>Retry updates</button></p>}
     {!query && recent.length > 0 && <Shelf title="Latest updates" href={webHref(withParam('sort', 'updated'))} hrefLabel="See all updates">
@@ -281,15 +368,15 @@ export function ComicsPage({ query, controls }: { query: string; controls: Libra
     {items.length > 0 && <div className="af-poster-grid">{items.map((item, index) => <ComicCard item={withChapterCount(item)} key={item.key} controls={controls} eager={!recent.length && index < 6} />)}</div>}
     {loading && page === 1 && <Loading label="Loading manga…" />}
     {error && page === 1 && <p className="af-state" role="alert">{error} <button className="af-text-link" type="button" onClick={() => { setError(''); setLoading(true); setAttempt(value => value + 1); }}>Retry</button></p>}
-    {!loading && !error && !items.length && <p className="af-state" role="status">{query ? 'No manga match these filters.' : 'No manga are available in the catalog yet.'}</p>}
-    {page > 1 && <p className="af-meta" role="status">{loading ? 'Loading more manga…' : error || `${items.length} manga shown`}</p>}
+    {!loading && !error && !items.length && <output className="af-state">{query ? 'No manga match these filters.' : 'No manga are available in the catalog yet.'}</output>}
+    {page > 1 && <output className="af-meta">{loading ? 'Loading more manga…' : error || `${items.length} manga shown`}</output>}
     {(nextPage || (page > 1 && (loading || error))) && <div className="af-pagination">
       <button type="button" className="af-button af-secondary" aria-disabled={loading} onClick={() => {
         if (loading) return;
         setLoading(true);
         if (error) { setError(''); setAttempt(value => value + 1); }
         else if (nextPage) setPage(nextPage);
-      }}>{error ? 'Retry loading more' : loading ? 'Loading more…' : 'Load more manga'}</button>
+      }}>{loadMoreLabel}</button>
     </div>}
   </div>;
 }
@@ -298,7 +385,301 @@ type ComicRecord = Comic & { synopsis?: string; author?: string[]; languages: st
 type Chapter = { id: string; label: string; number?: string | number; title?: string; language: string; groups?: (string | { name?: string })[]; source?: string; releasedAt?: string };
 type Chapters = { results: Chapter[]; nextPage?: number | null; ranges?: { start: string; end: string }[]; totalChapters?: number; partial?: boolean; preview?: boolean };
 
-export function ComicDetailsPage({ id, query, controls }: { id: string; query: string; controls: LibraryControls }) {
+type ReadingEntry = LibraryControls['library']['reading'][string];
+
+function applyRelatedRatings(items: Comic[], ratings: Record<string, number>): Comic[] {
+  return items.map(entry => (
+    entry.malId && ratings[String(entry.malId)] ? { ...entry, mal: ratings[String(entry.malId)] } : entry
+  ));
+}
+
+async function loadRelatedComics(
+  id: string,
+  signal: AbortSignal,
+  setRelated: (value: Comic[] | ((current: Comic[]) => Comic[])) => void,
+) {
+  try {
+    const result = await request<{ results: Comic[] }>(`/api/comics/${id}/related`, { signal });
+    if (signal.aborted || !Array.isArray(result.results)) return;
+    setRelated(result.results);
+    const ids = result.results.flatMap(entry => (entry.malId && !entry.mal ? [String(entry.malId)] : []));
+    if (!ids.length) return;
+    const { ratings } = await request<{ ratings?: Record<string, number> }>(`/api/mal/manga/batch?ids=${ids.join(',')}`, { signal });
+    if (!signal.aborted && ratings) {
+      setRelated(current => applyRelatedRatings(current, ratings));
+    }
+  } catch { /* Related manga are optional. */ }
+}
+
+function filterComicChapters(groupedChapters: Chapter[][], chapterQuery: string, chapterOrder: 'asc' | 'desc'): Chapter[][] {
+  const ordered = chapterOrder === 'desc' ? [...groupedChapters].reverse() : groupedChapters;
+  const needle = chapterQuery.trim().toLowerCase();
+  if (!needle) return ordered;
+  const numeric = /^\d+(?:\.\d+)?$/.test(needle);
+  const matches = ordered.filter(editions => editions.some(entry => {
+    const num = entry.number != null ? String(entry.number).toLowerCase() : '';
+    const credit = comicEditionCredit(entry).toLowerCase();
+    return num.includes(needle)
+      || entry.label.toLowerCase().includes(needle)
+      || (entry.title?.toLowerCase().includes(needle) ?? false)
+      || credit.includes(needle);
+  }));
+  if (!numeric) return matches;
+  return matches.sort((a, b) => {
+    const aExact = a.some(entry => String(entry.number ?? '') === needle) ? 0 : 1;
+    const bExact = b.some(entry => String(entry.number ?? '') === needle) ? 0 : 1;
+    return aExact - bExact;
+  });
+}
+
+function formatChapterFact(chapterTotal: number | null, lastChapter?: string): string {
+  if (chapterTotal != null) {
+    return `${chapterTotal} ${chapterTotal === 1 ? 'chapter' : 'chapters'}`;
+  }
+  if (lastChapter) {
+    return `${lastChapter} ${lastChapter === '1' ? 'chapter' : 'chapters'}`;
+  }
+  return '';
+}
+
+function PrimaryReadAction({
+  item,
+  recent,
+  first,
+  chapterPending,
+}: Readonly<{
+  item: ComicRecord;
+  recent?: ReadingEntry;
+  first?: Chapter;
+  chapterPending: boolean;
+}>) {
+  if (recent) {
+    return (
+      <ActionLink primary href={readerHref(item, recent.chapter, recent.language, recent.listPage, recent.page)}>
+        <Icon name="book" /> Resume {recent.label} · Page {recent.page}
+      </ActionLink>
+    );
+  }
+  if (first) {
+    return (
+      <ActionLink primary href={readerHref(item, first.id, first.language, 1)}>
+        <Icon name="book" /> Start reading
+      </ActionLink>
+    );
+  }
+  return (
+    <button type="button" className="af-button af-primary" disabled>
+      <Icon name="book" /> {chapterPending ? 'Loading chapters…' : 'No chapters yet'}
+    </button>
+  );
+}
+
+function ComicChapterRow({
+  item,
+  editions,
+  recent,
+}: Readonly<{
+  item: ComicRecord;
+  editions: Chapter[];
+  recent?: ReadingEntry;
+}>) {
+  const chapter = editions.find(release => release.id === recent?.chapter) ?? editions[0];
+  const credits = comicEditionCredit(chapter);
+  const released = chapter.releasedAt ?? editions.find(release => release.releasedAt)?.releasedAt;
+  const otherEditions = editions.filter(release => release.id !== chapter.id);
+  const isResuming = chapter.id === recent?.chapter;
+  const actionVerb = isResuming ? 'Resume' : 'Read';
+  const creditSuffix = credits ? ` from ${credits}` : '';
+  const actionLabel = `${actionVerb} ${chapter.label}${creditSuffix}`;
+
+  return (
+    <article className="af-activity-row">
+      <div>
+        <strong>{chapter.label}{chapter.title ? ` · ${chapter.title}` : ''}</strong>
+        {isResuming && <p className="af-meta">Last read · Page {recent.page}</p>}
+        {(credits || released) && (
+          <p className="af-meta">
+            {credits}{credits && released ? ' · ' : ''}
+            {released && <time dateTime={released} title={fullDate.format(new Date(released))}>{shortDate.format(new Date(released))}</time>}
+          </p>
+        )}
+        {otherEditions.length > 0 && (
+          <details>
+            <summary>{otherEditions.length} other {otherEditions.length === 1 ? 'edition' : 'editions'}</summary>
+            <ul>
+              {otherEditions.map((release, index) => (
+                <li key={release.id}>
+                  <a className="af-text-link" href={readerHref(item, release.id, release.language, 1)}>
+                    Read {release.label} · {comicEditionCredit(release) || release.title || `Edition ${index + 2}`}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </div>
+      <ActionLink
+        href={readerHref(item, chapter.id, chapter.language, 1, isResuming ? recent.page : 1)}
+        label={actionLabel}
+      >
+        {actionVerb}
+      </ActionLink>
+    </article>
+  );
+}
+
+function ComicDetailsHero({
+  item,
+  cover,
+  onCoverError,
+  chapterFact,
+  lastRelease,
+  mal,
+  synopsis,
+  recent,
+  first,
+  chapterPending,
+  controls,
+}: Readonly<{
+  item: ComicRecord;
+  cover?: string;
+  onCoverError: () => void;
+  chapterFact: string;
+  lastRelease?: string;
+  mal: ReturnType<typeof useOptionalRating<number>>;
+  synopsis?: string;
+  recent?: ReadingEntry;
+  first?: Chapter;
+  chapterPending: boolean;
+  controls: LibraryControls;
+}>) {
+  const saved = controls.library.saved[item.key];
+  return (
+    <section className={`af-hero af-details-hero af-comic-hero ${cover ? '' : 'af-no-backdrop'}`}>
+      {cover && <img className="af-backdrop af-comic-hero-backdrop" src={cover} alt="" aria-hidden="true" />}
+      <div className="af-wrap af-hero-inner">
+        <a href={previousBrowse('comics')} className="af-text-link af-back"><Icon name="left" /> Back to browse</a>
+        <div className={`af-comic-intro ${cover ? '' : 'af-no-cover'}`}>
+          {cover && <img className="af-comic-cover" src={cover} alt="" fetchPriority="high" onError={onCoverError} />}
+          <div className="af-copy">
+            <h1>{item.title}</h1>
+            <div className="af-meta af-details-meta af-title-facts">
+              <span>{comicFacts(item, false)}</span>
+              {chapterFact && <a href="#chapters" className="af-fact-link af-tabular">{chapterFact}</a>}
+              {lastRelease && <time dateTime={lastRelease} title={fullDate.format(new Date(lastRelease))}>Updated {releasedAgo(lastRelease)}</time>}
+              {item.genres?.slice(0, 3).map(g => <span key={g.id}>{g.name}</span>)}
+              <Score mal={mal.value} />
+            </div>
+            <RatingProblem name="MyAnimeList" rating={mal} />
+            {item.author && item.author.length > 0 && <p className="af-meta">By {item.author.join(', ')}</p>}
+            {synopsis && <p className="af-overview">{synopsis}</p>}
+            <div className="af-actions">
+              <PrimaryReadAction item={item} recent={recent} first={first} chapterPending={chapterPending} />
+              <SaveButton item={item} controls={controls} />
+              {saved && <AfSelect
+                ariaLabel="Reading status"
+                value={saved.watchStatus ?? 'planned'}
+                disabled={!controls.ready || controls.isPending(item.key)}
+                options={readingStatusOptions}
+                onChange={value => void controls.setComicStatus(item, value as WatchStatus)}
+              />}
+              <FolderPickerPopover itemKey={item.key} itemTitle={item.title} controls={controls} />
+            </div>
+          </div>
+        </div>
+        <div className="af-details-footer">
+          <div className="af-rating">
+            <span>Your rating</span>
+            <AfSelect
+              ariaLabel="Your rating"
+              value={String(savedRating(controls.library.ratings[item.key]))}
+              disabled={!controls.ready || controls.isPending(item.key)}
+              options={comicRatingOptions}
+              onChange={value => void controls.rate(item, Number(value))}
+            />
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ComicChaptersSection({
+  item,
+  language,
+  chapters,
+  filteredChapters,
+  chapterQuery,
+  onChapterQueryChange,
+  chapterOrder,
+  onToggleOrder,
+  onLanguageChange,
+  chapterError,
+  chapterPending,
+  onRetryChapters,
+  recent,
+}: Readonly<{
+  item: ComicRecord;
+  language: string;
+  chapters?: Chapters;
+  filteredChapters: Chapter[][];
+  chapterQuery: string;
+  onChapterQueryChange: (value: string) => void;
+  chapterOrder: 'asc' | 'desc';
+  onToggleOrder: () => void;
+  onLanguageChange: (value: string) => void;
+  chapterError: string;
+  chapterPending: boolean;
+  onRetryChapters: () => void;
+  recent?: ReadingEntry;
+}>) {
+  const languageOptions = [...new Set(item.languages)]
+    .sort((a, b) => a.localeCompare(b))
+    .map(code => ({ value: code, label: comicLanguage(code) }));
+  const trimmedQuery = chapterQuery.trim();
+
+  return (
+    <section id="chapters" className="af-section" tabIndex={-1} aria-labelledby="chapters-heading">
+      <header className="af-section-head">
+        <div>
+          <h2 id="chapters-heading">Chapters</h2>
+          {chapters?.totalChapters != null && <output className="af-meta">
+            {trimmedQuery ? `${filteredChapters.length} of ${chapters.totalChapters} chapters` : `${chapters.totalChapters} chapters`}
+          </output>}
+        </div>
+        <div className="af-actions af-chapter-controls">
+          <label className="af-sr-field">
+            <span className="sr-only">Search chapters</span>
+            <input
+              type="search"
+              className="af-select af-input af-chapter-search"
+              placeholder="Search chapter # or title"
+              value={chapterQuery}
+              onChange={event => onChapterQueryChange(event.target.value)}
+            />
+          </label>
+          <button type="button" className="af-button af-secondary" onClick={onToggleOrder}>
+            {chapterOrder === 'asc' ? 'Oldest first' : 'Newest first'}
+          </button>
+          <AfSelect ariaLabel="Language" value={language} options={languageOptions} onChange={onLanguageChange} />
+        </div>
+      </header>
+      {chapterError && <p className="af-state" role="alert">{chapterError} <button type="button" className="af-text-link" onClick={onRetryChapters}>Retry</button></p>}
+      {chapterPending && chapters && <output className="af-state">{chapters.preview ? 'Checking other chapter sources…' : 'Updating chapters…'}</output>}
+      {!chapters && !chapterError && <Loading label="Loading chapters…" shape="rows" />}
+      {chapters && !chapters.results.length && !chapters.partial && !chapterPending && <output className="af-state">No chapters are available in this language.</output>}
+      {chapters?.partial && !chapterError && <output className="af-state">Some chapter sources are temporarily unavailable. <button type="button" className="af-text-link" onClick={onRetryChapters}>Retry sources</button></output>}
+      {chapters && chapters.results.length > 0 && !filteredChapters.length && <output className="af-state">No chapters match “{trimmedQuery}”.</output>}
+      {filteredChapters.length > 0 && <div className="af-chapter-list">
+        {filteredChapters.map(editions => (
+          <ComicChapterRow key={editions[0].id} item={item} editions={editions} recent={recent} />
+        ))}
+      </div>}
+    </section>
+  );
+}
+
+export function ComicDetailsPage({ id, query, controls }: Readonly<{ id: string; query: string; controls: LibraryControls }>) {
   const [item, setItem] = useState<ComicRecord>();
   const [chapterResult, setChapterResult] = useState<{ key: string; data: Chapters }>();
   const [related, setRelated] = useState<Comic[]>([]);
@@ -327,27 +708,13 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
         if (!Array.isArray(value.languages) || typeof value.title !== 'string') throw new Error('This manga record is incomplete.');
         setItem(value);
         document.title = `${value.title} · Afterframe`;
-      }).catch(problem => { if (!signal.aborted) setError(problem.message); });
+      }).catch(error_ => { if (!signal.aborted) setError(error_.message); });
     return () => task.abort();
   }, [id, attempt]);
 
   useEffect(() => {
     const task = new AbortController();
-    request<{ results: Comic[] }>(`/api/comics/${id}/related`, { signal: task.signal })
-      .then(result => {
-        if (task.signal.aborted || !Array.isArray(result.results)) return;
-        setRelated(result.results);
-        const ids = result.results.flatMap(entry => entry.malId && !entry.mal ? [String(entry.malId)] : []);
-        if (!ids.length) return;
-        request<{ ratings?: Record<string, number> }>(`/api/mal/manga/batch?ids=${ids.join(',')}`, { signal: task.signal })
-          .then(({ ratings }) => {
-            if (task.signal.aborted || !ratings) return;
-            setRelated(current => current.map(entry => (
-              entry.malId && ratings[String(entry.malId)] ? { ...entry, mal: ratings[String(entry.malId)] } : entry
-            )));
-          }).catch(() => {});
-      })
-      .catch(() => {});
+    loadRelatedComics(id, task.signal, setRelated).catch(() => {});
     return () => task.abort();
   }, [id]);
 
@@ -365,7 +732,7 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
         complete = true;
         if (!signal.aborted) setChapterResult({ key: chapterKey, data: result });
       })
-      .catch(problem => { if (!signal.aborted) setChapterError(problem.message); })
+      .catch(error_ => { if (!signal.aborted) setChapterError(error_.message); })
       .finally(() => { if (!signal.aborted) setChapterPending(false); });
     request<Chapters>(`${path}&scope=native`, { signal }).then(result => {
       if (!signal.aborted && !complete && result.results.length) setChapterResult({ key: chapterKey, data: result });
@@ -374,165 +741,61 @@ export function ComicDetailsPage({ id, query, controls }: { id: string; query: s
   }, [id, language, chapterAttempt, chapterKey]);
 
   const groupedChapters = useMemo(() => (chapters ? groupComicEditions(chapters.results) : []), [chapters]);
-  const filteredChapters = useMemo(() => {
-    const ordered = chapterOrder === 'desc' ? [...groupedChapters].reverse() : groupedChapters;
-    const needle = chapterQuery.trim().toLowerCase();
-    if (!needle) return ordered;
-    const numeric = /^\d+(?:\.\d+)?$/.test(needle);
-    const matches = ordered.filter(editions => editions.some(entry => {
-      const num = entry.number != null ? String(entry.number).toLowerCase() : '';
-      const credit = comicEditionCredit(entry).toLowerCase();
-      return num.includes(needle)
-        || entry.label.toLowerCase().includes(needle)
-        || (entry.title?.toLowerCase().includes(needle) ?? false)
-        || credit.includes(needle);
-    }));
-    if (!numeric) return matches;
-    return matches.sort((a, b) => {
-      const aExact = a.some(entry => String(entry.number ?? '') === needle) ? 0 : 1;
-      const bExact = b.some(entry => String(entry.number ?? '') === needle) ? 0 : 1;
-      return aExact - bExact;
-    });
-  }, [groupedChapters, chapterQuery, chapterOrder]);
+  const filteredChapters = useMemo(
+    () => filterComicChapters(groupedChapters, chapterQuery, chapterOrder),
+    [groupedChapters, chapterQuery, chapterOrder],
+  );
 
-  if (!item || !language) return <div className="af-wrap af-directory">
-    <PageHeading title={error ? 'Manga unavailable' : 'Manga'} />
-    {error ? <p className="af-state" role="alert">{error} <button className="af-text-link" type="button" onClick={() => { setError(''); setAttempt(value => value + 1); }}>Retry</button></p>
-      : <Loading label="Loading manga…" shape="hero" />}
-  </div>;
+  if (!item || !language) {
+    return (
+      <div className="af-wrap af-directory">
+        <PageHeading title={error ? 'Manga unavailable' : 'Manga'} />
+        {error
+          ? <p className="af-state" role="alert">{error} <button className="af-text-link" type="button" onClick={() => { setError(''); setAttempt(value => value + 1); }}>Retry</button></p>
+          : <Loading label="Loading manga…" shape="hero" />}
+      </div>
+    );
+  }
 
   const cover = coverFailed ? undefined : comicCover(item.poster);
   const first = chapters?.results[0];
   const synopsis = item.synopsis?.split(/\n(?:-{3,}|\*\*Links:)/i)[0].trim();
   const retryChapters = () => { setChapterError(''); setChapterAttempt(value => value + 1); };
-  const saved = controls.library.saved[item.key];
   const listing = (lang: string) => routeWithParams(`comic/${id}`, new URLSearchParams({ lang, ...(params.has('back') ? { back: params.get('back')! } : {}) }));
   const chapterTotal = chapters?.totalChapters ?? (groupedChapters.length > 0 ? groupedChapters.length : null);
-  const lastRelease = chapters?.results.reduce<string | undefined>((latest, entry) => entry.releasedAt && (!latest || entry.releasedAt > latest) ? entry.releasedAt : latest, undefined);
-  const chapterFact = chapterTotal != null
-    ? `${chapterTotal} ${chapterTotal === 1 ? 'chapter' : 'chapters'}`
-    : item.lastChapter
-      ? `${item.lastChapter} ${item.lastChapter === '1' ? 'chapter' : 'chapters'}`
-      : '';
+  const lastRelease = findLatestRelease(chapters);
+  const chapterFact = formatChapterFact(chapterTotal, item.lastChapter);
 
   return <>
-    <section className={`af-hero af-details-hero af-comic-hero ${cover ? '' : 'af-no-backdrop'}`}>
-      {cover && <img className="af-backdrop af-comic-hero-backdrop" src={cover} alt="" aria-hidden="true" />}
-      <div className="af-wrap af-hero-inner">
-        <a href={previousBrowse('comics')} className="af-text-link af-back"><Icon name="left" /> Back to browse</a>
-        <div className={`af-comic-intro ${cover ? '' : 'af-no-cover'}`}>
-          {cover && <img className="af-comic-cover" src={cover} alt="" fetchPriority="high" onError={() => setCoverFailed(true)} />}
-          <div className="af-copy">
-            <h1>{item.title}</h1>
-            <div className="af-meta af-details-meta af-title-facts">
-              <span>{comicFacts(item, false)}</span>
-              {chapterFact && <a href="#chapters" className="af-fact-link af-tabular">{chapterFact}</a>}
-              {lastRelease && <time dateTime={lastRelease} title={fullDate.format(new Date(lastRelease))}>Updated {releasedAgo(lastRelease)}</time>}
-              {item.genres?.slice(0, 3).map(g => <span key={g.id}>{g.name}</span>)}
-              <Score mal={mal.value} />
-            </div>
-            <RatingProblem name="MyAnimeList" rating={mal} />
-            {item.author && item.author.length > 0 && <p className="af-meta">By {item.author.join(', ')}</p>}
-            {synopsis && <p className="af-overview">{synopsis}</p>}
-            <div className="af-actions">
-              {recent ? <ActionLink primary href={readerHref(item, recent.chapter, recent.language, recent.listPage, recent.page)}><Icon name="book" /> Resume {recent.label} · Page {recent.page}</ActionLink>
-                : first ? <ActionLink primary href={readerHref(item, first.id, first.language, 1)}><Icon name="book" /> Start reading</ActionLink>
-                  : <button type="button" className="af-button af-primary" disabled><Icon name="book" /> {chapterPending ? 'Loading chapters…' : 'No chapters yet'}</button>}
-              <SaveButton item={item} controls={controls} />
-              {saved && <AfSelect
-                ariaLabel="Reading status"
-                value={saved.watchStatus ?? 'planned'}
-                disabled={!controls.ready || controls.isPending(item.key)}
-                options={readingStatusOptions}
-                onChange={value => void controls.setComicStatus(item, value as WatchStatus)}
-              />}
-              <FolderPickerPopover itemKey={item.key} itemTitle={item.title} controls={controls} />
-            </div>
-          </div>
-        </div>
-        <div className="af-details-footer">
-          <div className="af-rating">
-            <span>Your rating</span>
-            <AfSelect
-              ariaLabel="Your rating"
-              value={String(savedRating(controls.library.ratings[item.key]))}
-              disabled={!controls.ready || controls.isPending(item.key)}
-              options={comicRatingOptions}
-              onChange={value => void controls.rate(item, Number(value))}
-            />
-          </div>
-        </div>
-      </div>
-    </section>
-
+    <ComicDetailsHero
+      item={item}
+      cover={cover}
+      onCoverError={() => setCoverFailed(true)}
+      chapterFact={chapterFact}
+      lastRelease={lastRelease}
+      mal={mal}
+      synopsis={synopsis}
+      recent={recent}
+      first={first}
+      chapterPending={chapterPending}
+      controls={controls}
+    />
     <div className="af-wrap af-content">
-      <section id="chapters" className="af-section" tabIndex={-1} aria-labelledby="chapters-heading">
-        <header className="af-section-head">
-          <div>
-            <h2 id="chapters-heading">Chapters</h2>
-            {chapters?.totalChapters != null && <p className="af-meta" role="status">
-              {chapterQuery.trim() ? `${filteredChapters.length} of ${chapters.totalChapters} chapters` : `${chapters.totalChapters} chapters`}
-            </p>}
-          </div>
-          <div className="af-actions af-chapter-controls">
-            <label className="af-sr-field">
-              <span className="sr-only">Search chapters</span>
-              <input
-                type="search"
-                className="af-select af-input af-chapter-search"
-                placeholder="Search chapter # or title"
-                value={chapterQuery}
-                onChange={event => setChapterQuery(event.target.value)}
-              />
-            </label>
-            <button
-              type="button"
-              className="af-button af-secondary"
-              onClick={() => setChapterOrder(order => order === 'asc' ? 'desc' : 'asc')}
-            >
-              {chapterOrder === 'asc' ? 'Oldest first' : 'Newest first'}
-            </button>
-            <AfSelect
-              ariaLabel="Language"
-              value={language}
-              options={[...new Set(item.languages)].sort().map(code => ({ value: code, label: comicLanguage(code) }))}
-              onChange={value => { setChapterQuery(''); navigate(listing(value)); }}
-            />
-          </div>
-        </header>
-        {chapterError && <p className="af-state" role="alert">{chapterError} <button type="button" className="af-text-link" onClick={retryChapters}>Retry</button></p>}
-        {chapterPending && chapters && <p className="af-state" role="status">{chapters.preview ? 'Checking other chapter sources…' : 'Updating chapters…'}</p>}
-        {!chapters && !chapterError && <Loading label="Loading chapters…" shape="rows" />}
-        {chapters && !chapters.results.length && !chapters.partial && !chapterPending && <p className="af-state" role="status">No chapters are available in this language.</p>}
-        {chapters?.partial && !chapterError && <p className="af-state" role="status">Some chapter sources are temporarily unavailable. <button type="button" className="af-text-link" onClick={retryChapters}>Retry sources</button></p>}
-        {chapters && chapters.results.length > 0 && !filteredChapters.length && <p className="af-state" role="status">No chapters match “{chapterQuery.trim()}”.</p>}
-        {filteredChapters.length > 0 && <div className="af-chapter-list">
-          {filteredChapters.map(editions => {
-            const chapter = editions.find(release => release.id === recent?.chapter) ?? editions[0];
-            const credits = comicEditionCredit(chapter);
-            const released = chapter.releasedAt ?? editions.find(release => release.releasedAt)?.releasedAt;
-            const otherEditions = editions.filter(release => release.id !== chapter.id);
-            return <article className="af-activity-row" key={chapter.id}>
-              <div><strong>{chapter.label}{chapter.title ? ` · ${chapter.title}` : ''}</strong>{chapter.id === recent?.chapter && <p className="af-meta">Last read · Page {recent.page}</p>}
-                {(credits || released) && <p className="af-meta">
-                  {credits}{credits && released ? ' · ' : ''}
-                  {released && <time dateTime={released} title={fullDate.format(new Date(released))}>{shortDate.format(new Date(released))}</time>}
-                </p>}
-                {otherEditions.length > 0 && <details>
-                  <summary>{otherEditions.length} other {otherEditions.length === 1 ? 'edition' : 'editions'}</summary>
-                  <ul>{otherEditions.map((release, index) => <li key={release.id}>
-                    <a className="af-text-link" href={readerHref(item, release.id, release.language, 1)}>
-                      Read {release.label} · {comicEditionCredit(release) || release.title || `Edition ${index + 2}`}
-                    </a>
-                  </li>)}</ul>
-                </details>}
-              </div>
-              <ActionLink href={readerHref(item, chapter.id, chapter.language, 1, chapter.id === recent?.chapter ? recent.page : 1)} label={`${chapter.id === recent?.chapter ? 'Resume' : 'Read'} ${chapter.label}${credits ? ` from ${credits}` : ''}`}>{chapter.id === recent?.chapter ? 'Resume' : 'Read'}</ActionLink>
-            </article>;
-          })}
-        </div>}
-      </section>
-
+      <ComicChaptersSection
+        item={item}
+        language={language}
+        chapters={chapters}
+        filteredChapters={filteredChapters}
+        chapterQuery={chapterQuery}
+        onChapterQueryChange={setChapterQuery}
+        chapterOrder={chapterOrder}
+        onToggleOrder={() => setChapterOrder(order => order === 'asc' ? 'desc' : 'asc')}
+        onLanguageChange={value => { setChapterQuery(''); navigate(listing(value)); }}
+        chapterError={chapterError}
+        chapterPending={chapterPending}
+        onRetryChapters={retryChapters}
+        recent={recent}
+      />
       {related.length > 0 && <div id="related" tabIndex={-1}><Shelf title="Related manga">
         {related.map(other => <ComicCard item={other} controls={controls} key={other.key} />)}
       </Shelf></div>}

@@ -18,7 +18,8 @@ import { AfSelect } from './UiControls';
 function personInitials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return '?';
-  return (parts.length === 1 ? parts[0].slice(0, 2) : `${parts[0][0]}${parts[parts.length - 1][0]}`).toUpperCase();
+  const lastPart = parts.at(-1)!;
+  return (parts.length === 1 ? parts[0].slice(0, 2) : `${parts[0][0]}${lastPart[0]}`).toUpperCase();
 }
 
 const episodeRangeSize = 24;
@@ -57,11 +58,16 @@ function pickTitleLogo(logos?: DetailsImage[]): { url: string; width?: number; h
   return { url, width, height };
 }
 
+function trailerKindScore(kind: string): number {
+  if (kind === 'Trailer') return 4;
+  if (kind === 'Teaser') return 2;
+  return 0;
+}
+
 function pickTrailer(videos?: DetailsVideo[]): DetailsVideo | undefined {
   const yt = (videos ?? []).filter(v => v.site === 'YouTube' && /^[\w-]{6,20}$/.test(v.key));
   if (!yt.length) return undefined;
-  const score = (v: DetailsVideo) =>
-    (v.type === 'Trailer' ? 4 : v.type === 'Teaser' ? 2 : 0) + (v.official ? 2 : 0);
+  const score = (v: DetailsVideo) => trailerKindScore(v.type) + (v.official ? 2 : 0);
   return [...yt].sort((a, b) => score(b) - score(a))[0];
 }
 
@@ -70,8 +76,9 @@ function upcoming(details: TitleDetails) {
   const nextDub = details.anime_dub?.next_episode_to_air;
   const hasSubNext = Boolean(next?.air_date && next.air_date >= today());
   const hasDubNext = Boolean(nextDub?.air_date && nextDub.air_date >= today());
+  const subPrefix = hasDubNext ? 'Sub ' : '';
   const episode = hasSubNext && next
-    ? `${hasDubNext ? 'Sub ' : ''}${episodeLabel(next)} airs ${formatDate(next.air_date)}`
+    ? `${subPrefix}${episodeLabel(next)} airs ${formatDate(next.air_date)}`
     : '';
   const dubEpisode = hasDubNext && nextDub
     ? `Dub S${nextDub.season_number} E${nextDub.episode_number} airs ${formatDate(nextDub.air_date)}`
@@ -83,12 +90,12 @@ function upcoming(details: TitleDetails) {
   return [episode, dubEpisode, seasonNote].filter(Boolean).join(' · ');
 }
 
-function TrailerModal({ video, title, open, onOpenChange }: {
+function TrailerModal({ video, title, open, onOpenChange }: Readonly<{
   video: DetailsVideo;
   title: string;
   open: boolean;
   onOpenChange: (next: boolean) => void;
-}) {
+}>) {
   return <Dialog.Root open={open} onOpenChange={onOpenChange}>
     <Dialog.Portal>
       <Dialog.Backdrop className="af-scrim" />
@@ -127,7 +134,7 @@ function ratingTier(score: number): 'great' | 'good' | 'mixed' | 'low' {
   return 'low';
 }
 
-function EpisodeRatingsHeatmap({ item }: { item: Title }) {
+function EpisodeRatingsHeatmap({ item }: Readonly<{ item: Title }>) {
   const hostRef = useRef<HTMLElement>(null);
   const [visible, setVisible] = useState(false);
   const [seasons, setSeasons] = useState<RatingsMapSeason[] | null>(null);
@@ -242,48 +249,102 @@ function EpisodeRatingsHeatmap({ item }: { item: Title }) {
   </section>;
 }
 
+function formatEpisodeDateLabel(episode: Episode, animeAudio: 'sub' | 'dub' | undefined, available: boolean): string {
+  if (animeAudio === 'dub') {
+    if (!episode.dub_air_date) return available ? 'Dub available' : 'Dub TBA';
+    if (available) return formatDate(episode.dub_air_date);
+    const prefix = episode.dub_estimated ? 'Est.' : 'Airs';
+    return `${prefix} ${formatDate(episode.dub_air_date)}`;
+  }
+  if (animeAudio === 'sub') {
+    if (!episode.air_date) return '';
+    return available ? formatDate(episode.air_date) : `Airs ${formatDate(episode.air_date)}`;
+  }
+  return !available && episode.air_date ? `Airs ${formatDate(episode.air_date)}` : '';
+}
+
+function EpisodeThumbnail({
+  image,
+  protect,
+  revealed,
+  available,
+  href,
+  episodeName,
+  onRevealToggle,
+  onSelectPlay,
+}: Readonly<{
+  image: string | undefined;
+  protect: boolean;
+  revealed: boolean;
+  available: boolean;
+  href: string;
+  episodeName: string;
+  onRevealToggle: () => void;
+  onSelectPlay?: () => void;
+}>) {
+  const fallback = <span className="af-still-fallback" aria-hidden="true"><Icon name="film" /></span>;
+  if (image && protect) {
+    return (
+      <button type="button" className="af-still" aria-label={`Reveal thumbnail for ${episodeName}`} aria-pressed={revealed} onClick={onRevealToggle}>
+        <Artwork src={image} className={revealed ? undefined : 'af-blurred'} loading="lazy" fallback={fallback} />
+        <span className="af-eye"><Icon name="eye" /><span>{revealed ? 'Hide' : 'Reveal'}</span></span>
+      </button>
+    );
+  }
+  if (available) {
+    return (
+      <a className="af-still af-still-link" href={href} onClick={onSelectPlay} tabIndex={-1} aria-hidden="true">
+        <Artwork src={image} loading="lazy" fallback={fallback} />
+        <span className="af-still-play"><Icon name="play" /></span>
+      </a>
+    );
+  }
+  return <span className="af-still"><Artwork src={image} loading="lazy" fallback={fallback} /></span>;
+}
+
+function episodeOverviewSummary(expanded: boolean, showPreview: boolean, overview: string) {
+  if (expanded) return 'Hide description';
+  if (showPreview) return <span className="af-synopsis-preview">{overview}</span>;
+  return 'Show description';
+}
+
 function EpisodeRow({
   item, episode, controls, isResumeTarget, animeAudio, onSelectPlay,
-}: {
+}: Readonly<{
   item: Title;
   episode: Episode;
   controls: LibraryControls;
   isResumeTarget: boolean;
   animeAudio?: 'sub' | 'dub';
   onSelectPlay?: () => void;
-}) {
+}>) {
   const key = episodeKey(item, episode);
   const marked = Boolean(controls.library.watched[key]);
   const protect = !marked && controls.library.preferences.blur !== false;
   const [revealed, setRevealed] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const image = imagePath(episode.still_path, 'w300');
-  const isDubMode = animeAudio === 'dub';
-  const available = isDubMode ? episode.dub_aired === true : isAired(episode);
+  const available = animeAudio === 'dub' ? episode.dub_aired === true : isAired(episode);
   const progress = !marked ? controls.library.progress[key] : undefined;
   const hasProgress = Boolean(progress && progress.time > 5 && progress.time < progress.duration);
   const runtimeLabel = episodeDurationText(key, episode.runtime, controls.library);
-  const dateLabel = isDubMode
-    ? (episode.dub_air_date
-      ? (available ? formatDate(episode.dub_air_date) : `${episode.dub_estimated ? 'Est.' : 'Airs'} ${formatDate(episode.dub_air_date)}`)
-      : (available ? 'Dub available' : 'Dub TBA'))
-    : animeAudio === 'sub'
-      ? (episode.air_date ? (available ? formatDate(episode.air_date) : `Airs ${formatDate(episode.air_date)}`) : '')
-      : (!available && episode.air_date ? `Airs ${formatDate(episode.air_date)}` : '');
+  const dateLabel = formatEpisodeDateLabel(episode, animeAudio, available);
   const status = [`Episode ${episode.episode_number}`, runtimeLabel, dateLabel].filter(Boolean).join(' · ');
   const showPreview = marked || controls.library.preferences.hideSynopsis === false;
   const href = playHref(item, episodePosition(episode));
 
   return <article className={`af-episode af-episode-card ${isResumeTarget ? 'is-resume' : ''} ${marked ? 'is-watched' : ''}`}>
     <div className="af-episode-media">
-      {image && protect ? <button type="button" className="af-still" aria-label={`Reveal thumbnail for ${episode.name}`}
-        aria-pressed={revealed} onClick={() => setRevealed(value => !value)}>
-        <Artwork src={image} className={revealed ? undefined : 'af-blurred'} loading="lazy" fallback={<span className="af-still-fallback" aria-hidden="true"><Icon name="film" /></span>} />
-        <span className="af-eye"><Icon name="eye" /><span>{revealed ? 'Hide' : 'Reveal'}</span></span>
-      </button> : available ? <a className="af-still af-still-link" href={href} onClick={onSelectPlay} tabIndex={-1} aria-hidden="true">
-        <Artwork src={image} loading="lazy" fallback={<span className="af-still-fallback" aria-hidden="true"><Icon name="film" /></span>} />
-        <span className="af-still-play"><Icon name="play" /></span>
-      </a> : <span className="af-still"><Artwork src={image} loading="lazy" fallback={<span className="af-still-fallback" aria-hidden="true"><Icon name="film" /></span>} /></span>}
+      <EpisodeThumbnail
+        image={image}
+        protect={protect}
+        revealed={revealed}
+        available={available}
+        href={href}
+        episodeName={episode.name}
+        onRevealToggle={() => setRevealed(value => !value)}
+        onSelectPlay={onSelectPlay}
+      />
       <span className="af-ep-code af-tabular" aria-hidden="true">E{episode.episode_number}</span>
       {hasProgress && progress && (
         <progress className="af-progress af-still-progress" value={progressPercent(progress)} max={100} aria-hidden="true" />
@@ -295,15 +356,26 @@ function EpisodeRow({
           {isResumeTarget && <span className="af-ep-state-tag">Resume</span>}
           <span className="af-meta af-tabular">{status}</span>
         </div>
-        <button type="button" className="af-icon-button af-watched af-watched-inline" aria-label={`Mark ${episode.name} as watched`} aria-pressed={marked}
-          disabled={!controls.ready || controls.isPending(key)} onClick={() => { if (marked) setRevealed(false); void controls.toggleWatched(item, key); }}>
+        <button
+          type="button"
+          className="af-icon-button af-watched af-watched-inline"
+          aria-label={`Mark ${episode.name} as watched`}
+          aria-pressed={marked}
+          disabled={!controls.ready || controls.isPending(key)}
+          onClick={() => {
+            if (marked) {
+              setRevealed(false);
+            }
+            void controls.toggleWatched(item, key);
+          }}
+        >
           <span>{marked && <Icon name="check" />}</span>
         </button>
       </div>
       {available ? <a className="af-episode-title" href={href} onClick={onSelectPlay}>{episode.name}</a>
         : <span className="af-episode-title af-upcoming">{episode.name}</span>}
       {episode.overview && <details open={expanded} onToggle={event => setExpanded(event.currentTarget.open)}>
-        <summary>{expanded ? 'Hide description' : showPreview ? <span className="af-synopsis-preview">{episode.overview}</span> : 'Show description'}</summary>
+        <summary>{episodeOverviewSummary(expanded, showPreview, episode.overview)}</summary>
         <p>{episode.overview}</p>
       </details>}
       {hasProgress && progress && <p className="af-meta af-tabular af-episode-resume-note">
@@ -314,7 +386,67 @@ function EpisodeRow({
   </article>;
 }
 
-function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readSeason, isAnimeTitle, showHasDub }: {
+function resolveEffectiveAudio(isAnimeTitle: boolean, dubAvailable: boolean, audioMode: 'sub' | 'dub'): 'sub' | 'dub' | undefined {
+  if (!isAnimeTitle) return undefined;
+  return dubAvailable ? audioMode : 'sub';
+}
+
+function formatSeasonWatchedFact(airedCount: number, watchedCount: number, totalCount: number): string {
+  if (airedCount > 0) return `${watchedCount} of ${airedCount} watched`;
+  return totalCount > 0 ? `${totalCount} episodes` : '';
+}
+
+function buildEpisodeRangeOptions(episodes: Episode[], count: number) {
+  return Array.from({ length: count }, (_, index) => {
+    const first = episodes[index * episodeRangeSize].episode_number;
+    const last = episodes[Math.min(episodes.length, (index + 1) * episodeRangeSize) - 1].episode_number;
+    const suffix = first === last ? '' : `–${last}`;
+    return { value: String(index), label: `Episodes ${first}${suffix}` };
+  });
+}
+
+function SeasonTabs({
+  seasons,
+  season,
+  onSelectSeason,
+}: Readonly<{
+  seasons: Season[];
+  season: number | undefined;
+  onSelectSeason: (seasonNumber: number) => void;
+}>) {
+  if (seasons.length <= 1) return null;
+  return (
+    <div className="af-season-tabs" role="tablist" aria-label="Seasons">
+      {seasons.map((option, idx) => (
+        <button
+          key={option.season_number}
+          type="button"
+          role="tab"
+          aria-selected={season === option.season_number}
+          tabIndex={season === option.season_number ? 0 : -1}
+          className="af-season-tab"
+          onClick={() => onSelectSeason(option.season_number)}
+          onKeyDown={event => {
+            let nextIdx = -1;
+            if (event.key === 'ArrowRight') nextIdx = (idx + 1) % seasons.length;
+            else if (event.key === 'ArrowLeft') nextIdx = (idx - 1 + seasons.length) % seasons.length;
+            else if (event.key === 'Home') nextIdx = 0;
+            else if (event.key === 'End') nextIdx = seasons.length - 1;
+            if (nextIdx < 0) return;
+            event.preventDefault();
+            onSelectSeason(seasons[nextIdx].season_number);
+            const tabs = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+            tabs?.[nextIdx]?.focus();
+          }}
+        >
+          {option.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readSeason, isAnimeTitle, showHasDub }: Readonly<{
   item: Title;
   seasons: Season[];
   initialSeason: number | undefined;
@@ -323,7 +455,7 @@ function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readS
   readSeason: (season: number) => Promise<Episode[]>;
   isAnimeTitle: boolean;
   showHasDub: boolean;
-}) {
+}>) {
   const [selected, setSelected] = useState<number>();
   const season = selected ?? initialSeason ?? seasons[0]?.season_number;
   const [results, setResults] = useState<{ season: number; episodes: Episode[] }>();
@@ -344,7 +476,7 @@ function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readS
     let active = true;
     readSeason(season).then(episodes => {
       if (active) setResults({ season, episodes });
-    }).catch(problem => { if (active) setError(problem.message); });
+    }).catch(error_ => { if (active) setError(error_.message); });
     return () => { active = false; };
   }, [season, readSeason, attempt]);
 
@@ -352,7 +484,7 @@ function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readS
   const episodes = results?.season === season ? (results?.episodes ?? []) : [];
   const seasonHasDub = episodes.some(ep => ep.dub_aired !== undefined || Boolean(ep.dub_air_date));
   const dubAvailable = isAnimeTitle && (showHasDub || seasonHasDub);
-  const effectiveAudio: 'sub' | 'dub' | undefined = isAnimeTitle ? (dubAvailable ? audioMode : 'sub') : undefined;
+  const effectiveAudio = resolveEffectiveAudio(isAnimeTitle, dubAvailable, audioMode);
   const isDubView = effectiveAudio === 'dub';
   const aired = isDubView ? episodes.filter(ep => ep.dub_aired === true) : episodes.filter(isAired);
   const watched = aired.filter(episode => controls.library.watched[episodeKey(item, episode)]).length;
@@ -366,12 +498,19 @@ function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readS
     currentSeasonObj?.name,
     seasonYear,
     isDubView && seasonHasDub ? `${aired.length} of ${episodes.length} dubbed` : '',
-    aired.length > 0 ? `${watched} of ${aired.length} watched` : episodes.length > 0 ? `${episodes.length} episodes` : '',
+    formatSeasonWatchedFact(aired.length, watched, episodes.length),
   ].filter(Boolean).join(' · ');
 
   function handleAudioMode(next: 'sub' | 'dub') {
     setAudioMode(next);
     writeAnimeAudioPreference(item.key, next);
+  }
+
+  function selectSeason(seasonNumber: number) {
+    setSelected(seasonNumber);
+    setRange(0);
+    setShowAllMobile(false);
+    setError('');
   }
 
   async function handleMarkSeasonWatched() {
@@ -385,90 +524,29 @@ function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readS
     }
   }
 
-  return <section id="episodes" className="af-section" tabIndex={-1} aria-labelledby="episodes-heading">
-    <header className="af-section-head af-episodes-head">
-      <div>
-        <h2 id="episodes-heading">Episodes</h2>
-        {seasonFacts && <p className="af-meta af-tabular">{seasonFacts}</p>}
-      </div>
-      <div className="af-episode-tools">
-        {dubAvailable && <div className="af-audio-switch" role="group" aria-label="Episode audio">
-          <button
-            type="button"
-            className="af-audio-switch-btn"
-            aria-pressed={effectiveAudio === 'sub'}
-            onClick={() => handleAudioMode('sub')}
-          >Sub</button>
-          <button
-            type="button"
-            className="af-audio-switch-btn"
-            aria-pressed={effectiveAudio === 'dub'}
-            onClick={() => handleAudioMode('dub')}
-          >Dub</button>
-        </div>}
-        {unwatchedAired.length > 0 && <button type="button" className="af-button af-secondary af-tool-btn" disabled={!controls.ready || markingSeason} onClick={() => void handleMarkSeasonWatched()}>
-          <Icon name="check" /><span>{markingSeason ? 'Marking…' : 'Mark season watched'}</span>
-        </button>}
-        {count > 1 && <AfSelect
-          ariaLabel="Episode range"
-          value={String(currentRange)}
-          options={Array.from({ length: count }, (_, index) => {
-            const first = episodes[index * episodeRangeSize].episode_number;
-            const last = episodes[Math.min(episodes.length, (index + 1) * episodeRangeSize) - 1].episode_number;
-            return { value: String(index), label: `Episodes ${first}${first === last ? '' : `–${last}`}` };
-          })}
-          onChange={value => { setRange(Number(value)); setShowAllMobile(false); }}
-        />}
-      </div>
-    </header>
-
-    {seasons.length > 1 && <div className="af-season-tabs" role="tablist" aria-label="Seasons">
-      {seasons.map((option, idx) => (
-        <button
-          key={option.season_number}
-          type="button"
-          role="tab"
-          aria-selected={season === option.season_number}
-          tabIndex={season === option.season_number ? 0 : -1}
-          className="af-season-tab"
-          onClick={() => {
-            setSelected(option.season_number);
-            setRange(0);
-            setShowAllMobile(false);
-            setError('');
-          }}
-          onKeyDown={event => {
-            let nextIdx = -1;
-            if (event.key === 'ArrowRight') nextIdx = (idx + 1) % seasons.length;
-            else if (event.key === 'ArrowLeft') nextIdx = (idx - 1 + seasons.length) % seasons.length;
-            else if (event.key === 'Home') nextIdx = 0;
-            else if (event.key === 'End') nextIdx = seasons.length - 1;
-            if (nextIdx < 0) return;
-            event.preventDefault();
-            const target = seasons[nextIdx];
-            setSelected(target.season_number);
-            setRange(0);
-            setShowAllMobile(false);
-            setError('');
-            const tabs = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
-            tabs?.[nextIdx]?.focus();
-          }}
-        >
-          {option.name}
-        </button>
-      ))}
-    </div>}
-
-    {currentSeasonObj?.overview && <p className="af-season-overview">{currentSeasonObj.overview}</p>}
-
-    {season == null ? <p className="af-state">No seasons are listed.</p> : error ? <p className="af-state" role="alert">{error} <button className="af-text-link" type="button" onClick={() => { setError(''); setAttempt(value => value + 1); }}>Retry</button></p>
-      : results?.season !== season ? <Loading label="Loading episodes…" shape="rows" />
-      : episodes.length === 0 ? <p className="af-state">No episodes are listed for this season.</p>
-      : isDubView && !seasonHasDub ? <p className="af-state" role="status">
-          English dub is not available for {currentSeasonObj?.name || 'this season'} yet.{' '}
-          <button type="button" className="af-text-link" onClick={() => handleAudioMode('sub')}>Switch to Sub</button>
-        </p>
-      : <>
+  let episodesBody;
+  if (season == null) {
+    episodesBody = <p className="af-state">No seasons are listed.</p>;
+  } else if (error) {
+    episodesBody = (
+      <p className="af-state" role="alert">
+        {error} <button className="af-text-link" type="button" onClick={() => { setError(''); setAttempt(value => value + 1); }}>Retry</button>
+      </p>
+    );
+  } else if (results?.season !== season) {
+    episodesBody = <Loading label="Loading episodes…" shape="rows" />;
+  } else if (episodes.length === 0) {
+    episodesBody = <p className="af-state">No episodes are listed for this season.</p>;
+  } else if (isDubView && !seasonHasDub) {
+    episodesBody = (
+      <output className="af-state">
+        English dub is not available for {currentSeasonObj?.name || 'this season'} yet.{' '}
+        <button type="button" className="af-text-link" onClick={() => handleAudioMode('sub')}>Switch to Sub</button>
+      </output>
+    );
+  } else {
+    episodesBody = (
+      <>
         <div className={`af-episode-grid ${controls.library.preferences.compact ? 'af-compact' : ''} ${showAllMobile ? 'is-mobile-expanded' : ''}`}>
           {pageEpisodes.map((episode, index) => (
             <div className={index >= mobileInitialEpisodes && !showAllMobile ? 'af-episode-mobile-extra' : undefined} key={episodeKey(item, episode)}>
@@ -490,11 +568,245 @@ function Episodes({ item, seasons, initialSeason, resumeEpisode, controls, readS
             </button>
           </div>
         )}
-      </>}
+      </>
+    );
+  }
+
+  return <section id="episodes" className="af-section" tabIndex={-1} aria-labelledby="episodes-heading">
+    <header className="af-section-head af-episodes-head">
+      <div>
+        <h2 id="episodes-heading">Episodes</h2>
+        {seasonFacts && <p className="af-meta af-tabular">{seasonFacts}</p>}
+      </div>
+      <div className="af-episode-tools">
+        {dubAvailable && <fieldset className="af-audio-switch" aria-label="Episode audio">
+          <button
+            type="button"
+            className="af-audio-switch-btn"
+            aria-pressed={effectiveAudio === 'sub'}
+            onClick={() => handleAudioMode('sub')}
+          >Sub</button>
+          <button
+            type="button"
+            className="af-audio-switch-btn"
+            aria-pressed={effectiveAudio === 'dub'}
+            onClick={() => handleAudioMode('dub')}
+          >Dub</button>
+        </fieldset>}
+        {unwatchedAired.length > 0 && <button type="button" className="af-button af-secondary af-tool-btn" disabled={!controls.ready || markingSeason} onClick={() => void handleMarkSeasonWatched()}>
+          <Icon name="check" /><span>{markingSeason ? 'Marking…' : 'Mark season watched'}</span>
+        </button>}
+        {count > 1 && <AfSelect
+          ariaLabel="Episode range"
+          value={String(currentRange)}
+          options={buildEpisodeRangeOptions(episodes, count)}
+          onChange={value => { setRange(Number(value)); setShowAllMobile(false); }}
+        />}
+      </div>
+    </header>
+
+    <SeasonTabs seasons={seasons} season={season} onSelectSeason={selectSeason} />
+
+    {currentSeasonObj?.overview && <p className="af-season-overview">{currentSeasonObj.overview}</p>}
+
+    {episodesBody}
   </section>;
 }
 
-export function DetailsPage({ type, id, controls }: { type: MediaType; id: number; controls: LibraryControls }) {
+function resolveCreditSummary(directors: string[], creators: string[]): { role: string; names: string[] } {
+  if (directors.length) return { role: 'Directed by', names: directors };
+  if (creators.length) return { role: 'Created by', names: creators };
+  return { role: '', names: [] };
+}
+
+function formatTitleLengthFact(type: MediaType, details: TitleDetails, item: Title): string {
+  if (type === 'tv') {
+    const count = details.number_of_seasons;
+    if (!count) return '';
+    return `${count} ${count === 1 ? 'season' : 'seasons'}`;
+  }
+  return item.duration ? `${item.duration} min` : '';
+}
+
+function formatTvPlayLabel(
+  resumeEpisode: { season: number; number: number } | undefined,
+  selection: { episode: Episode; replay: boolean } | undefined,
+  regular: Season[],
+): string {
+  if (resumeEpisode) return `Resume S${resumeEpisode.season} E${resumeEpisode.number}`;
+  if (selection) return selection.replay ? 'Watch again' : `Play ${episodeLabel(selection.episode)}`;
+  return regular.length > 0 ? `Play S${regular[0].season_number} E1` : 'Play';
+}
+
+function resolveInitialSeason(
+  orderedSeasons: Season[],
+  resumeEpisode: { season: number; number: number } | undefined,
+  regular: Season[],
+): number | undefined {
+  // Parse ?season= strictly so missing param never coerces to 0 (Specials)
+  const rawSeasonParam = currentSearchParams().get('season');
+  const parsedSeason = rawSeasonParam !== null && rawSeasonParam.trim() !== '' ? Number(rawSeasonParam) : Number.NaN;
+  if (Number.isInteger(parsedSeason) && orderedSeasons.some(entry => entry.season_number === parsedSeason)) {
+    return parsedSeason;
+  }
+  if (resumeEpisode && orderedSeasons.some(entry => entry.season_number === resumeEpisode.season)) {
+    return resumeEpisode.season;
+  }
+  return regular[0]?.season_number;
+}
+
+function formatDetailsYearRange(type: MediaType, item: Title, details: TitleDetails): string {
+  const start = item.year;
+  const end = details.last_episode_to_air?.air_date?.slice(0, 4);
+  if (type === 'tv' && start && end && end !== start && (details.status === 'Ended' || details.status === 'Canceled')) {
+    return `${start}–${end}`;
+  }
+  return formatDate(item.date) || start || '';
+}
+
+function DetailsHeroSection({
+  type,
+  item,
+  details,
+  controls,
+  imdb,
+  mal,
+  logo,
+  trailer,
+  startingEpisode,
+  playLabel,
+  resume,
+  resumePct,
+  watchedEpisodeCount,
+  starring,
+  creditRole,
+  creditNames,
+  facts,
+  scheduling,
+  onLogoError,
+  onOpenTrailer,
+}: Readonly<{
+  type: MediaType;
+  item: Title & { totalEpisodes?: number };
+  details: TitleDetails;
+  controls: LibraryControls;
+  imdb: ReturnType<typeof useOptionalRating<CatalogRating>>;
+  mal: ReturnType<typeof useOptionalRating<number>>;
+  logo: { url: string; width?: number; height?: number } | undefined;
+  trailer: DetailsVideo | undefined;
+  startingEpisode: { season: number; number: number; title?: string } | undefined;
+  playLabel: string;
+  resume: ReturnType<typeof resumeFor>;
+  resumePct: number;
+  watchedEpisodeCount: number;
+  starring: string[];
+  creditRole: string;
+  creditNames: string[];
+  facts: string[];
+  scheduling: string;
+  onLogoError: () => void;
+  onOpenTrailer: () => void;
+}>) {
+  const saved = controls.library.saved[item.key];
+  const marked = Boolean(controls.library.watched[item.key]);
+  const showMoviePlay = type === 'movie' && (!item.date || item.date <= today() || Boolean(resume));
+
+  return (
+    <section className={`af-hero af-details-hero af-cinema-hero ${item.backdrop ? '' : 'af-no-backdrop'}`}>
+      {item.backdrop && <HeroBackdrop src={item.backdrop} sizes="100vw" />}
+      <div className="af-wrap af-hero-inner">
+        <a className="af-text-link af-back" href={previousBrowse(type === 'movie' ? 'movies' : 'tv')}><Icon name="left" /> Back to browse</a>
+        <div className="af-details-main af-hero-split">
+          {!item.backdrop && item.poster && <Artwork className="af-fallback-poster" src={item.poster} fallback={<span className="af-fallback-poster af-art-fallback"><Icon name="film" /></span>} />}
+          <div className="af-copy">
+            {logo ? <>
+              <h1 className="sr-only">{item.title}</h1>
+              <img className="af-title-logo" src={logo.url} width={logo.width} height={logo.height} alt="" decoding="async" fetchPriority="high" onError={onLogoError} />
+            </> : <h1>{item.title}</h1>}
+            <div className="af-meta af-details-meta af-title-facts af-tabular">
+              <span>{type === 'tv' ? 'TV series' : 'Movie'}</span>
+              {facts.map(fact => <span key={fact}>{fact}</span>)}
+              <Score rating={imdb.value ?? item.rating} mal={mal.value} />
+            </div>
+            <RatingProblem name="IMDb" rating={imdb} /><RatingProblem name="MyAnimeList" rating={mal} />
+            {item.description && <p className="af-overview">{item.description}</p>}
+
+            <div className="af-hero-cta-row">
+              {type === 'tv' && startingEpisode && (
+                <a className={`af-button af-primary af-hero-play ${resumePct > 0 ? 'has-progress' : ''}`} href={playHref(item, startingEpisode)}>
+                  <Icon name="play" />
+                  <span>{playLabel}</span>
+                  {resumePct > 0 && <span className="af-hero-play-bar" style={{ width: `${resumePct}%` }} aria-hidden="true" />}
+                </a>
+              )}
+              {showMoviePlay && (
+                <a className={`af-button af-primary af-hero-play ${resumePct > 0 ? 'has-progress' : ''}`} href={playHref(item)}>
+                  <Icon name="play" />
+                  <span>{resume ? 'Resume' : 'Play'}</span>
+                  {resumePct > 0 && <span className="af-hero-play-bar" style={{ width: `${resumePct}%` }} aria-hidden="true" />}
+                </a>
+              )}
+              {trailer && <button type="button" className="af-button af-secondary af-trailer-btn" onClick={onOpenTrailer}>
+                <Icon name="trailer" /><span>Trailer</span>
+              </button>}
+            </div>
+
+            <div className="af-hero-utilities">
+              <SaveButton item={item} controls={controls} />
+              {saved && <AfSelect
+                ariaLabel="Watch status"
+                value={effectiveWatchStatus(saved, controls.library)}
+                disabled={!controls.ready || controls.isPending(item.key)}
+                options={watchStatusOptions}
+                onChange={value => void controls.setStatus(item, value as WatchStatus, details)}
+              />}
+              {type === 'movie' && !saved && <button type="button" className="af-button af-secondary" disabled={!controls.ready || controls.isPending(item.key)}
+                aria-pressed={marked} onClick={() => void controls.toggleWatched(item)}>{marked ? <><Icon name="check" />Completed</> : 'Mark completed'}</button>}
+              <FolderPickerPopover itemKey={item.key} itemTitle={item.title} controls={controls} />
+              <div className="af-rating af-rating-inline">
+                <span>Your rating</span>
+                <AfSelect
+                  ariaLabel="Your rating"
+                  value={String(savedRating(controls.library.ratings[item.key]))}
+                  disabled={!controls.ready || controls.isPending(item.key)}
+                  options={ratingOptions}
+                  onChange={value => void controls.rate(item, Number(value))}
+                />
+              </div>
+            </div>
+
+            {type === 'tv' && item.totalEpisodes ? <p className="af-meta af-tabular af-hero-progress-note" aria-live="polite">
+              {watchedEpisodeCount} of {item.totalEpisodes} episodes watched{resume ? ` · Resume at ${timeCode(resume.time)}` : ''}
+            </p> : null}
+            {scheduling && <p className="af-schedule">{scheduling}</p>}
+          </div>
+
+          {Boolean(starring.length || creditNames.length) && <aside className="af-hero-credits" aria-label="Credits summary">
+            {starring.length > 0 && <div className="af-hero-credit-group">
+              <span className="af-hero-credit-label">Starring</span>
+              <p>{starring.join(', ')}</p>
+            </div>}
+            {creditRole && creditNames.length > 0 && <div className="af-hero-credit-group">
+              <span className="af-hero-credit-label">{creditRole}</span>
+              <p>{creditNames.join(', ')}</p>
+            </div>}
+          </aside>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+const showStatusLabels: Record<string, string> = {
+  'Returning Series': 'Ongoing',
+  Ended: 'Ended',
+  Canceled: 'Canceled',
+  'In Production': 'In production',
+  Planned: 'Planned',
+  Pilot: 'Pilot',
+};
+
+export function DetailsPage({ type, id, controls }: Readonly<{ type: MediaType; id: number; controls: LibraryControls }>) {
   const [details, setDetails] = useState<TitleDetails>();
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
@@ -520,7 +832,7 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
       setDetails(value);
       const item = normalizeTitle(value, type);
       document.title = `${item.title} · Afterframe`;
-    }).catch(problem => { if (!signal.aborted) setError(problem.message); });
+    }).catch(error_ => { if (!signal.aborted) setError(error_.message); });
     return () => controller.abort();
   }, [type, id, attempt]);
 
@@ -553,7 +865,7 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
   const readSeason = useCallback((season: number) => {
     let response = seasonCache.current.get(season);
     if (!response) {
-      response = getSeason(id, season).catch(problem => { seasonCache.current.delete(season); throw problem; });
+      response = getSeason(id, season).catch(error_ => { seasonCache.current.delete(season); throw error_; });
       seasonCache.current.set(season, response);
     }
     return response;
@@ -598,25 +910,17 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
   const crew = details.credits?.crew?.filter(person => ['Director', 'Writer', 'Screenplay', 'Director of Photography', 'Original Music Composer', 'Editor'].includes(person.job)).slice(0, 10) ?? [];
   const directors = [...new Set(crew.filter(person => person.job === 'Director').map(person => person.name))];
   const creators = details.created_by?.map(person => person.name) ?? [];
-  const creditRole = directors.length ? 'Directed by' : creators.length ? 'Created by' : '';
-  const creditNames = directors.length ? directors : creators;
+  const { role: creditRole, names: creditNames } = resolveCreditSummary(directors, creators);
   const genres = details.genres?.slice(0, 3).map(genre => genre.name).join(', ') || item.genre;
   const scheduling = type === 'tv' ? upcoming(details) : '';
-  const status = ({ 'Returning Series': 'Ongoing', Ended: 'Ended', Canceled: 'Canceled', 'In Production': 'In production', Planned: 'Planned', Pilot: 'Pilot' } as Record<string, string>)[details.status ?? ''];
-  const yearRange = (() => {
-    const start = item.year;
-    const end = details.last_episode_to_air?.air_date?.slice(0, 4);
-    if (type === 'tv' && start && end && end !== start && (details.status === 'Ended' || details.status === 'Canceled')) {
-      return `${start}–${end}`;
-    }
-    return formatDate(item.date) || start || '';
-  })();
+  const status = showStatusLabels[details.status ?? ''];
+  const yearRange = formatDetailsYearRange(type, item, details);
   const facts = [
     genres,
     yearRange,
-    type === 'tv' ? details.number_of_seasons ? `${details.number_of_seasons} ${details.number_of_seasons === 1 ? 'season' : 'seasons'}` : '' : item.duration ? `${item.duration} min` : '',
+    formatTitleLengthFact(type, details, item),
     type === 'tv' ? status : '',
-  ].filter(Boolean);
+  ].filter((value): value is string => Boolean(value));
 
   const count = Object.keys(watched).filter(key => key.startsWith(`${item.key}/cinesrc-s`) && !key.startsWith(`${item.key}/cinesrc-s0e`)).length;
   const resumeEpisode = resume?.episode;
@@ -624,107 +928,35 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
     ? { season: regular[0].season_number, number: 1, title: 'Episode 1' }
     : undefined;
   const startingEpisode = resumeEpisode ?? (selection ? episodePosition(selection.episode) : optimisticEpisode);
-  const playLabel = resumeEpisode ? `Resume S${resumeEpisode.season} E${resumeEpisode.number}`
-    : selection ? selection.replay ? 'Watch again' : `Play ${episodeLabel(selection.episode)}`
-    : regular.length > 0 ? `Play S${regular[0].season_number} E1` : 'Play';
-
-  // Parse ?season= strictly so missing param never coerces to 0 (Specials)
-  const rawSeasonParam = currentSearchParams().get('season');
-  const parsedSeason = rawSeasonParam !== null && rawSeasonParam.trim() !== '' ? Number(rawSeasonParam) : NaN;
-  const initialSeason = Number.isInteger(parsedSeason) && orderedSeasons.some(entry => entry.season_number === parsedSeason)
-    ? parsedSeason
-    : resumeEpisode && orderedSeasons.some(entry => entry.season_number === resumeEpisode.season)
-      ? resumeEpisode.season
-      : regular[0]?.season_number;
-
-  const saved = controls.library.saved[item.key];
-  const marked = Boolean(watched[item.key]);
-  const logo = !logoFailed ? pickTitleLogo(details.images?.logos) : undefined;
+  const playLabel = formatTvPlayLabel(resumeEpisode, selection, regular);
+  const initialSeason = resolveInitialSeason(orderedSeasons, resumeEpisode, regular);
+  const logo = logoFailed ? undefined : pickTitleLogo(details.images?.logos);
   const trailer = pickTrailer(details.videos?.results);
   const resumePct = resume && resume.duration > 0 ? progressPercent(resume) : 0;
 
   return <>
-    <section className={`af-hero af-details-hero af-cinema-hero ${item.backdrop ? '' : 'af-no-backdrop'}`}>
-      {item.backdrop && <HeroBackdrop src={item.backdrop} sizes="100vw" />}
-      <div className="af-wrap af-hero-inner">
-        <a className="af-text-link af-back" href={previousBrowse(type === 'movie' ? 'movies' : 'tv')}><Icon name="left" /> Back to browse</a>
-        <div className="af-details-main af-hero-split">
-          {!item.backdrop && item.poster && <Artwork className="af-fallback-poster" src={item.poster} fallback={<span className="af-fallback-poster af-art-fallback"><Icon name="film" /></span>} />}
-          <div className="af-copy">
-            {logo ? <>
-              <h1 className="sr-only">{item.title}</h1>
-              <img className="af-title-logo" src={logo.url} width={logo.width} height={logo.height} alt="" decoding="async" fetchPriority="high" onError={() => setLogoFailed(true)} />
-            </> : <h1>{item.title}</h1>}
-            <div className="af-meta af-details-meta af-title-facts af-tabular">
-              <span>{type === 'tv' ? 'TV series' : 'Movie'}</span>
-              {facts.map(fact => <span key={fact}>{fact}</span>)}
-              <Score rating={imdb.value ?? item.rating} mal={mal.value} />
-            </div>
-            <RatingProblem name="IMDb" rating={imdb} /><RatingProblem name="MyAnimeList" rating={mal} />
-            {item.description && <p className="af-overview">{item.description}</p>}
-
-            <div className="af-hero-cta-row">
-              {type === 'tv' ? startingEpisode && (
-                <a className={`af-button af-primary af-hero-play ${resumePct > 0 ? 'has-progress' : ''}`} href={playHref(item, startingEpisode)}>
-                  <Icon name="play" />
-                  <span>{playLabel}</span>
-                  {resumePct > 0 && <span className="af-hero-play-bar" style={{ width: `${resumePct}%` }} aria-hidden="true" />}
-                </a>
-              ) : (!item.date || item.date <= today() || resume) && (
-                <a className={`af-button af-primary af-hero-play ${resumePct > 0 ? 'has-progress' : ''}`} href={playHref(item)}>
-                  <Icon name="play" />
-                  <span>{resume ? 'Resume' : 'Play'}</span>
-                  {resumePct > 0 && <span className="af-hero-play-bar" style={{ width: `${resumePct}%` }} aria-hidden="true" />}
-                </a>
-              )}
-              {trailer && <button type="button" className="af-button af-secondary af-trailer-btn" onClick={() => setTrailerOpen(true)}>
-                <Icon name="trailer" /><span>Trailer</span>
-              </button>}
-            </div>
-
-            <div className="af-hero-utilities">
-              <SaveButton item={item} controls={controls} />
-              {saved && <AfSelect
-                ariaLabel="Watch status"
-                value={effectiveWatchStatus(saved, controls.library)}
-                disabled={!controls.ready || controls.isPending(item.key)}
-                options={watchStatusOptions}
-                onChange={value => void controls.setStatus(item, value as WatchStatus, details)}
-              />}
-              {type === 'movie' && !saved && <button type="button" className="af-button af-secondary" disabled={!controls.ready || controls.isPending(item.key)}
-                aria-pressed={marked} onClick={() => void controls.toggleWatched(item)}>{marked ? <><Icon name="check" />Completed</> : 'Mark completed'}</button>}
-              <FolderPickerPopover itemKey={item.key} itemTitle={item.title} controls={controls} />
-              <div className="af-rating af-rating-inline">
-                <span>Your rating</span>
-                <AfSelect
-                  ariaLabel="Your rating"
-                  value={String(savedRating(controls.library.ratings[item.key]))}
-                  disabled={!controls.ready || controls.isPending(item.key)}
-                  options={ratingOptions}
-                  onChange={value => void controls.rate(item, Number(value))}
-                />
-              </div>
-            </div>
-
-            {type === 'tv' && item.totalEpisodes ? <p className="af-meta af-tabular af-hero-progress-note" aria-live="polite">
-              {count} of {item.totalEpisodes} episodes watched{resume ? ` · Resume at ${timeCode(resume.time)}` : ''}
-            </p> : null}
-            {scheduling && <p className="af-schedule">{scheduling}</p>}
-          </div>
-
-          {Boolean(starring.length || creditNames.length) && <aside className="af-hero-credits" aria-label="Credits summary">
-            {starring.length > 0 && <div className="af-hero-credit-group">
-              <span className="af-hero-credit-label">Starring</span>
-              <p>{starring.join(', ')}</p>
-            </div>}
-            {creditRole && creditNames.length > 0 && <div className="af-hero-credit-group">
-              <span className="af-hero-credit-label">{creditRole}</span>
-              <p>{creditNames.join(', ')}</p>
-            </div>}
-          </aside>}
-        </div>
-      </div>
-    </section>
+    <DetailsHeroSection
+      type={type}
+      item={item}
+      details={details}
+      controls={controls}
+      imdb={imdb}
+      mal={mal}
+      logo={logo}
+      trailer={trailer}
+      startingEpisode={startingEpisode}
+      playLabel={playLabel}
+      resume={resume}
+      resumePct={resumePct}
+      watchedEpisodeCount={count}
+      starring={starring}
+      creditRole={creditRole}
+      creditNames={creditNames}
+      facts={facts}
+      scheduling={scheduling}
+      onLogoError={() => setLogoFailed(true)}
+      onOpenTrailer={() => setTrailerOpen(true)}
+    />
 
     {trailer && <TrailerModal video={trailer} title={item.title} open={trailerOpen} onOpenChange={setTrailerOpen} />}
 
@@ -754,7 +986,7 @@ export function DetailsPage({ type, id, controls }: { type: MediaType; id: numbe
         {crew.length > 0 && <dl className="af-crew">{crew.map((person, index) => <div key={`${person.id}-${index}`}><dt>{person.job}</dt><dd>{person.name}</dd></div>)}</dl>}
       </section>}
 
-      {relatedError && <p className="af-state" role="status">Related titles could not load. <button className="af-text-link" type="button" onClick={() => setRelatedAttempt(value => value + 1)}>Retry related titles</button></p>}
+      {relatedError && <output className="af-state">Related titles could not load. <button className="af-text-link" type="button" onClick={() => setRelatedAttempt(value => value + 1)}>Retry related titles</button></output>}
       {related.length > 0 && <div id="related" tabIndex={-1}><Shelf title={type === 'tv' ? 'Related series' : 'Related films'}>
         {related.map(other => <MediaCard item={other} controls={controls} key={other.key} />)}
       </Shelf></div>}

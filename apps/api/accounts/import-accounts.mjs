@@ -16,6 +16,43 @@ const tables = [
   ['release_snapshots', ['series_id', 'value']],
 ];
 
+function prepareRowParams(row, table, columns, legacyRatings) {
+  if (legacyRatings && table === 'library' && row.kind === 'ratings') {
+    row.value = JSON.stringify(ratingOnTen(JSON.parse(row.value)));
+  }
+  return columns.map(column => row[column]);
+}
+
+async function runBatchedInserts(insert, iterator, table, columns, legacyRatings, count = 0) {
+  const batch = [];
+  for (let i = 0; i < 200; i++) {
+    const next = iterator.next();
+    if (next.done) break;
+    batch.push(prepareRowParams(next.value, table, columns, legacyRatings));
+  }
+  if (!batch.length) return count;
+  await Promise.all(batch.map(params => insert.run(...params)));
+  return runBatchedInserts(insert, iterator, table, columns, legacyRatings, count + batch.length);
+}
+
+async function importTable(source, target, tableExists, [table, columns, order], legacyRatings) {
+  if (!tableExists.get(table)) return 0;
+  const fields = columns.join(', ');
+  const orderClause = order ? ` ORDER BY ${order}` : '';
+  const select = source.prepare(`SELECT ${fields} FROM ${table}${orderClause}`);
+  const insert = target.prepare(`INSERT INTO ${table} (${fields}) VALUES (${columns.map(() => '?').join(', ')})`);
+  return runBatchedInserts(insert, select.iterate(), table, columns, legacyRatings);
+}
+
+async function importAllTables(source, target, tableExists, legacyRatings, index = 0, counts = { accountCount: 0, libraryCount: 0 }) {
+  if (index >= tables.length) return counts;
+  const spec = tables[index];
+  const rowCount = await importTable(source, target, tableExists, spec, legacyRatings);
+  if (spec[0] === 'accounts') counts.accountCount += rowCount;
+  if (spec[0] === 'library') counts.libraryCount += rowCount;
+  return importAllTables(source, target, tableExists, legacyRatings, index + 1, counts);
+}
+
 let source;
 let target;
 try {
@@ -29,24 +66,9 @@ try {
     await target.prepare('LOCK TABLE accounts, release_snapshots IN EXCLUSIVE MODE').run();
     const occupied = await target.prepare('SELECT EXISTS (SELECT 1 FROM accounts UNION ALL SELECT 1 FROM release_snapshots) AS occupied').get();
     if (occupied.occupied) throw new Error('The destination already contains Afterframe account data.');
-    let accountCount = 0;
-    let libraryCount = 0;
-    for (const [table, columns, order] of tables) {
-      if (!tableExists.get(table)) continue;
-      const fields = columns.join(', ');
-      const select = source.prepare(`SELECT ${fields} FROM ${table}${order ? ` ORDER BY ${order}` : ''}`);
-      const insert = target.prepare(`INSERT INTO ${table} (${fields}) VALUES (${columns.map(() => '?').join(', ')})`);
-      for (const row of select.iterate()) {
-        if (legacyRatings && table === 'library' && row.kind === 'ratings') {
-          row.value = JSON.stringify(ratingOnTen(JSON.parse(row.value)));
-        }
-        await insert.run(...columns.map(column => row[column]));
-        if (table === 'accounts') accountCount++;
-        if (table === 'library') libraryCount++;
-      }
-    }
+    const counts = await importAllTables(source, target, tableExists, legacyRatings);
     await target.prepare("SELECT setval(pg_get_serial_sequence('accounts', 'id'), COALESCE(max(id), 1), max(id) IS NOT NULL) FROM accounts").run();
-    return { accountCount, libraryCount };
+    return counts;
   });
   console.log(`Imported ${inserted.accountCount} accounts and ${inserted.libraryCount} library entries.`);
 } catch (error) {

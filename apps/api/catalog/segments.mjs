@@ -22,7 +22,9 @@ const aniSkipKind = {
 };
 
 /** @type {readonly ('intro' | 'recap' | 'credits' | 'preview')[]} */
-const segmentKinds = ['intro', 'recap', 'credits', 'preview'];
+const segmentKindList = ['intro', 'recap', 'credits', 'preview'];
+/** @type {ReadonlySet<'intro' | 'recap' | 'credits' | 'preview'>} */
+const segmentKinds = new Set(segmentKindList);
 const imdbIdPattern = /^tt\d{6,10}$/;
 
 /**
@@ -59,30 +61,9 @@ export function isReasonableSegment(kind, start, end, durationSec) {
   return false;
 }
 
-/**
- * Merge skip segment candidates from multiple independent databases per kind.
- * Promotes autoSkip when two distinct sources agree on start/end within ±4s.
- * @param {SegmentCandidate[]} candidates
- * @param {number} durationSec
- * @returns {SkipSegmentOut[]}
- */
-export function mergeSkipCandidates(candidates, durationSec) {
-  const valid = candidates.filter(entry =>
-    entry && segmentKinds.includes(entry.kind)
-    && isReasonableSegment(entry.kind, entry.start, Math.min(entry.end, durationSec), durationSec),
-  ).map(entry => ({
-    ...entry,
-    end: Math.min(entry.end, durationSec),
-  }));
-
-  /** @type {SkipSegmentOut[]} */
-  const merged = [];
-  for (const kind of segmentKinds) {
-    const group = valid.filter(entry => entry.kind === kind);
-    if (!group.length) continue;
-
-    // Cross-source consensus: two independent databases agreeing within ±4s boosts score & confirms autoSkip.
-    const scored = group.map(entry => {
+function scoreConsensusGroup(group) {
+  return group
+    .map(entry => {
       const corroborated = group.some(other =>
         other.source !== entry.source
         && Math.abs(other.start - entry.start) <= 4
@@ -93,26 +74,52 @@ export function mergeSkipCandidates(candidates, durationSec) {
         score: entry.score + (corroborated ? 15 : 0),
         autoSkip: entry.autoSkip || corroborated,
       };
-    });
+    })
+    .sort((a, b) => b.score - a.score || Number(b.autoSkip) - Number(a.autoSkip));
+}
 
-    scored.sort((a, b) => b.score - a.score || Number(b.autoSkip) - Number(a.autoSkip));
+function collectCreditSegments(scored, source) {
+  const sameSource = scored
+    .filter(entry => entry.source === source)
+    .sort((a, b) => a.start - b.start);
+  /** @type {SegmentCandidate[]} */
+  const deduped = [];
+  for (const seg of sameSource) {
+    const last = deduped.at(-1);
+    if (!last || seg.start >= last.end - 1) deduped.push(seg);
+    else if (seg.score > last.score) deduped[deduped.length - 1] = seg;
+  }
+  return deduped.map(seg => ({ kind: seg.kind, start: seg.start, end: seg.end, autoSkip: seg.autoSkip, source: seg.source }));
+}
+
+/**
+ * Merge skip segment candidates from multiple independent databases per kind.
+ * Promotes autoSkip when two distinct sources agree on start/end within ±4s.
+ * @param {SegmentCandidate[]} candidates
+ * @param {number} durationSec
+ * @returns {SkipSegmentOut[]}
+ */
+export function mergeSkipCandidates(candidates, durationSec) {
+  const valid = candidates.filter(entry =>
+    entry && segmentKinds.has(entry.kind)
+    && isReasonableSegment(entry.kind, entry.start, Math.min(entry.end, durationSec), durationSec),
+  ).map(entry => ({
+    ...entry,
+    end: Math.min(entry.end, durationSec),
+  }));
+
+  /** @type {SkipSegmentOut[]} */
+  const merged = [];
+  for (const kind of segmentKindList) {
+    const group = valid.filter(entry => entry.kind === kind);
+    if (!group.length) continue;
+
+    // Cross-source consensus: two independent databases agreeing within ±4s boosts score & confirms autoSkip.
+    const scored = scoreConsensusGroup(group);
     const winner = scored[0];
 
     if (kind === 'credits') {
-      // Preserve multiple non-overlapping credit blocks (e.g. mid-credits / post-credits gap) from the winning source.
-      const sameSource = scored
-        .filter(entry => entry.source === winner.source)
-        .sort((a, b) => a.start - b.start);
-      /** @type {SegmentCandidate[]} */
-      const deduped = [];
-      for (const seg of sameSource) {
-        const last = deduped[deduped.length - 1];
-        if (!last || seg.start >= last.end - 1) deduped.push(seg);
-        else if (seg.score > last.score) deduped[deduped.length - 1] = seg;
-      }
-      for (const seg of deduped) {
-        merged.push({ kind: seg.kind, start: seg.start, end: seg.end, autoSkip: seg.autoSkip, source: seg.source });
-      }
+      merged.push(...collectCreditSegments(scored, winner.source));
     } else {
       merged.push({
         kind: winner.kind,
@@ -140,6 +147,28 @@ async function resolveImdbId(type, id) {
   return imdbIdPattern.test(raw) ? raw : null;
 }
 
+function scoreAniSkipEntry(isMixed, reportedLen, durationSec) {
+  if (!Number.isFinite(reportedLen) || reportedLen <= 0) {
+    return { score: isMixed ? 60 : 68, autoSkip: false };
+  }
+  const diff = Math.abs(reportedLen - durationSec);
+  if (diff > 12) return null;
+  if (diff > 3.5) return { score: isMixed ? 64 : 74, autoSkip: false };
+  return { score: isMixed ? 88 : 125, autoSkip: !isMixed };
+}
+
+function parseAniSkipEntry(entry, durationSec) {
+  const skipType = String(entry?.skipType || '');
+  const kind = aniSkipKind[skipType];
+  const start = Number(entry?.interval?.startTime);
+  const rawEnd = Number(entry?.interval?.endTime);
+  if (!kind || !Number.isFinite(start) || !Number.isFinite(rawEnd)) return null;
+  const end = Math.min(durationSec, rawEnd);
+  const scored = scoreAniSkipEntry(skipType.startsWith('mixed-'), Number(entry?.episodeLength), durationSec);
+  if (!scored || !isReasonableSegment(kind, start, end, durationSec)) return null;
+  return { kind, start, end, autoSkip: scored.autoSkip, source: /** @type {SegmentSource} */ ('aniskip'), score: scored.score };
+}
+
 /**
  * Parse AniSkip v2 response entries into scored candidates.
  * @param {any} payload
@@ -151,29 +180,8 @@ export function parseAniSkipPayload(payload, durationSec) {
   /** @type {SegmentCandidate[]} */
   const found = [];
   for (const entry of payload.results) {
-    const skipType = String(entry?.skipType || '');
-    const kind = aniSkipKind[skipType];
-    const start = Number(entry?.interval?.startTime);
-    const rawEnd = Number(entry?.interval?.endTime);
-    const reportedLen = Number(entry?.episodeLength);
-    if (!kind || !Number.isFinite(start) || !Number.isFinite(rawEnd)) continue;
-    const end = Math.min(durationSec, rawEnd);
-    const isMixed = skipType.startsWith('mixed-');
-    let score = isMixed ? 88 : 125;
-    let autoSkip = !isMixed;
-    if (Number.isFinite(reportedLen) && reportedLen > 0) {
-      const diff = Math.abs(reportedLen - durationSec);
-      if (diff > 12) continue;
-      if (diff > 3.5) {
-        score = isMixed ? 64 : 74;
-        autoSkip = false;
-      }
-    } else {
-      score = isMixed ? 60 : 68;
-      autoSkip = false;
-    }
-    if (!isReasonableSegment(kind, start, end, durationSec)) continue;
-    found.push({ kind, start, end, autoSkip, source: 'aniskip', score });
+    const parsed = parseAniSkipEntry(entry, durationSec);
+    if (parsed) found.push(parsed);
   }
   return found;
 }
@@ -208,6 +216,33 @@ async function loadAniSkipSegments(type, id, season, episode, durationSec) {
   return parseAniSkipPayload(payload, durationSec);
 }
 
+function toMilliseconds(msValue, secValue) {
+  const fallback = Number.isFinite(secValue) ? secValue * 1000 : Number.NaN;
+  return Number(msValue ?? fallback);
+}
+
+function scoreSkipDbMatch(match, adjusted, confidence) {
+  if (match === 'exact') return { score: 94 + Math.min(5, confidence * 5), autoSkip: confidence >= 0.8 };
+  if (match === 'shifted' || adjusted === true) return { score: 84 + Math.min(5, confidence * 5), autoSkip: confidence >= 0.8 };
+  if (match === 'out-of-range') return { score: 52, autoSkip: false };
+  return { score: 72 + Math.min(6, confidence * 6), autoSkip: confidence >= 0.85 };
+}
+
+function parseSkipDbEntry(entry, kind, durationSec) {
+  if (!entry || typeof entry !== 'object') return null;
+  const startMs = toMilliseconds(entry.start_ms, entry.start_sec);
+  const endMs = toMilliseconds(entry.end_ms, entry.end_sec);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null;
+  const match = String(entry.match || '');
+  const maxOutOfRangeMs = (kind === 'intro' || kind === 'recap') ? 60000 : 20000;
+  if (match === 'out-of-range' && Math.abs(Number(entry.offset_ms ?? 0)) > maxOutOfRangeMs) return null;
+  const start = startMs / 1000;
+  const end = Math.min(durationSec, endMs / 1000);
+  if (!isReasonableSegment(kind, start, end, durationSec)) return null;
+  const { score, autoSkip } = scoreSkipDbMatch(match, entry.adjusted, Number(entry.confidence ?? 0.7));
+  return { kind, start, end, autoSkip, source: /** @type {SegmentSource} */ ('skipdb'), score };
+}
+
 /**
  * Parse SkipDB response into scored candidates.
  * @param {any} data
@@ -222,36 +257,8 @@ export function parseSkipDbPayload(data, durationSec) {
   /** @type {SegmentCandidate[]} */
   const found = [];
   for (const [key, kind] of mapping) {
-    const entry = segs[key];
-    if (!entry || typeof entry !== 'object') continue;
-    const startMs = Number(entry.start_ms ?? (Number.isFinite(entry.start_sec) ? entry.start_sec * 1000 : NaN));
-    const endMs = Number(entry.end_ms ?? (Number.isFinite(entry.end_sec) ? entry.end_sec * 1000 : NaN));
-    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue;
-    const match = String(entry.match || '');
-    const confidence = Number(entry.confidence ?? 0.7);
-    const offsetMs = Number(entry.offset_ms ?? 0);
-    const maxOutOfRangeMs = (kind === 'intro' || kind === 'recap') ? 60000 : 20000;
-    if (match === 'out-of-range' && Math.abs(offsetMs) > maxOutOfRangeMs) continue;
-    const start = startMs / 1000;
-    const end = Math.min(durationSec, endMs / 1000);
-    if (!isReasonableSegment(kind, start, end, durationSec)) continue;
-
-    let score = 70;
-    let autoSkip = false;
-    if (match === 'exact') {
-      score = 94 + Math.min(5, confidence * 5);
-      autoSkip = confidence >= 0.8;
-    } else if (match === 'shifted' || entry.adjusted === true) {
-      score = 84 + Math.min(5, confidence * 5);
-      autoSkip = confidence >= 0.8;
-    } else if (match === 'out-of-range') {
-      score = 52;
-      autoSkip = false;
-    } else {
-      score = 72 + Math.min(6, confidence * 6);
-      autoSkip = confidence >= 0.85;
-    }
-    found.push({ kind, start, end, autoSkip, source: 'skipdb', score });
+    const parsed = parseSkipDbEntry(segs[key], kind, durationSec);
+    if (parsed) found.push(parsed);
   }
   return found;
 }
@@ -268,7 +275,8 @@ export function parseSkipDbPayload(data, durationSec) {
 async function loadSkipDbSegments(type, imdbId, season, episode, durationSec) {
   if (!imdbId) return [];
   const roundedSec = Math.round(durationSec);
-  const cacheKey = `skipdb:v1:${imdbId}:${type === 'tv' ? `${season}:${episode}` : 'movie'}:${roundedSec}`;
+  const scope = type === 'tv' ? `${season}:${episode}` : 'movie';
+  const cacheKey = `skipdb:v1:${imdbId}:${scope}:${roundedSec}`;
   const data = await cacheMetadata(cacheKey, 6 * 3600000, async () => {
     const url = new URL('https://api.skipdb.tv/api/segments');
     url.searchParams.set('imdb_id', imdbId);
@@ -287,6 +295,44 @@ async function loadSkipDbSegments(type, imdbId, season, episode, durationSec) {
   return parseSkipDbPayload(data, durationSec);
 }
 
+function theIntroDbBaseScore(exactCut, deltaMs) {
+  if (exactCut) return 86;
+  return deltaMs <= 10000 ? 68 : 58;
+}
+
+function parseTheIntroDbEntry(entry, kind, durationMs, durationSec, deltaMs, exactCut) {
+  if (entry.start_ms != null && !Number.isFinite(entry.start_ms)) return null;
+  if (!Number.isFinite(entry.end_ms) && ((kind !== 'credits' && kind !== 'preview') || entry.end_ms !== null)) return null;
+  const start = (entry.start_ms ?? 0) / 1000;
+  const end = (entry.end_ms === null ? durationMs : Math.min(entry.end_ms, durationMs)) / 1000;
+  if (!isReasonableSegment(kind, start, end, durationSec)) return null;
+  const votes = Number(entry.submission_count ?? 0);
+  const confidence = Number(entry.confidence);
+  const base = theIntroDbBaseScore(exactCut, deltaMs);
+  const autoSkip = exactCut && ((votes >= 2 && confidence >= 0.78) || confidence >= 0.9);
+  return { kind, start, end, autoSkip, source: /** @type {SegmentSource} */ ('theintrodb'), score: base + Math.min(8, votes * 2) + Math.min(6, confidence * 6) };
+}
+
+function parseTheIntroDbKind(data, kind, durationMs, durationSec, deltaMs, exactCut) {
+  if ((kind === 'credits' || kind === 'preview') && deltaMs > 10000) return [];
+  const entries = Array.isArray(data[kind]) ? data[kind] : [];
+  const filtered = entries.filter(entry => {
+    if (!Number.isFinite(entry?.confidence)) return false;
+    const votes = Number(entry?.submission_count ?? 0);
+    return entry.confidence >= 0.65 || (votes >= 2 && entry.confidence >= 0.6);
+  });
+  if (kind !== 'credits') {
+    filtered.sort((a, b) => (b.submission_count ?? 0) - (a.submission_count ?? 0) || b.confidence - a.confidence);
+  }
+  /** @type {SegmentCandidate[]} */
+  const found = [];
+  for (const entry of filtered) {
+    const parsed = parseTheIntroDbEntry(entry, kind, durationMs, durationSec, deltaMs, exactCut);
+    if (parsed) found.push(parsed);
+  }
+  return found;
+}
+
 /**
  * Parse TheIntroDB v4 response into scored candidates.
  * @param {any} data
@@ -295,7 +341,7 @@ async function loadSkipDbSegments(type, imdbId, season, episode, durationSec) {
  * @returns {SegmentCandidate[]}
  */
 export function parseTheIntroDbPayload(data, type, durationMs) {
-  if (!data || data.type !== type || !Number.isFinite(data.group_duration_ms)) return [];
+  if (data?.type !== type || !Number.isFinite(data.group_duration_ms)) return [];
   const deltaMs = Math.abs(data.group_duration_ms - durationMs);
   // Reject wildly different cuts (> 60s). Credits need a tight cut match (<= 10s) so end-card differences never misplace them;
   // intros/recaps occur near the start and stay valid as manual skips even when end credits/logos differ by 15–60s.
@@ -304,31 +350,8 @@ export function parseTheIntroDbPayload(data, type, durationMs) {
   const durationSec = durationMs / 1000;
   /** @type {SegmentCandidate[]} */
   const found = [];
-  for (const kind of segmentKinds) {
-    if ((kind === 'credits' || kind === 'preview') && deltaMs > 10000) continue;
-    const entries = Array.isArray(data[kind]) ? data[kind] : [];
-    const filtered = entries.filter(entry => {
-      if (!Number.isFinite(entry?.confidence)) return false;
-      const votes = Number(entry?.submission_count ?? 0);
-      return entry.confidence >= 0.65 || (votes >= 2 && entry.confidence >= 0.6);
-    });
-    if (kind !== 'credits') {
-      filtered.sort((a, b) => (b.submission_count ?? 0) - (a.submission_count ?? 0) || b.confidence - a.confidence);
-    }
-    for (const entry of filtered) {
-      if (entry.start_ms != null && !Number.isFinite(entry.start_ms)) continue;
-      if (!Number.isFinite(entry.end_ms) && ((kind !== 'credits' && kind !== 'preview') || entry.end_ms !== null)) continue;
-      const start = (entry.start_ms ?? 0) / 1000;
-      const end = (entry.end_ms === null ? durationMs : Math.min(entry.end_ms, durationMs)) / 1000;
-      if (!isReasonableSegment(kind, start, end, durationSec)) continue;
-      const votes = Number(entry.submission_count ?? 0);
-      const confidence = Number(entry.confidence);
-      const base = exactCut ? 86 : deltaMs <= 10000 ? 68 : 58;
-      const voteBonus = Math.min(8, votes * 2);
-      const confBonus = Math.min(6, confidence * 6);
-      const autoSkip = exactCut && ((votes >= 2 && confidence >= 0.78) || confidence >= 0.9);
-      found.push({ kind, start, end, autoSkip, source: 'theintrodb', score: base + voteBonus + confBonus });
-    }
+  for (const kind of segmentKindList) {
+    found.push(...parseTheIntroDbKind(data, kind, durationMs, durationSec, deltaMs, exactCut));
   }
   return found;
 }
@@ -344,7 +367,8 @@ export function parseTheIntroDbPayload(data, type, durationMs) {
  */
 async function loadTheIntroDbSegments(type, id, season, episode, durationMs) {
   const roundedSec = Math.round(durationMs / 1000);
-  const cacheKey = `theintrodb:v4:${type}:${id}:${type === 'tv' ? `${season}:${episode}` : 'movie'}:${roundedSec}`;
+  const scope = type === 'tv' ? `${season}:${episode}` : 'movie';
+  const cacheKey = `theintrodb:v4:${type}:${id}:${scope}:${roundedSec}`;
   const data = await cacheMetadata(cacheKey, 6 * 3600000, async () => {
     const upstream = new URL('https://api.theintrodb.org/v4/media');
     upstream.search = new URLSearchParams({
@@ -364,6 +388,25 @@ async function loadTheIntroDbSegments(type, id, season, episode, durationMs) {
   return parseTheIntroDbPayload(data, type, durationMs);
 }
 
+function parseIntroDbEntry(entry, kind, durationSec, postCreditsStartMs) {
+  if (!entry || typeof entry !== 'object') return null;
+  const startMs = toMilliseconds(entry.start_ms, entry.start_sec);
+  let endMs = toMilliseconds(entry.end_ms, entry.end_sec);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs > durationSec * 1000 + 30000) return null;
+  if (kind === 'credits' && Number.isFinite(postCreditsStartMs) && postCreditsStartMs > startMs + 5000 && postCreditsStartMs < endMs) {
+    endMs = postCreditsStartMs;
+  }
+  const start = startMs / 1000;
+  const end = Math.min(durationSec, endMs / 1000);
+  const confidence = Number(entry.confidence ?? 0.7);
+  if (confidence < 0.65 || !isReasonableSegment(kind, start, end, durationSec)) return null;
+  const votes = Number(entry.submission_count ?? 1);
+  const score = (votes >= 2 ? 78 : 64) + Math.min(6, confidence * 6);
+  const fitsCleanly = endMs <= durationSec * 1000 + 2500;
+  const autoSkip = votes >= 2 && confidence >= 0.9 && fitsCleanly;
+  return { kind, start, end, autoSkip, source: /** @type {SegmentSource} */ ('introdb'), score };
+}
+
 /**
  * Parse IntroDB (introdb.app) response into scored candidates.
  * @param {any} data
@@ -374,34 +417,12 @@ export function parseIntroDbPayload(data, durationSec) {
   if (!data || typeof data !== 'object') return [];
   /** @type {readonly [string, SegmentKind][]} */
   const mapping = [['intro', 'intro'], ['recap', 'recap'], ['outro', 'credits']];
-  const postCreditsStartMs = Number(
-    data.post_credits?.start_ms ?? (Number.isFinite(data.post_credits?.start_sec) ? data.post_credits.start_sec * 1000 : NaN),
-  );
+  const postCreditsStartMs = toMilliseconds(data.post_credits?.start_ms, data.post_credits?.start_sec);
   /** @type {SegmentCandidate[]} */
   const found = [];
   for (const [key, kind] of mapping) {
-    const entry = data[key];
-    if (!entry || typeof entry !== 'object') continue;
-    const startMs = Number(entry.start_ms ?? (Number.isFinite(entry.start_sec) ? entry.start_sec * 1000 : NaN));
-    let endMs = Number(entry.end_ms ?? (Number.isFinite(entry.end_sec) ? entry.end_sec * 1000 : NaN));
-    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue;
-    // Reject wildly mismatched episode lengths (> 30s past stream end).
-    if (endMs > durationSec * 1000 + 30000) continue;
-    // If IntroDB also tags a post_credits scene inside the outro, stop the outro skip right where post_credits starts.
-    if (kind === 'credits' && Number.isFinite(postCreditsStartMs) && postCreditsStartMs > startMs + 5000 && postCreditsStartMs < endMs) {
-      endMs = postCreditsStartMs;
-    }
-    const start = startMs / 1000;
-    const end = Math.min(durationSec, endMs / 1000);
-    if (!isReasonableSegment(kind, start, end, durationSec)) continue;
-    const votes = Number(entry.submission_count ?? 1);
-    const confidence = Number(entry.confidence ?? 0.7);
-    if (confidence < 0.65) continue;
-    const score = (votes >= 2 ? 78 : 64) + Math.min(6, confidence * 6);
-    const fitsCleanly = endMs <= durationSec * 1000 + 2500;
-    // IntroDB does not verify duration server-side; require multi-user high confidence + clean fit for autoSkip.
-    const autoSkip = votes >= 2 && confidence >= 0.9 && fitsCleanly;
-    found.push({ kind, start, end, autoSkip, source: 'introdb', score });
+    const parsed = parseIntroDbEntry(data[key], kind, durationSec, postCreditsStartMs);
+    if (parsed) found.push(parsed);
   }
   return found;
 }

@@ -8,20 +8,45 @@ import { ActionLink, Artwork, CatalogProblem, HeroBackdrop, Icon, Loading, Media
 import { progressPercent, resumeEntries, resumeFor, type LibraryControls } from './library';
 import { useToast } from './Toast';
 
-const trailingStopWords = /\b(?:the|a|an|of|to|in|on|at|for|with|and|or|but|as|by|from|into|that|which|who|his|her|their|its|is|are|was|were|be|been)$/i;
+const trailingStopWordSet = new Set([
+  'the', 'a', 'an', 'of', 'to', 'in', 'on', 'at', 'for', 'with',
+  'and', 'or', 'but', 'as', 'by', 'from', 'into', 'that', 'which', 'who',
+  'his', 'her', 'their', 'its', 'is', 'are', 'was', 'were', 'be', 'been',
+]);
+const trailingPunctuationChars = new Set([',', ';', ':', '-', '–', '—']);
+
+function trimTrailingPunctuation(value: string): string {
+  let end = value.length;
+  while (end > 0 && trailingPunctuationChars.has(value[end - 1])) end--;
+  return value.slice(0, end).trim();
+}
+
+function dropTrailingWord(value: string): string {
+  const lastSpace = value.lastIndexOf(' ');
+  return lastSpace >= 0 ? value.slice(0, lastSpace) : value;
+}
+
+function stripTrailingStopWords(value: string): string {
+  let cut = value;
+  for (let i = 0; i < 3; i++) {
+    const lastSpace = cut.lastIndexOf(' ');
+    const lastWord = (lastSpace >= 0 ? cut.slice(lastSpace + 1) : cut).toLowerCase();
+    if (!trailingStopWordSet.has(lastWord)) break;
+    const prefix = lastSpace >= 0 ? cut.slice(0, lastSpace) : '';
+    cut = trimTrailingPunctuation(prefix);
+  }
+  return cut;
+}
 
 export function trimOverview(text: string | undefined, maxChars = 195): string {
   const clean = (text ?? '').replace(/\s+/g, ' ').trim();
   if (!clean || clean.length <= maxChars) return clean;
   const slice = clean.slice(0, maxChars);
   const sentenceMatch = [...slice.matchAll(/[.!?](?=\s|$)/g)].at(-1);
-  if (sentenceMatch && sentenceMatch.index != null && sentenceMatch.index >= Math.floor(maxChars * 0.45)) {
+  if (sentenceMatch?.index != null && sentenceMatch.index >= Math.floor(maxChars * 0.45)) {
     return slice.slice(0, sentenceMatch.index + 1).trim();
   }
-  let cut = slice.replace(/\s+\S*$/, '').replace(/[,;:\-–—]+$/, '').trim();
-  for (let i = 0; i < 3 && trailingStopWords.test(cut); i++) {
-    cut = cut.replace(trailingStopWords, '').replace(/[,;:\-–—]+$/, '').trim();
-  }
+  const cut = stripTrailingStopWords(trimTrailingPunctuation(dropTrailingWord(slice)));
   return cut ? `${cut}…` : `${slice.trim()}…`;
 }
 
@@ -44,7 +69,106 @@ type CachedHome = {
   recentComics: Comic[];
 };
 
-export function Home({ controls }: { controls: LibraryControls }) {
+function formatHomeMinutesLeft(remaining: number): string {
+  if (remaining < 60) return `${remaining} min left`;
+  const mins = remaining % 60;
+  const minPart = mins ? `${mins} min ` : '';
+  return `${Math.floor(remaining / 60)} hr ${minPart}left`;
+}
+
+function collectVisibleRatingKeys(
+  data: Partial<Record<ShelfKey, ShelfResult>>,
+  filter: MediaType | 'all',
+  trendingByType: Partial<Record<MediaType, Title[]>>,
+): string {
+  const keys: string[] = [];
+  for (const [key] of shelves) {
+    const shelf = data[key];
+    if (!shelf || !('titles' in shelf)) continue;
+    const limit = key === 'trending' ? 20 : 8;
+    for (const item of shelf.titles.slice(0, limit)) keys.push(`${item.type}:${item.id}`);
+  }
+  if (filter !== 'all') {
+    for (const item of (trendingByType[filter] ?? []).slice(0, 12)) keys.push(`${item.type}:${item.id}`);
+  }
+  return [...new Set(keys)].join(',');
+}
+
+function FeaturedHero({
+  featured,
+  featuredChoices,
+  featureDir,
+  featureDuration,
+  featuredResume,
+  expandedOverviewKey,
+  controls,
+  onToggleOverview,
+  onSwitchFeature,
+  onSelectFeature,
+}: Readonly<{
+  featured: Title;
+  featuredChoices: Title[];
+  featureDir: 1 | -1;
+  featureDuration: number | undefined;
+  featuredResume: ReturnType<typeof resumeFor>;
+  expandedOverviewKey: string;
+  controls: LibraryControls;
+  onToggleOverview: (next: string) => void;
+  onSwitchFeature: (direction: 1 | -1) => void;
+  onSelectFeature: (item: Title, index: number) => void;
+}>) {
+  const fullDescription = (featured.description ?? '').replace(/\s+/g, ' ').trim();
+  const shortDescription = trimOverview(fullDescription);
+  const canExpandDescription = Boolean(fullDescription && shortDescription !== fullDescription);
+  const isDescriptionExpanded = expandedOverviewKey === featured.key;
+  const facts = [featured.year, featured.genre, featureDuration ? `${featureDuration} min` : ''].filter(Boolean);
+
+  return (
+    <section className="af-wrap af-hero af-home-hero" aria-label="Featured film">
+      <div className="af-feature-artwork af-hero-art-transition" data-dir={featureDir > 0 ? 'next' : 'prev'} key={`art-${featured.key}`}>
+        <HeroBackdrop src={featured.backdrop} sizes="(max-width: 760px) 100vw, min(58vw, 850px)" />
+      </div>
+      <div className="af-copy af-hero-copy-transition" data-dir={featureDir > 0 ? 'next' : 'prev'} key={`copy-${featured.key}`}>
+        <h1>{featured.title}</h1>
+        <div className="af-meta af-title-facts">
+          {facts.map(fact => <span key={fact}>{fact}</span>)}
+          <Score rating={featured.rating} />
+        </div>
+        {shortDescription && <p className={`af-overview af-home-overview ${isDescriptionExpanded ? 'is-expanded' : ''}`}>
+          {isDescriptionExpanded ? fullDescription : shortDescription}
+          {canExpandDescription && <>
+            {' '}
+            <button
+              type="button"
+              className="af-overview-toggle"
+              aria-expanded={isDescriptionExpanded}
+              onClick={() => onToggleOverview(isDescriptionExpanded ? '' : featured.key)}
+            >
+              {isDescriptionExpanded ? 'less' : 'more'}
+            </button>
+          </>}
+        </p>}
+        <div className="af-actions">
+          <ActionLink href={playHref(featured)} primary><Icon name="play" />{featuredResume ? 'Resume' : 'Play'}</ActionLink>
+          <SaveButton item={featured} controls={controls} />
+          <a className="af-text-link af-feature-details" href={titleHref(featured)}>Details <Icon name="right" /></a>
+        </div>
+      </div>
+      {featuredChoices.length > 1 && <fieldset className="af-feature-choices" aria-label="Featured titles">
+        <button type="button" className="af-icon-button" aria-label="Previous featured film" onClick={() => onSwitchFeature(-1)}><Icon name="left" /></button>
+        <div className="af-feature-indicators">
+          {featuredChoices.map((item, idx) => <button type="button" key={item.key} aria-pressed={item.key === featured.key}
+            aria-label={`Feature ${item.title}`} title={item.title} onClick={() => onSelectFeature(item, idx)}>
+            <Artwork src={item.backdrop?.replace('/w1280/', '/w300/')} loading="lazy" fallback={<Icon name="film" />} />
+          </button>)}
+        </div>
+        <button type="button" className="af-icon-button" aria-label="Next featured film" onClick={() => onSwitchFeature(1)}><Icon name="right" /></button>
+      </fieldset>}
+    </section>
+  );
+}
+
+export function Home({ controls }: Readonly<{ controls: LibraryControls }>) {
   const { notify } = useToast();
   const [cached] = useState(() => readBrowseCache<CachedHome>('home:shelves'));
   const [data, setData] = useState<Partial<Record<ShelfKey, ShelfResult>>>(cached?.data ?? {});
@@ -85,8 +209,8 @@ export function Home({ controls }: { controls: LibraryControls }) {
       if (signal.aborted) return;
       const titles = normalizeTitles(result.results ?? result[key] ?? []);
       setData(current => ({ ...current, [key]: { titles } }));
-    }).catch(problem => {
-      if (!signal.aborted) setData(current => ({ ...current, [key]: { error: problem.message } }));
+    }).catch(error_ => {
+      if (!signal.aborted) setData(current => ({ ...current, [key]: { error: error_.message } }));
     }).finally(() => { if (!signal.aborted) setRetrying(state => ({ ...state, [key]: false })); });
   }
 
@@ -117,8 +241,8 @@ export function Home({ controls }: { controls: LibraryControls }) {
           setComicsError('');
         }
       })
-      .catch(problem => {
-        if (!task.signal.aborted) setComicsError(problem instanceof Error ? problem.message : 'Manga is temporarily unavailable.');
+      .catch(error_ => {
+        if (!task.signal.aborted) setComicsError(error_ instanceof Error ? error_.message : 'Manga is temporarily unavailable.');
       });
     return () => task.abort();
   }, [comicsAttempt, cached]);
@@ -136,14 +260,7 @@ export function Home({ controls }: { controls: LibraryControls }) {
     return () => task.abort();
   }, [filter, trendingByType]);
 
-  const visibleKeys = [
-    ...shelves.flatMap(([key]) => {
-      const shelf = data[key];
-      return shelf && 'titles' in shelf ? shelf.titles.slice(0, key === 'trending' ? 20 : 8).map(item => `${item.type}:${item.id}`) : [];
-    }),
-    ...(filter !== 'all' ? (trendingByType[filter] ?? []).slice(0, 12).map(item => `${item.type}:${item.id}`) : []),
-  ];
-  const ratingKeys = [...new Set(visibleKeys)].join(',');
+  const ratingKeys = collectVisibleRatingKeys(data, filter, trendingByType);
   useEffect(() => {
     if (!ratingKeys) return;
     const task = new AbortController();
@@ -161,7 +278,7 @@ export function Home({ controls }: { controls: LibraryControls }) {
   const failures = Object.values(data).flatMap(shelf => 'error' in shelf ? [shelf.error] : []);
   const refreshing = Object.values(retrying).some(Boolean);
   const error = failures.length === shelves.length && !refreshing ? failures[0] : '';
-  const pending = Object.keys(data).length < shelves.length || failures.length === shelves.length && refreshing;
+  const pending = Object.keys(data).length < shelves.length || (failures.length === shelves.length && refreshing);
 
   function withRating(item: Title) {
     return { ...item, rating: ratings[item.key] ?? ratings[`${item.type}:${item.id}`] ?? item.rating };
@@ -177,15 +294,15 @@ export function Home({ controls }: { controls: LibraryControls }) {
     if (!featuredId) return;
     const task = new AbortController();
     const { signal } = task;
-    request<RawTitle>(`/api/movie/${featuredId}`, { signal }).then(raw => {
+    (async () => {
+      const raw = await request<RawTitle>(`/api/movie/${featuredId}`, { signal });
       if (signal.aborted) return;
       const details = normalizeTitle(raw, 'movie');
       setFeaturedDetails(details);
-      if (details.imdb) request<{ rating?: CatalogRating }>(`/api/imdb?id=${encodeURIComponent(details.imdb)}`, { signal })
-        .then(({ rating }) => {
-          if (rating && !signal.aborted) setRatings(current => ({ ...current, [`movie:${featuredId}`]: rating }));
-        }).catch(() => {});
-    }).catch(() => {});
+      if (!details.imdb) return;
+      const { rating } = await request<{ rating?: CatalogRating }>(`/api/imdb?id=${encodeURIComponent(details.imdb)}`, { signal });
+      if (rating && !signal.aborted) setRatings(current => ({ ...current, [`movie:${featuredId}`]: rating }));
+    })().catch(() => {});
     return () => task.abort();
   }, [featuredId]);
 
@@ -202,7 +319,7 @@ export function Home({ controls }: { controls: LibraryControls }) {
   const retry = () => { for (const [key] of shelves) if (data[key] && 'error' in data[key]!) loadShelf(key); };
   const shelfStatus = (key: ShelfKey, label: string) => {
     const shelf = data[key];
-    if (!shelf || 'error' in shelf && retrying[key]) return <section className="af-section" key={key}><h2>{label}</h2><Loading label={`Loading ${label.toLowerCase()}…`} /></section>;
+    if (!shelf || ('error' in shelf && retrying[key])) return <section className="af-section" key={key}><h2>{label}</h2><Loading label={`Loading ${label.toLowerCase()}…`} /></section>;
     if ('error' in shelf) return <section className="af-section" key={key}><h2>{label}</h2><CatalogProblem error={shelf.error} retry={() => loadShelf(key)} /></section>;
     return null;
   };
@@ -219,73 +336,54 @@ export function Home({ controls }: { controls: LibraryControls }) {
     setFeaturedKey(item.key);
   }
 
-  const fullDescription = (featured?.description ?? '').replace(/\s+/g, ' ').trim();
-  const shortDescription = trimOverview(fullDescription);
-  const canExpandDescription = Boolean(featured && fullDescription && shortDescription !== fullDescription);
-  const isDescriptionExpanded = Boolean(featured && expandedOverviewKey === featured.key);
+  let heroSection;
+  if (featured) {
+    heroSection = (
+      <FeaturedHero
+        featured={featured}
+        featuredChoices={featuredChoices}
+        featureDir={featureDir}
+        featureDuration={featureDuration}
+        featuredResume={featuredResume}
+        expandedOverviewKey={expandedOverviewKey}
+        controls={controls}
+        onToggleOverview={setExpandedOverviewKey}
+        onSwitchFeature={switchFeature}
+        onSelectFeature={selectFeature}
+      />
+    );
+  } else if (pending) {
+    heroSection = (
+      <div className="af-wrap af-home-hero af-home-loading" data-route-loading>
+        <div className="af-feature-artwork" aria-hidden="true" />
+        <div className="af-copy">
+          <h1 className="sr-only">Home</h1>
+          <span className="af-feature-title-placeholder" aria-hidden="true" />
+          <output className="af-meta">Loading the catalog…</output>
+        </div>
+        <div className="af-feature-choices" aria-hidden="true" />
+      </div>
+    );
+  } else {
+    heroSection = (
+      <div className="af-wrap af-title-page">
+        <h1>Home</h1>
+        {error ? <CatalogProblem error={error} retry={retry} />
+          : shelves.every(([key]) => !shelfTitles(key).length) && <div className="af-state">
+            <output>No featured titles are available yet.</output><ActionLink href={webHref('comics')}>Browse manga</ActionLink>
+          </div>}
+      </div>
+    );
+  }
 
   return <>
-    {featured ? <section className="af-wrap af-hero af-home-hero" aria-label="Featured film">
-      <div className="af-feature-artwork af-hero-art-transition" data-dir={featureDir > 0 ? 'next' : 'prev'} key={`art-${featured.key}`}>
-        <HeroBackdrop src={featured.backdrop} sizes="(max-width: 760px) 100vw, min(58vw, 850px)" />
-      </div>
-      <div className="af-copy af-hero-copy-transition" data-dir={featureDir > 0 ? 'next' : 'prev'} key={`copy-${featured.key}`}>
-        <h1>{featured.title}</h1>
-        <div className="af-meta af-title-facts">
-          {[featured.year, featured.genre, featureDuration ? `${featureDuration} min` : ''].filter(Boolean).map(fact => <span key={fact}>{fact}</span>)}
-          <Score rating={featured.rating} />
-        </div>
-        {shortDescription && <p className={`af-overview af-home-overview ${isDescriptionExpanded ? 'is-expanded' : ''}`}>
-          {isDescriptionExpanded ? fullDescription : shortDescription}
-          {canExpandDescription && <>
-            {' '}
-            <button
-              type="button"
-              className="af-overview-toggle"
-              aria-expanded={isDescriptionExpanded}
-              onClick={() => setExpandedOverviewKey(isDescriptionExpanded ? '' : featured.key)}
-            >
-              {isDescriptionExpanded ? 'less' : 'more'}
-            </button>
-          </>}
-        </p>}
-        <div className="af-actions">
-          <ActionLink href={playHref(featured)} primary><Icon name="play" />{featuredResume ? 'Resume' : 'Play'}</ActionLink>
-          <SaveButton item={featured} controls={controls} />
-          <a className="af-text-link af-feature-details" href={titleHref(featured)}>Details <Icon name="right" /></a>
-        </div>
-      </div>
-      {featuredChoices.length > 1 && <div className="af-feature-choices" role="group" aria-label="Featured titles">
-        <button type="button" className="af-icon-button" aria-label="Previous featured film" onClick={() => switchFeature(-1)}><Icon name="left" /></button>
-        <div className="af-feature-indicators">
-          {featuredChoices.map((item, idx) => <button type="button" key={item.key} aria-pressed={item.key === featured.key}
-            aria-label={`Feature ${item.title}`} title={item.title} onClick={() => selectFeature(item, idx)}>
-            <Artwork src={item.backdrop?.replace('/w1280/', '/w300/')} loading="lazy" fallback={<Icon name="film" />} />
-          </button>)}
-        </div>
-        <button type="button" className="af-icon-button" aria-label="Next featured film" onClick={() => switchFeature(1)}><Icon name="right" /></button>
-      </div>}
-    </section> : pending ? <div className="af-wrap af-home-hero af-home-loading" data-route-loading>
-      <div className="af-feature-artwork" aria-hidden="true" />
-      <div className="af-copy">
-        <h1 className="sr-only">Home</h1>
-        <span className="af-feature-title-placeholder" aria-hidden="true" />
-        <p className="af-meta" role="status">Loading the catalog…</p>
-      </div>
-      <div className="af-feature-choices" aria-hidden="true" />
-    </div> : <div className="af-wrap af-title-page">
-      <h1>Home</h1>
-      {error ? <CatalogProblem error={error} retry={retry} />
-        : shelves.every(([key]) => !shelfTitles(key).length) && <div className="af-state">
-          <p role="status">No featured titles are available yet.</p><ActionLink href={webHref('comics')}>Browse manga</ActionLink>
-        </div>}
-    </div>}
+    {heroSection}
     <div className="af-wrap af-content">
       {resume.length > 0 && <Shelf title="Continue Watching" href={webHref('history')} hrefLabel="Watch history" landscape>
         {resume.map(([key, entry]) => {
           const episode = entry.episode;
           const remaining = Math.ceil((entry.duration - entry.time) / 60);
-          const left = remaining >= 60 ? `${Math.floor(remaining / 60)} hr ${remaining % 60 ? `${remaining % 60} min ` : ''}left` : `${remaining} min left`;
+          const left = formatHomeMinutesLeft(remaining);
           return <MediaCard key={key} item={entry.item} controls={controls} href={resumeHref(entry.item, key, episode)} landscape
             context={episode ? `S${episode.season} E${episode.number} · ${left}` : left}
             percent={progressPercent(entry)}
@@ -313,10 +411,10 @@ export function Home({ controls }: { controls: LibraryControls }) {
       </Shelf>}
       {!error && !pending && shelfStatus('trending', 'Trending this week')}
       {shelfTitles('trending').length > 0 && <Shelf title="Trending this week" landscape actions={
-        <div className="af-filters" role="group" aria-label="Filter trending">
+        <fieldset className="af-filters" aria-label="Filter trending">
           {([['all', 'All'], ['movie', 'Movies'], ['tv', 'TV Shows']] as const).map(([value, label]) =>
             <button type="button" key={value} aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}</button>)}
-        </div>
+        </fieldset>
       }>
         {trending.length ? trending.slice(0, 12).map((item, idx) => <MediaCard key={item.key} item={withRating(item)} controls={controls} landscape eager={idx < 4} />)
           : <p className="af-state">No trending titles for this filter.</p>}

@@ -41,7 +41,7 @@ export function AfSelect({
   disabled,
   className = '',
   placeholder,
-}: {
+}: Readonly<{
   options: readonly SelectOption[];
   value?: string;
   defaultValue?: string;
@@ -53,7 +53,7 @@ export function AfSelect({
   disabled?: boolean;
   className?: string;
   placeholder?: string;
-}) {
+}>) {
   const modalPortal = useContext(ModalPortalContext);
   const controlled = value !== undefined;
   const [internal, setInternal] = useState(defaultValue ?? options[0]?.value ?? '');
@@ -133,13 +133,13 @@ export function FilterPopover({
   open,
   onOpenChange,
   children,
-}: {
+}: Readonly<{
   label?: string;
   activeCount?: number;
   open?: boolean;
   onOpenChange?: (next: boolean) => void;
   children: ReactNode;
-}) {
+}>) {
   const hostRef = useRef<HTMLSpanElement>(null);
   const titleId = useId();
   return (
@@ -179,13 +179,13 @@ export function MobileFilterSheet({
   title = 'Filters',
   activeCount = 0,
   children,
-}: {
+}: Readonly<{
   open: boolean;
   onOpenChange: (next: boolean) => void;
   title?: string;
   activeCount?: number;
   children: ReactNode;
-}) {
+}>) {
   const portalHostRef = useRef<HTMLDivElement>(null);
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>

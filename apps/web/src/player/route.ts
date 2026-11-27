@@ -5,7 +5,7 @@ import { cineSrcServers, type PlayerRoute } from './types';
 export const archiveMap = new Map(archiveCatalog.map(entry => [entry.key, entry]));
 
 export function parsePlayerRoute(path: string): PlayerRoute | null {
-  const catalogMatch = path.match(/^(movie|tv)\/([1-9]\d{0,9})\/(?:(watch)|s(\d{1,4})e([1-9]\d{0,3}))$/);
+  const catalogMatch = /^(movie|tv)\/([1-9]\d{0,9})\/(?:(watch)|s(\d{1,4})e([1-9]\d{0,3}))$/.exec(path);
   if (catalogMatch) {
     const [, type, id, watch, season, ep] = catalogMatch;
     if (type === 'movie' && watch) return { kind: 'catalog', type: 'movie', id: Number(id) };
@@ -14,7 +14,7 @@ export function parsePlayerRoute(path: string): PlayerRoute | null {
     }
     return null;
   }
-  const editionMatch = path.match(/^edition\/([\w.-]+)(?:\/(watch)(?:\/([\w-]+))?)?$/);
+  const editionMatch = /^edition\/([\w.-]+)(?:\/(watch)(?:\/([\w-]+))?)?$/.exec(path);
   if (editionMatch) {
     const [, key, watch, episodeKey] = editionMatch;
     return { kind: 'edition', key: decodeURIComponent(key), watch: Boolean(watch), episodeKey: episodeKey ? decodeURIComponent(episodeKey) : undefined };
@@ -23,9 +23,11 @@ export function parsePlayerRoute(path: string): PlayerRoute | null {
 }
 
 export function playerTitleKey(route: PlayerRoute): string {
-  return route.kind === 'catalog'
-    ? `player:${route.type}/${route.id}`
-    : `player:edition/${route.key}/${route.watch ? 'watch' : 'details'}`;
+  if (route.kind === 'catalog') {
+    return `player:${route.type}/${route.id}`;
+  }
+  const mode = route.watch ? 'watch' : 'details';
+  return `player:edition/${route.key}/${mode}`;
 }
 
 export function archiveToTitle(entry: ArchiveTitle): Title {

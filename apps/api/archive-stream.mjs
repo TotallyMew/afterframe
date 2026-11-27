@@ -32,12 +32,35 @@ async function fetchArchiveWithRedirects(startUrl, method, headers, signal) {
   throw new Error('Archive redirect limit exceeded.');
 }
 
-export async function relayArchive(request, response, pathname, sendJson) {
+async function resolveArchiveStream(pathname) {
   const [, , key, episodeKey] = pathname.split('/');
   const item = catalog.get(key);
   const archiveId = key.startsWith('archive-') ? key.slice('archive-'.length) : '';
   const edition = !item && !episodeKey && archiveIdPattern.test(archiveId) ? await archiveEdition(archiveId) : null;
-  const media = episodeKey ? item?.episodes?.find(episode => episode.key === episodeKey)?.media : item?.media || edition?.media;
+  const media = episodeKey
+    ? item?.episodes?.find(episode => episode.key === episodeKey)?.media
+    : item?.media || edition?.media;
+  return { item, media };
+}
+
+async function handleRangeNotSatisfiable(upstream, response, sendJson) {
+  const contentRange = upstream.headers.get('content-range');
+  await upstream.body?.cancel();
+  const extra = contentRange && /^bytes \*\/\d+$/.test(contentRange) ? { 'content-range': contentRange } : {};
+  return sendJson(response, 416, { error: 'Requested range not satisfiable.' }, extra);
+}
+
+function buildStreamHeaders(upstream, item, type) {
+  const headers = { 'cache-control': item ? 'private, max-age=3600' : 'no-store', 'content-type': type };
+  for (const name of ['content-length', 'content-range', 'accept-ranges', 'last-modified']) {
+    const value = upstream.headers.get(name);
+    if (value) headers[name] = value;
+  }
+  return headers;
+}
+
+export async function relayArchive(request, response, pathname, sendJson) {
+  const { item, media } = await resolveArchiveStream(pathname);
   if (!media) return sendJson(response, 404, { error: 'Archive stream unavailable.' });
   const url = archiveFileUrl(media);
   const range = request.headers.range;
@@ -57,22 +80,14 @@ export async function relayArchive(request, response, pathname, sendJson) {
     clearTimeout(timer);
   }
   if (upstream.status === 416) {
-    const contentRange = upstream.headers.get('content-range');
-    await upstream.body?.cancel();
-    const extra = contentRange && /^bytes \*\/\d+$/.test(contentRange) ? { 'content-range': contentRange } : {};
-    return sendJson(response, 416, { error: 'Requested range not satisfiable.' }, extra);
+    return handleRangeNotSatisfiable(upstream, response, sendJson);
   }
   const type = upstream.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase();
   if (![200, 206].includes(upstream.status) || !type?.startsWith('video/')) {
     await upstream.body?.cancel();
     return sendJson(response, 502, { error: 'The video source could not serve this stream.' });
   }
-  const headers = { 'cache-control': item ? 'private, max-age=3600' : 'no-store', 'content-type': type };
-  for (const name of ['content-length', 'content-range', 'accept-ranges', 'last-modified']) {
-    const value = upstream.headers.get(name);
-    if (value) headers[name] = value;
-  }
-  response.writeHead(upstream.status, headers);
+  response.writeHead(upstream.status, buildStreamHeaders(upstream, item, type));
   if (!upstream.body) return response.end();
   await pipeline(Readable.fromWeb(upstream.body), response);
 }

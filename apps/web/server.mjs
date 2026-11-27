@@ -25,13 +25,32 @@ const assets = {
   '.webmanifest': 'application/manifest+json; charset=utf-8', '.png': 'image/png',
   '.svg': 'image/svg+xml',
 };
-const spaRoute = /^\/(?:(?:home|main|movies|tv|new|anime|comics|manga|recommendations|search|watchlist|watched|ratings|reading|history|notifications)\/?|(?:movie|tv)\/[1-9]\d{0,9}(?:\/(?:watch|s\d{1,4}e[1-9]\d{0,3}))?\/?|comic\/[\w-]+(?:\/read\/[\w.-]+)?\/?|edition\/[\w.-]+(?:\/watch(?:\/[\w-]+)?)?\/?)?$/i;
+const spaStaticSegments = new Set([
+  'home', 'main', 'movies', 'tv', 'new', 'anime', 'comics', 'manga',
+  'recommendations', 'search', 'watchlist', 'watched', 'ratings',
+  'reading', 'history', 'notifications',
+]);
+const spaDynamicRoutes = [
+  /^\/(?:movie|tv)\/[1-9]\d{0,9}(?:\/(?:watch|s\d{1,4}e[1-9]\d{0,3}))?\/?$/i,
+  /^\/comic\/[\w-]+(?:\/read\/[\w.-]+)?\/?$/i,
+  /^\/edition\/[\w.-]+(?:\/watch(?:\/[\w-]+)?)?\/?$/i,
+];
 const staticBuildPath = /^\/(?:assets\/[a-z0-9][\w.-]*|icons\/[a-z0-9][\w.-]*\.png|manifest\.webmanifest|sw\.js)$/i;
+const allowedReadMethods = new Set(['GET', 'HEAD']);
 const hopHeaders = ['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
+
+function isSpaRoute(path) {
+  if (!path.startsWith('/')) return false;
+  if (path === '/') return true;
+  const trimmed = path.endsWith('/') ? path.slice(1, -1) : path.slice(1);
+  if (spaStaticSegments.has(trimmed.toLowerCase())) return true;
+  return spaDynamicRoutes.some(pattern => pattern.test(path));
+}
 
 function withoutHopHeaders(headers) {
   const next = { ...headers };
-  for (const name of [...hopHeaders, ...(headers.connection || '').toLowerCase().split(/\s*,\s*/)]) delete next[name];
+  const connectionHeaders = (headers.connection || '').toLowerCase().split(',').map(name => name.trim());
+  for (const name of [...hopHeaders, ...connectionHeaders]) delete next[name];
   return next;
 }
 
@@ -76,67 +95,77 @@ function forward(request, response, host, isStream = false) {
   request.pipe(proxy);
 }
 
-const server = createServer(async (request, response) => {
-  applySecurityHeaders(response);
-  const railwayHealth = request.headers.host === 'healthcheck.railway.app' && request.method === 'GET' && request.url === '/api/health';
-  if (!railwayHealth && (publicOrigin ? request.headers.host !== publicOrigin.host : !localHosts.has(request.headers.host))) {
-    return reply(response, 403, 'Use the configured address to open Afterframe.');
+function isAllowedHost(request, railwayHealth) {
+  if (railwayHealth) return true;
+  return publicOrigin ? request.headers.host === publicOrigin.host : localHosts.has(request.headers.host);
+}
+
+function resolveStaticFile(path, isAsset) {
+  if (path === '/') return 'index.html';
+  if (isAsset) return path.slice(1);
+  if (isSpaRoute(path) || !extname(path)) return 'index.html';
+  return null;
+}
+
+function cacheControlForPath(path) {
+  if (path.startsWith('/assets/')) return 'public, max-age=31536000, immutable';
+  if (path.startsWith('/icons/')) return 'public, max-age=86400';
+  return 'no-cache';
+}
+
+function isNotModified(request, statusCode, etag) {
+  if (statusCode !== 200) return false;
+  const header = request.headers['if-none-match'];
+  if (!header) return false;
+  const validators = header.split(',').map(value => value.trim().replace(/^W\//, ''));
+  return validators.includes('*') || validators.includes(etag.slice(2));
+}
+
+async function getCompressedPayload(staticFile, file, info, preferredEncoding) {
+  const cacheKey = `${staticFile}:${info.size}:${info.mtimeMs}:${preferredEncoding}`;
+  const cached = compressedCache.get(cacheKey);
+  if (cached) return cached;
+  const raw = await readFile(file);
+  const payload = await compressBuffer(raw, preferredEncoding);
+  if (compressedCache.size >= MAX_COMPRESSED_CACHE) {
+    const oldest = compressedCache.keys().next().value;
+    if (oldest) compressedCache.delete(oldest);
   }
-  if (!request.url.startsWith('/')) return reply(response, 400, 'Invalid request path.');
-  const path = request.url.split('?')[0];
-  if (/^\/(?:legacy|player)\/?$/.test(path) && ['GET', 'HEAD'].includes(request.method)) {
-    response.writeHead(302, { location: `/${request.url.slice(path.length)}`, 'cache-control': 'no-store' });
-    return response.end();
-  }
-  const isAsset = staticBuildPath.test(path);
-  const isProxy = /^\/(?:api|art|stream|comic-cover|comic-page)\//.test(path);
-  if (isProxy) {
-    return forward(request, response, railwayHealth ? publicOrigin?.host || `localhost:${port}` : request.headers.host, path.startsWith('/stream/'));
-  }
-  if (!['GET', 'HEAD'].includes(request.method)) return reply(response, 405, 'Method unavailable.');
-  const staticFile = path === '/' ? 'index.html' : isAsset ? path.slice(1) : (spaRoute.test(path) || !extname(path)) ? 'index.html' : null;
-  if (!staticFile) return reply(response, 404, 'Not found.');
+  compressedCache.set(cacheKey, payload);
+  return payload;
+}
+
+async function sendCompressedResponse(options) {
+  const { request, response, statusCode, type, cacheHeaders, staticFile, file, info, preferredEncoding } = options;
+  const payload = await getCompressedPayload(staticFile, file, info, preferredEncoding);
+  const headers = {
+    ...cacheHeaders,
+    'content-type': type,
+    'content-length': payload.buffer.length,
+    vary: 'Accept-Encoding',
+  };
+  if (payload.encoding) headers['content-encoding'] = payload.encoding;
+  response.writeHead(statusCode, headers);
+  return response.end(request.method === 'HEAD' ? undefined : payload.buffer);
+}
+
+async function serveStaticFile(request, response, path, staticFile) {
   const file = new URL(staticFile, build);
   const ext = extname(staticFile);
   const type = assets[ext];
-  const info = type && await stat(file).catch(() => null);
+  const info = type ? await stat(file).catch(() => null) : null;
   if (!info?.isFile()) return reply(response, 404, 'Not found.');
-  const statusCode = staticFile === 'index.html' && !spaRoute.test(path) ? 404 : 200;
+  const statusCode = staticFile === 'index.html' && !isSpaRoute(path) ? 404 : 200;
   const etag = `W/"${info.size.toString(16)}-${info.mtimeMs.toString(16)}"`;
-  const cacheControl = path.startsWith('/assets/')
-    ? 'public, max-age=31536000, immutable'
-    : path.startsWith('/icons/')
-      ? 'public, max-age=86400'
-      : 'no-cache';
-  const cacheHeaders = { etag, 'cache-control': cacheControl };
-  const validators = request.headers['if-none-match']?.split(',').map(value => value.trim().replace(/^W\//, ''));
-  if (statusCode === 200 && (validators?.includes('*') || validators?.includes(etag.slice(2)))) {
+  const cacheHeaders = { etag, 'cache-control': cacheControlForPath(path) };
+  if (isNotModified(request, statusCode, etag)) {
     response.writeHead(304, cacheHeaders);
     return response.end();
   }
-  const preferredEncoding = compressibleExts.has(ext) && info.size >= 1024 && info.size <= 2 * 1024 * 1024
-    ? negotiateEncoding(request.headers['accept-encoding'])
-    : null;
+  const compressible = compressibleExts.has(ext) && info.size >= 1024 && info.size <= 2 * 1024 * 1024;
+  const preferredEncoding = compressible ? negotiateEncoding(request.headers['accept-encoding']) : null;
   if (preferredEncoding) {
-    const cacheKey = `${staticFile}:${info.size}:${info.mtimeMs}:${preferredEncoding}`;
-    let payload = compressedCache.get(cacheKey);
-    if (!payload) {
-      const raw = await readFile(file);
-      payload = await compressBuffer(raw, preferredEncoding);
-      if (compressedCache.size >= MAX_COMPRESSED_CACHE) {
-        const oldest = compressedCache.keys().next().value;
-        if (oldest) compressedCache.delete(oldest);
-      }
-      compressedCache.set(cacheKey, payload);
-    }
-    response.writeHead(statusCode, {
-      ...cacheHeaders,
-      'content-type': type,
-      'content-length': payload.buffer.length,
-      vary: 'Accept-Encoding',
-      ...(payload.encoding ? { 'content-encoding': payload.encoding } : {}),
-    });
-    return response.end(request.method === 'HEAD' ? undefined : payload.buffer);
+    return sendCompressedResponse({ request, response, statusCode, type, cacheHeaders, staticFile, file, info, preferredEncoding });
   }
   response.writeHead(statusCode, {
     ...cacheHeaders,
@@ -145,6 +174,28 @@ const server = createServer(async (request, response) => {
   });
   if (request.method === 'HEAD') return response.end();
   await pipeline(createReadStream(file), response).catch(() => response.destroy());
+}
+
+const server = createServer(async (request, response) => {
+  applySecurityHeaders(response);
+  const railwayHealth = request.headers.host === 'healthcheck.railway.app' && request.method === 'GET' && request.url === '/api/health';
+  if (!isAllowedHost(request, railwayHealth)) {
+    return reply(response, 403, 'Use the configured address to open Afterframe.');
+  }
+  if (!request.url.startsWith('/')) return reply(response, 400, 'Invalid request path.');
+  const path = request.url.split('?')[0];
+  if (/^\/(?:legacy|player)\/?$/.test(path) && allowedReadMethods.has(request.method)) {
+    response.writeHead(302, { location: `/${request.url.slice(path.length)}`, 'cache-control': 'no-store' });
+    return response.end();
+  }
+  if (/^\/(?:api|art|stream|comic-cover|comic-page)\//.test(path)) {
+    const targetHost = railwayHealth ? publicOrigin?.host || `localhost:${port}` : request.headers.host;
+    return forward(request, response, targetHost, path.startsWith('/stream/'));
+  }
+  if (!allowedReadMethods.has(request.method)) return reply(response, 405, 'Method unavailable.');
+  const staticFile = resolveStaticFile(path, staticBuildPath.test(path));
+  if (!staticFile) return reply(response, 404, 'Not found.');
+  return serveStaticFile(request, response, path, staticFile);
 });
 
 server.listen(port, process.env.AFTERFRAME_HOST || '127.0.0.1', () => console.log(`Afterframe web is listening on port ${port}`));

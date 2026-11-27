@@ -55,7 +55,97 @@ function animeToSavedTitle(entry: AnimeEntry, cover?: string): Title | null {
 
 type CachedAnime = { entries: AnimeEntry[]; page: number; nextPage: number | null };
 
-export function AnimePage({ query, controls }: { query: string; controls: LibraryControls }) {
+function animeAudioLabel(entry: AnimeEntry): string {
+  if (entry.subAiring && entry.dubAiring) return 'Sub & Dub airing';
+  if (entry.dubAiring) return 'Dub airing';
+  if (entry.subAiring) return 'Sub airing';
+  if (entry.hasDub) return 'Sub / Dub';
+  return entry.status && entry.status !== 'NOT_YET_RELEASED' ? 'Sub' : '';
+}
+
+function animeAiringBadge(entry: AnimeEntry) {
+  const next = entry.nextAiringEpisode;
+  const nextDate = next ? new Date(next.airingAt * 1000) : null;
+  if (next && nextDate && nextDate.getTime() > Date.now()) {
+    const dubTitle = entry.dubAiring ? ' · Dub airing' : '';
+    const dubBadge = entry.dubAiring ? ' · Dub' : '';
+    return (
+      <time className="af-poster-airing" dateTime={nextDate.toISOString()} title={`Sub Episode ${next.episode} airs ${fullAirDate.format(nextDate)}${dubTitle}`}>
+        Sub Ep {next.episode} · {compactAirDate.format(nextDate)}{dubBadge}
+      </time>
+    );
+  }
+  if (entry.dubAiring) return <span className="af-poster-airing">Dub airing</span>;
+  return null;
+}
+
+function animeEntryHref(entry: AnimeEntry, title: string): { href: string; matched: boolean } {
+  const matched = /^(movie|tv)\/[1-9]\d{0,9}$/.test(entry.catalog || '');
+  if (!matched) return { href: searchHref(entry.title?.romaji || title, { type: 'anime' }), matched: false };
+  const linkParams = new URLSearchParams();
+  if (entry.catalog?.startsWith('tv/') && entry.catalogSeason && entry.catalogSeason > 1) {
+    linkParams.set('season', String(entry.catalogSeason));
+  }
+  const priorHref = currentLocationHref();
+  if (priorHref) linkParams.set('back', priorHref);
+  return { href: webHref(routeWithParams(entry.catalog!, linkParams)), matched: true };
+}
+
+function AnimeEntryCard({
+  entry,
+  index,
+  isSeasonal,
+  controls,
+}: Readonly<{
+  entry: AnimeEntry;
+  index: number;
+  isSeasonal: boolean;
+  controls: LibraryControls;
+}>) {
+  const title = entry.title?.english || entry.title?.romaji || 'Anime';
+  const { href, matched } = animeEntryHref(entry, title);
+  const coverUrl = entry.coverImage?.large || '';
+  const cover = coverUrl.startsWith('https://s4.anilist.co/') ? coverUrl : undefined;
+  const saveTarget = animeToSavedTitle(entry, cover);
+  const formatLabel = formats.find(([key]) => key === entry.format)?.[1];
+  const meta = [
+    formatLabel,
+    isSeasonal && entry.catalogSeason && entry.catalogSeason > 1 ? `S${entry.catalogSeason}` : '',
+    entry.episodes ? `${entry.episodes} ep` : entry.startDate?.year,
+    animeAudioLabel(entry),
+  ].filter(Boolean).join(' · ');
+  let searchSuffix = '';
+  if (!matched) searchSuffix = meta ? ' · Search' : 'Search catalog';
+
+  return (
+    <article className="af-media-card af-anime-card">
+      <a href={href}>
+        <span className="af-poster">
+          <Artwork src={cover} loading={index < 6 ? 'eager' : 'lazy'} fallback={<Icon name="film" />} />
+          {entry.mal != null && entry.mal > 0 && (
+            <span className="af-poster-badge">
+              <span className="sr-only">MyAnimeList score </span>
+              <span aria-hidden="true">★</span> {entry.mal.toFixed(1)}
+            </span>
+          )}
+          {animeAiringBadge(entry)}
+        </span>
+        <strong title={title}>{title}</strong>
+        <span className="af-card-meta">
+          {meta}{searchSuffix}
+        </span>
+      </a>
+      {saveTarget && <SaveButton item={saveTarget} controls={controls} compact />}
+    </article>
+  );
+}
+
+function loadMoreAnimeLabel(error: string, loading: boolean): string {
+  if (error) return 'Retry loading more';
+  return loading ? 'Loading more…' : 'Load more anime';
+}
+
+export function AnimePage({ query, controls }: Readonly<{ query: string; controls: LibraryControls }>) {
   const params = new URLSearchParams(query);
   const date = new Date();
   if (!query) {
@@ -109,7 +199,7 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
         });
         setNextPage(result.nextPage ?? null);
       })
-      .catch(problem => { if (!task.signal.aborted) setError(problem.message); })
+      .catch(error_ => { if (!task.signal.aborted) setError(error_.message); })
       .finally(() => { if (!task.signal.aborted) setLoading(false); });
     return () => task.abort();
   }, [baseQuery, page, retry, isSeasonal, cached]);
@@ -179,79 +269,31 @@ export function AnimePage({ query, controls }: { query: string; controls: Librar
       sort: value => value === 'POPULARITY_DESC' ? '' : sorts.find(([key]) => key === value)?.[1] ?? '',
     }} />
     {rangeError && <p id="episode-range-error" className="af-state" role="alert">{rangeError}</p>}
-    {entries.length > 0 && <div className="af-poster-grid">{entries.map((entry, index) => {
-      const title = entry.title?.english || entry.title?.romaji || 'Anime';
-      const matched = /^(movie|tv)\/[1-9]\d{0,9}$/.test(entry.catalog || '');
-      const linkParams = new URLSearchParams();
-      if (matched && entry.catalog?.startsWith('tv/') && entry.catalogSeason && entry.catalogSeason > 1) {
-        linkParams.set('season', String(entry.catalogSeason));
-      }
-      const priorHref = currentLocationHref();
-      if (matched && priorHref) linkParams.set('back', priorHref);
-      const href = matched ? webHref(routeWithParams(entry.catalog!, linkParams))
-        : searchHref(entry.title?.romaji || title, { type: 'anime' });
-      const cover = /^https:\/\/s4\.anilist\.co\//.test(entry.coverImage?.large || '') ? entry.coverImage?.large : undefined;
-      const saveTarget = animeToSavedTitle(entry, cover);
-      const formatLabel = formats.find(([key]) => key === entry.format)?.[1];
-      const audioLabel = entry.subAiring && entry.dubAiring
-        ? 'Sub & Dub airing'
-        : entry.dubAiring
-          ? 'Dub airing'
-          : entry.subAiring
-            ? 'Sub airing'
-            : entry.hasDub
-              ? 'Sub / Dub'
-              : (entry.status && entry.status !== 'NOT_YET_RELEASED' ? 'Sub' : '');
-      const meta = [
-        formatLabel,
-        isSeasonal && entry.catalogSeason && entry.catalogSeason > 1 ? `S${entry.catalogSeason}` : '',
-        entry.episodes ? `${entry.episodes} ep` : entry.startDate?.year,
-        audioLabel,
-      ].filter(Boolean).join(' · ');
-      const next = entry.nextAiringEpisode;
-      const nextDate = next && new Date(next.airingAt * 1000);
-      const hasUpcoming = Boolean(next && nextDate && nextDate.getTime() > Date.now());
-      return <article className="af-media-card af-anime-card" key={entry.id}><a href={href}>
-        <span className="af-poster">
-          <Artwork src={cover} loading={index < 6 ? 'eager' : 'lazy'} fallback={<Icon name="film" />} />
-          {entry.mal != null && entry.mal > 0 && (
-            <span className="af-poster-badge">
-              <span className="sr-only">MyAnimeList score </span>
-              <span aria-hidden="true">★</span> {entry.mal.toFixed(1)}
-            </span>
-          )}
-          {hasUpcoming && next && nextDate ? (
-            <time className="af-poster-airing" dateTime={nextDate.toISOString()} title={`Sub Episode ${next.episode} airs ${fullAirDate.format(nextDate)}${entry.dubAiring ? ' · Dub airing' : ''}`}>
-              Sub Ep {next.episode} · {compactAirDate.format(nextDate)}{entry.dubAiring ? ' · Dub' : ''}
-            </time>
-          ) : entry.dubAiring ? (
-            <span className="af-poster-airing">Dub airing</span>
-          ) : null}
-        </span>
-        <strong title={title}>{title}</strong>
-        <span className="af-card-meta">
-          {meta}{!matched ? (meta ? ' · Search' : 'Search catalog') : ''}
-        </span>
-      </a>{saveTarget && <SaveButton item={saveTarget} controls={controls} compact />}</article>;
-    })}</div>}
+    {entries.length > 0 && (
+      <div className="af-poster-grid">
+        {entries.map((entry, index) => (
+          <AnimeEntryCard key={entry.id} entry={entry} index={index} isSeasonal={isSeasonal} controls={controls} />
+        ))}
+      </div>
+    )}
     {loading && page === 1 && <Loading label="Loading anime…" />}
     {error && page === 1 && <p className="af-state" role="alert">{error} <button className="af-text-link" type="button" onClick={() => { setError(''); setLoading(true); setRetry(value => value + 1); }}>Retry</button></p>}
-    {!loading && !error && !entries.length && <p className="af-state" role="status">No anime match these filters.</p>}
-    {page > 1 && <p className="af-meta" role="status">{loading ? 'Loading more anime…' : error || `${entries.length} anime shown`}</p>}
+    {!loading && !error && !entries.length && <output className="af-state">No anime match these filters.</output>}
+    {page > 1 && <output className="af-meta">{loading ? 'Loading more anime…' : error || `${entries.length} anime shown`}</output>}
     {(nextPage || (page > 1 && (loading || error))) && <div className="af-pagination">
       <button type="button" className="af-button af-secondary" aria-disabled={loading} onClick={() => {
         if (loading) return;
         setLoading(true);
         if (error) { setError(''); setRetry(value => value + 1); }
         else if (nextPage) setPage(nextPage);
-      }}>{error ? 'Retry loading more' : loading ? 'Loading more…' : 'Load more anime'}</button>
+      }}>{loadMoreAnimeLabel(error, loading)}</button>
     </div>}
   </div>;
 }
 
 type Recommendations = { mode?: string; personalized: boolean; sections: { label: string; items: RawTitle[] }[] };
 
-export function RecommendationsPage({ controls }: { controls: LibraryControls }) {
+export function RecommendationsPage({ controls }: Readonly<{ controls: LibraryControls }>) {
   const [data, setData] = useState<Recommendations>();
   const [ratings, setRatings] = useState<Record<string, CatalogRating>>({});
   const [error, setError] = useState('');
@@ -272,7 +314,7 @@ export function RecommendationsPage({ controls }: { controls: LibraryControls })
     }).then(result => {
       if (!Array.isArray(result.sections) || result.sections.some(section => !Array.isArray(section?.items))) throw new Error('Could not read these recommendations.');
       if (!task.signal.aborted) { setData(result); setError(''); }
-    }).catch(problem => { if (!task.signal.aborted) setError(problem.message); })
+    }).catch(error_ => { if (!task.signal.aborted) setError(error_.message); })
       .finally(() => { if (!task.signal.aborted) setUpdating(false); });
     return () => task.abort();
   }, [ready, account, history, saved, userRatings, watched, retry]);
@@ -299,9 +341,9 @@ export function RecommendationsPage({ controls }: { controls: LibraryControls })
     {error && <CatalogProblem error={error} retry={retryRecommendations} />}
     {!ready && controls.error && <p className="af-state">Reconnect your library to refresh recommendations.</p>}
     {!data && !error && !controls.error && <Loading label="Loading recommendations…" />}
-    {updating && data && <p className="af-state" role="status">Updating recommendations…</p>}
+    {updating && data && <output className="af-state">Updating recommendations…</output>}
     {data?.mode === 'unavailable' && <CatalogProblem error="Connect the catalog to get recommendations." retry={retryRecommendations} />}
-    {data && data.mode !== 'unavailable' && !visible.length && <p className="af-state" role="status">No recommendations are available yet. <a className="af-text-link" href={webHref('movies')}>Browse movies</a></p>}
+    {data && data.mode !== 'unavailable' && !visible.length && <output className="af-state">No recommendations are available yet. <a className="af-text-link" href={webHref('movies')}>Browse movies</a></output>}
     {visible.length > 0 && <div className="af-content af-discovery-shelves">{visible.map(section => <Shelf title={section.label} key={section.label}>
       {normalizeTitles(section.items).map(item => (
         <MediaCard item={{ ...item, rating: ratings[item.key] ?? ratings[`${item.type}:${item.id}`] ?? item.rating }} controls={controls} key={item.key} />

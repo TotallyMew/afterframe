@@ -24,7 +24,7 @@ const sortOptions = [
   { value: 'title', label: 'Title A–Z' },
 ] as const;
 
-export function LibraryRatings({ controls }: { controls: LibraryControls }) {
+export function LibraryRatings({ controls }: Readonly<{ controls: LibraryControls }>) {
   const [mediaFilter, setMediaFilter] = useState<'all' | 'movie' | 'tv' | 'anime' | 'comic'>('all');
   const [selectedScore, setSelectedScore] = useState<number | null>(null);
   const [sort, setSort] = useState<'highest' | 'lowest' | 'recent' | 'title'>('highest');
@@ -78,7 +78,7 @@ export function LibraryRatings({ controls }: { controls: LibraryControls }) {
     <div className="af-lib-section">
       <section className="af-rating-dist" aria-label="Rating distribution">
         <div className="af-rating-dist-head">
-          <div className="af-filters" role="group" aria-label="Filter ratings by media type">
+          <fieldset className="af-filters" aria-label="Filter ratings by media type">
             {typeFilters.map(([value, label]) => (
               <button
                 key={value}
@@ -89,7 +89,7 @@ export function LibraryRatings({ controls }: { controls: LibraryControls }) {
                 {label}
               </button>
             ))}
-          </div>
+          </fieldset>
           <div className="af-rating-dist-meta">
             <span className="af-meta">Mean <strong>{avg}</strong> · {mediaEntries.length} rated</span>
             <AfSelect
@@ -101,7 +101,7 @@ export function LibraryRatings({ controls }: { controls: LibraryControls }) {
           </div>
         </div>
 
-        <div className="af-rating-bars" role="group" aria-label="Filter by score">
+        <fieldset className="af-rating-bars" aria-label="Filter by score">
           {countsByScore.map(({ score, count }) => {
             const active = selectedScore === score;
             const heightPct = count > 0 ? Math.max(14, Math.round((count / maxCount) * 100)) : 4;
@@ -123,7 +123,7 @@ export function LibraryRatings({ controls }: { controls: LibraryControls }) {
               </button>
             );
           })}
-        </div>
+        </fieldset>
         {selectedScore !== null && (
           <div className="af-rating-dist-active">
             <span className="af-meta">Showing titles rated <strong>{selectedScore}/10</strong></span>

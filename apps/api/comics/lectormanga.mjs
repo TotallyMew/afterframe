@@ -15,11 +15,19 @@ function search(query) {
   });
 }
 
+function extractListingFormat(html) {
+  for (const [, alt] of html.matchAll(/alt="Portada de ([^"]+)"/gi)) {
+    const format = /(?:—|&mdash;)\s*(Manga|Manhwa|Manhua)$/i.exec(alt);
+    if (format && format.index > 0) return format[1].toLowerCase();
+  }
+  return undefined;
+}
+
 function listing(slug) {
   return cacheMetadata(`comics:lector:listing:${slug}`, 10 * minute, async () => {
     const result = await sourceHtml(`${origin}/comics/${slug}`, 'Lector Manga');
-    const format = result.match(/alt="Portada de [^"]+?\s*(?:—|&mdash;)\s*(Manga|Manhwa|Manhua)"/i)?.[1]?.toLowerCase();
-    const list = result.match(/id="chapters-list"[\s\S]*?<nav\b[^>]*id="chapters-pagination"/i)?.[0];
+    const format = extractListingFormat(result);
+    const list = /id="chapters-list"[\s\S]*?<nav\b[^>]*id="chapters-pagination"/i.exec(result)?.[0];
     const links = new RegExp(`href="/comics/${slug}/capitulo-(${chapterNumberSource})"`, 'gi');
     const numbers = [...new Set(Array.from((list || '').matchAll(links), ([, number]) => number))];
     return { slug, format, numbers };
@@ -30,8 +38,9 @@ function findListing(item) {
   return cacheMetadata(`comics:lector:match:${item.id}`, 30 * minute, async () => {
     const matches = titleMatcher(item);
     const candidates = new Set();
-    for (const query of seriesQueries(item, item.spanish)) {
-      for (const entry of await search(query)) {
+    const searchResults = await Promise.all(seriesQueries(item, item.spanish).map(search));
+    for (const entries of searchResults) {
+      for (const entry of entries) {
         if (matches(entry.title)) candidates.add(entry.slug);
       }
     }
@@ -39,7 +48,8 @@ function findListing(item) {
     const matchesFormat = checked.flatMap(result => result.status === 'fulfilled' && result.value?.format === item.format ? [result.value] : []);
     if (!matchesFormat.length && checked.length && checked.every(result => result.status === 'rejected')) throw checked[0].reason;
     // Duplicate listings can have different chapter coverage for the same title.
-    return matchesFormat.sort((a, b) => b.numbers.length - a.numbers.length)[0] || null;
+    matchesFormat.sort((a, b) => b.numbers.length - a.numbers.length);
+    return matchesFormat[0] || null;
   });
 }
 
@@ -60,7 +70,7 @@ export async function lectorPageList(item, chapterId) {
     const images = [];
     for (const [tag] of result.matchAll(/<img\b[^<>]{1,1000}>/gi)) {
       if (!/\bclass="[^"]*\breader-page-img\b[^"]*"/i.test(tag)) continue;
-      const url = URL.parse(tag.match(/\bsrc="([^"]+)"/i)?.[1] || '');
+      const url = URL.parse(/\bsrc="([^"]+)"/i.exec(tag)?.[1] || '');
       images.push(url?.origin === 'https://media.lector-mangas.lat' && !url.username && !url.password && !url.search
         && !url.hash && readerImagePath.test(url.pathname) ? url.href : null);
     }

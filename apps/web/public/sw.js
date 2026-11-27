@@ -27,6 +27,41 @@ self.addEventListener('activate', event => {
   })());
 });
 
+async function cacheAssetResponse(request, copy) {
+  const cache = await caches.open(SHELL_CACHE);
+  await cache.put(request, copy);
+  await trimAssetCache(cache);
+}
+
+async function handleAssetRequest(request) {
+  const cached = await caches.match(request);
+  if (cached) return cached;
+  const response = await fetch(request);
+  if (response.ok) {
+    cacheAssetResponse(request, response.clone()).catch(() => {});
+  }
+  return response;
+}
+
+async function fetchAndCacheShellAsset(cache, request, fallback) {
+  try {
+    const response = await fetch(request);
+    if (response.ok) {
+      cache.put(request, response.clone()).catch(() => {});
+    }
+    return response;
+  } catch {
+    return fallback;
+  }
+}
+
+async function handleShellAssetRequest(request) {
+  const cache = await caches.open(SHELL_CACHE);
+  const cached = await cache.match(request);
+  const network = fetchAndCacheShellAsset(cache, request, cached);
+  return cached || network;
+}
+
 self.addEventListener('fetch', event => {
   const { request } = event;
   if (request.method !== 'GET') return;
@@ -55,31 +90,11 @@ self.addEventListener('fetch', event => {
   }
 
   if (url.pathname.startsWith('/assets/')) {
-    event.respondWith(
-      caches.match(request).then(cached => cached || fetch(request).then(response => {
-        if (response.ok) {
-          const copy = response.clone();
-          void caches.open(SHELL_CACHE).then(async cache => {
-            await cache.put(request, copy);
-            await trimAssetCache(cache);
-          });
-        }
-        return response;
-      })),
-    );
+    event.respondWith(handleAssetRequest(request));
     return;
   }
 
   if (url.pathname.startsWith('/icons/') || url.pathname === '/art/favicon.svg' || url.pathname === '/manifest.webmanifest') {
-    event.respondWith(
-      caches.open(SHELL_CACHE).then(async cache => {
-        const cached = await cache.match(request);
-        const network = fetch(request).then(response => {
-          if (response.ok) void cache.put(request, response.clone());
-          return response;
-        }).catch(() => cached);
-        return cached || network;
-      }),
-    );
+    event.respondWith(handleShellAssetRequest(request));
   }
 });

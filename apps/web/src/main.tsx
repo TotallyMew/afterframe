@@ -32,43 +32,43 @@ const comicPath = new RegExp(`^comic/(${comicIdSource})$`, 'i');
 const readerPath = new RegExp(`^comic/(${comicIdSource})/read/(${comicChapterIdSource})$`, 'i');
 const { panel: entryPanel } = normalizeEntry();
 
+function applyEntryReturn(nextUrl: URL, returnTo: string, hasPanel: boolean, origin: string) {
+  if (hasPanel) {
+    const dest = new URL(returnTo, origin);
+    nextUrl.pathname = dest.pathname;
+    nextUrl.search = dest.search;
+    return;
+  }
+  const targetRoute = normalizeRouteString(`${nextUrl.pathname}${nextUrl.search}`);
+  const [path] = targetRoute.split('?', 2);
+  if (readerPath.test(path) || parsePlayerRoute(path)) {
+    const priorUrl = new URL(returnTo, origin);
+    const priorRoute = normalizeRouteString(`${priorUrl.pathname}${priorUrl.search}`).split('?', 2)[0];
+    const back = comicPath.test(priorRoute) ? priorUrl.searchParams.get('back') : returnTo;
+    if (back && !nextUrl.searchParams.has('back')) nextUrl.searchParams.set('back', back);
+  }
+  nextUrl.searchParams.delete('return');
+}
+
 function normalizeEntry() {
   const url = new URL(window.location.href);
   const wasLegacy = /^\/(?:legacy|player)\/?$/.test(url.pathname);
   const panel = url.searchParams.get('panel');
   const hasPanel = panel === 'settings' || panel === 'integrations' || panel === 'account';
-  const requested = url.searchParams.get('return');
-  const returnTo = normalizeBackParam(requested);
+  const returnTo = normalizeBackParam(url.searchParams.get('return'));
   const hasLegacyHash = (url.pathname === '/' || wasLegacy) && Boolean(url.hash) && url.hash !== '#main' && url.hash.startsWith('#');
 
   let targetHref: string | null = null;
-  if (hasLegacyHash) {
-    targetHref = webHref(normalizeRouteString(url.hash));
-  } else if (wasLegacy) {
-    targetHref = '/';
-  }
+  if (hasLegacyHash) targetHref = webHref(normalizeRouteString(url.hash));
+  else if (wasLegacy) targetHref = '/';
 
   if (hasPanel || wasLegacy || returnTo || hasLegacyHash) {
     const nextUrl = new URL(targetHref || `${url.pathname}${url.search}`, url.origin);
     if (hasPanel) {
       nextUrl.searchParams.delete('panel');
       nextUrl.searchParams.delete('return');
-      if (returnTo) {
-        const dest = new URL(returnTo, url.origin);
-        nextUrl.pathname = dest.pathname;
-        nextUrl.search = dest.search;
-      }
-    } else if (returnTo) {
-      const targetRoute = normalizeRouteString(`${nextUrl.pathname}${nextUrl.search}`);
-      const [path] = targetRoute.split('?', 2);
-      if (readerPath.test(path) || parsePlayerRoute(path)) {
-        const priorUrl = new URL(returnTo, url.origin);
-        const priorRoute = normalizeRouteString(`${priorUrl.pathname}${priorUrl.search}`).split('?', 2)[0];
-        const back = comicPath.test(priorRoute) ? priorUrl.searchParams.get('back') : returnTo;
-        if (back && !nextUrl.searchParams.has('back')) nextUrl.searchParams.set('back', back);
-      }
-      nextUrl.searchParams.delete('return');
     }
+    if (returnTo) applyEntryReturn(nextUrl, returnTo, hasPanel, url.origin);
     nextUrl.hash = '';
     window.history.replaceState(null, '', `${nextUrl.pathname}${nextUrl.search}`);
   }
@@ -100,10 +100,36 @@ class PageBoundary extends Component<{ children: ReactNode }, { failed: boolean 
   }
 }
 
-function RouteFallback({ shape = 'posters' }: { shape?: 'posters' | 'hero' | 'rows' }) {
+function RouteFallback({ shape = 'posters' }: Readonly<{ shape?: 'posters' | 'hero' | 'rows' }>) {
   return <div className="af-wrap af-directory" data-route-loading>
     <Loading label="" shape={shape} />
   </div>;
+}
+
+function findRestoreFocusTarget(wanted: string): HTMLElement | null {
+  const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+    ? CSS.escape(wanted)
+    : wanted.replace(/["\\]/g, String.raw`\$&`);
+  const candidates = document.querySelectorAll<HTMLElement>(`a[href="${escaped}"], button[aria-label="${escaped}"]`);
+  for (const node of candidates) {
+    if (node.getClientRects().length) return node;
+  }
+  return null;
+}
+
+function tryRestoreView(view: { y: number; focus?: string }, focusHeading: () => void): boolean {
+  const canScroll = view.y === 0 || document.documentElement.scrollHeight >= view.y + innerHeight - 1;
+  if (!canScroll) return false;
+  if (view.focus) {
+    const target = findRestoreFocusTarget(view.focus);
+    if (!target) return false;
+    target.focus({ preventScroll: true });
+    window.scrollTo(0, view.y);
+    return true;
+  }
+  window.scrollTo(0, view.y);
+  focusHeading();
+  return true;
 }
 
 function restoreRoute(locationKey: string, focusOnEntry: boolean) {
@@ -124,28 +150,7 @@ function restoreRoute(locationKey: string, focusOnEntry: boolean) {
     heading.focus({ preventScroll: true });
   };
   const restore = () => {
-    if (view) {
-      const wanted = view.focus;
-      let target: HTMLElement | null = null;
-      if (wanted) {
-        const escaped = typeof CSS !== 'undefined' && typeof CSS.escape === 'function' ? CSS.escape(wanted) : wanted.replace(/["\\]/g, '\\$&');
-        const candidates = document.querySelectorAll<HTMLElement>(`a[href="${escaped}"], button[aria-label="${escaped}"]`);
-        for (const node of candidates) {
-          if (node.getClientRects().length) { target = node; break; }
-        }
-      }
-      if (target && (view.y === 0 || document.documentElement.scrollHeight >= view.y + innerHeight - 1)) {
-        target.focus({ preventScroll: true });
-        window.scrollTo(0, view.y);
-        return true;
-      }
-      if (!wanted && (view.y === 0 || document.documentElement.scrollHeight >= view.y + innerHeight - 1)) {
-        window.scrollTo(0, view.y);
-        focusHeading();
-        return true;
-      }
-      return false;
-    }
+    if (view) return tryRestoreView(view, focusHeading);
     if (main.querySelector('[data-route-loading]')) return false;
     focusHeading();
     return true;
@@ -177,23 +182,63 @@ function restoreRoute(locationKey: string, focusOnEntry: boolean) {
   return () => controller.abort();
 }
 
+const cataloguePaths = new Set(['movies', 'tv', 'new', 'search']);
+const libraryPaths = new Set(['watchlist', 'watched', 'ratings', 'reading', 'history', 'notifications']);
+const titleRoutePattern = /^(movie|tv)\/([1-9]\d{0,9})$/;
+
+function resolveRouteView(route: string, path: string, query: string, controls: ReturnType<typeof useLibrary>) {
+  const title = titleRoutePattern.exec(path);
+  const comic = comicPath.exec(path);
+  const reader = readerPath.exec(path);
+  const playerRoute = parsePlayerRoute(path);
+  const playerKey = playerRoute ? playerTitleKey(playerRoute) : null;
+  const home = path === 'home' || path === 'main';
+  const catalogue = cataloguePaths.has(path) || path.startsWith('search=');
+  const library = libraryPaths.has(path);
+  const comicRoute = Boolean(comic || reader);
+  const isReader = Boolean(reader);
+  const isPlayer = Boolean(playerRoute);
+
+  let dataPage = 'directory';
+  if (home) dataPage = 'home';
+  else if (title || comic) dataPage = 'title';
+  else if (isReader) dataPage = 'reader';
+  else if (isPlayer) dataPage = 'player';
+
+  let page: ReactNode = <section className="af-wrap af-directory"><h1>Page unavailable</h1><p className="af-meta">This page does not exist in Afterframe.</p><a className="af-text-link" href={webHref('home')}>Go to Home</a></section>;
+  let fallbackShape: 'posters' | 'hero' | 'rows' = 'posters';
+  if (home) { page = <Home controls={controls} />; fallbackShape = 'hero'; }
+  else if (title) { page = <DetailsPage key={path} type={title[1] as MediaType} id={Number(title[2])} controls={controls} />; fallbackShape = 'hero'; }
+  else if (playerRoute && playerKey) { page = <PlayerPage key={playerKey} route={playerRoute} controls={controls} />; fallbackShape = 'hero'; }
+  else if (catalogue) page = <Catalogue key={route} route={route} controls={controls} />;
+  else if (path === 'anime') page = <AnimePage key={route} query={query} controls={controls} />;
+  else if (path === 'comics' || path === 'manga') page = <ComicsPage key={route} query={query} controls={controls} />;
+  else if (comic) { page = <ComicDetailsPage key={path} id={comic[1]} query={query} controls={controls} />; fallbackShape = 'hero'; }
+  else if (reader) { page = <ComicReader key={path} id={reader[1]} chapterId={reader[2]} query={query} controls={controls} />; fallbackShape = 'hero'; }
+  else if (path === 'recommendations') page = <RecommendationsPage controls={controls} />;
+  else if (library) { page = <LibraryPage key={path} path={path} query={query} controls={controls} />; fallbackShape = 'rows'; }
+
+  return { page, fallbackShape, dataPage, playerKey, comicRoute, isReader, isPlayer };
+}
+
 function AppShell() {
   const confirmAction = useConfirm();
   const route = useSyncExternalStore(subscribeRoute, routeSnapshot);
   const [path, query = ''] = route.split('?', 2);
-  const title = path.match(/^(movie|tv)\/([1-9]\d{0,9})$/);
-  const comic = path.match(comicPath);
-  const reader = path.match(readerPath);
-  const playerRoute = parsePlayerRoute(path);
-  const playerKey = playerRoute ? playerTitleKey(playerRoute) : null;
-  const home = path === 'home' || path === 'main';
-  const catalogue = ['movies', 'tv', 'new', 'search'].includes(path) || path.startsWith('search=');
-  const library = ['watchlist', 'watched', 'ratings', 'reading', 'history', 'notifications'].includes(path);
   const controls = useLibrary(confirmAction);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const comicRoute = Boolean(comic || reader);
+  const appRef = useRef<HTMLDivElement>(null);
   const oldPath = useRef('');
   const oldPlayerKey = useRef<string | null>(null);
+  const { page, fallbackShape, dataPage, playerKey, comicRoute, isReader, isPlayer } = resolveRouteView(route, path, query, controls);
+
+  useEffect(() => {
+    const app = appRef.current;
+    if (!app) return;
+    const onClick = (event: MouseEvent) => handleSpaClick(event, anchor => rememberRoute(anchor));
+    app.addEventListener('click', onClick);
+    return () => app.removeEventListener('click', onClick);
+  }, []);
 
   useEffect(() => {
     const openShortcuts = () => setShortcutsOpen(true);
@@ -233,26 +278,13 @@ function AppShell() {
   }, [route, path, comicRoute, playerKey]);
   useEffect(() => { document.documentElement.classList.toggle('reduce-motion', controls.library.preferences.reducedMotion === true); }, [controls.library.preferences.reducedMotion]);
 
-  let page = <section className="af-wrap af-directory"><h1>Page unavailable</h1><p className="af-meta">This page does not exist in Afterframe.</p><a className="af-text-link" href={webHref('home')}>Go to Home</a></section>;
-  let fallbackShape: 'posters' | 'hero' | 'rows' = 'posters';
-  if (home) { page = <Home controls={controls} />; fallbackShape = 'hero'; }
-  else if (title) { page = <DetailsPage key={path} type={title[1] as MediaType} id={Number(title[2])} controls={controls} />; fallbackShape = 'hero'; }
-  else if (playerRoute && playerKey) { page = <PlayerPage key={playerKey} route={playerRoute} controls={controls} />; fallbackShape = 'hero'; }
-  else if (catalogue) page = <Catalogue key={route} route={route} controls={controls} />;
-  else if (path === 'anime') page = <AnimePage key={route} query={query} controls={controls} />;
-  else if (path === 'comics' || path === 'manga') page = <ComicsPage key={route} query={query} controls={controls} />;
-  else if (comic) { page = <ComicDetailsPage key={path} id={comic[1]} query={query} controls={controls} />; fallbackShape = 'hero'; }
-  else if (reader) { page = <ComicReader key={path} id={reader[1]} chapterId={reader[2]} query={query} controls={controls} />; fallbackShape = 'hero'; }
-  else if (path === 'recommendations') page = <RecommendationsPage controls={controls} />;
-  else if (library) { page = <LibraryPage key={path} path={path} query={query} controls={controls} />; fallbackShape = 'rows'; }
-
   return <ToastProvider libraryFeedback={libraryFeedback}><SettingsProvider controls={controls}><AccountProvider controls={controls}><OpenEntryPanel /><div
-    onClick={event => handleSpaClick(event, anchor => rememberRoute(anchor))}
+    ref={appRef}
     className="af-app"
-    data-page={home ? 'home' : title || comic ? 'title' : reader ? 'reader' : playerRoute ? 'player' : 'directory'}
+    data-page={dataPage}
   >
     <a href="#main" className="af-skip" onClick={event => { event.preventDefault(); document.getElementById('main')?.focus(); }}>Skip to content</a>
-    {!reader && <Header controls={controls} route={route} />}
+    {!isReader && <Header controls={controls} route={route} />}
     {controls.error && <div className="af-notice" role="alert">{controls.error} {controls.state === 'expired' ? <AccountButton className="af-text-link">Sign in</AccountButton> : <button className="af-text-link" type="button" onClick={() => void controls.refresh()}>Retry connection</button>}</div>}
     {(controls.recoverable.length > 0 || controls.recoveryStatus || controls.recoveryError) &&
       <section className="af-wrap af-recovery" aria-label="Library changes to recover">
@@ -263,20 +295,20 @@ function AppShell() {
           </button>
           <button type="button" className="af-text-link" disabled={controls.replaying} onClick={() => controls.removeDeferred(edit)}>Dismiss</button>
         </div>)}
-        {controls.replaying && <p role="status">Saving your recovered change…</p>}
-        {controls.recoveryStatus && <p role="status">{controls.recoveryStatus}</p>}
+        {controls.replaying && <output>Saving your recovered change…</output>}
+        {controls.recoveryStatus && <output>{controls.recoveryStatus}</output>}
         {controls.recoveryError && <p role="alert">{controls.recoveryError}</p>}
       </section>}
-    {controls.hasDeferredForOtherAccount && <div className="af-wrap af-recovery" role="status">
+    {controls.hasDeferredForOtherAccount && <output className="af-wrap af-recovery">
       A pending change belongs to another account. <AccountButton className="af-text-link">Switch accounts</AccountButton> to recover it.
-    </div>}
+    </output>}
     <main id="main" tabIndex={-1}>
       <PageBoundary key={playerKey ?? (comicRoute ? path : route)}>
         <Suspense fallback={<RouteFallback shape={fallbackShape} />}>{page}</Suspense>
       </PageBoundary>
     </main>
-    {!reader && <Footer onOpenShortcuts={() => setShortcutsOpen(true)} />}
-    {!reader && !playerRoute && <MobileNav route={route} />}
+    {!isReader && <Footer onOpenShortcuts={() => setShortcutsOpen(true)} />}
+    {!isReader && !isPlayer && <MobileNav route={route} />}
     <ShortcutsDialog
       open={shortcutsOpen}
       onOpenChange={setShortcutsOpen}

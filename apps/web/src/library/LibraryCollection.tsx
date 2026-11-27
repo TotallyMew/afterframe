@@ -62,13 +62,13 @@ function StatusPillPopover({
   itemTitle,
   disabled,
   onSelect,
-}: {
+}: Readonly<{
   status: WatchStatus;
   labels: Record<WatchStatus, string>;
   itemTitle: string;
   disabled: boolean;
   onSelect: (next: WatchStatus) => void;
-}) {
+}>) {
   const [open, setOpen] = useState(false);
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
@@ -115,7 +115,7 @@ function CardQuickMenu({
   disabled,
   canEditStatus,
   onChangeStatus,
-}: {
+}: Readonly<{
   item: SavedTitle;
   status: WatchStatus;
   score: number;
@@ -124,7 +124,7 @@ function CardQuickMenu({
   disabled: boolean;
   canEditStatus: boolean;
   onChangeStatus: (next: WatchStatus) => void;
-}) {
+}>) {
   const [open, setOpen] = useState(false);
   const folders = Object.values(controls.library.folders ?? {}).sort((a, b) => a.created - b.created);
   const { notify } = useToast();
@@ -242,17 +242,334 @@ function CardQuickMenu({
   );
 }
 
+function buildNextFilterParams(
+  form: HTMLFormElement | null,
+  filters: URLSearchParams,
+  overrides?: Record<string, string>,
+): URLSearchParams {
+  const next = new URLSearchParams();
+  if (form) {
+    for (const [key, value] of new FormData(form)) {
+      if (typeof value === 'string' && value.trim() && !(key === 'sort' && value.trim() === 'recent')) {
+        next.set(key, value.trim());
+      }
+    }
+  } else {
+    for (const [key, value] of filters) next.set(key, value);
+  }
+  const hasStatusOverride = Boolean(overrides && ('status' in overrides || overrides.status));
+  if (filters.get('status') && !hasStatusOverride) next.set('status', filters.get('status')!);
+  if (filters.get('folder') && !(overrides && 'folder' in overrides)) next.set('folder', filters.get('folder')!);
+  if (!overrides) return next;
+  for (const [key, value] of Object.entries(overrides)) {
+    const trimmed = value.trim();
+    if (trimmed && !(key === 'sort' && trimmed === 'recent')) next.set(key, trimmed);
+    else next.delete(key);
+  }
+  return next;
+}
+
+function matchesCoverage(coverage: string, pct: number): boolean {
+  if (!coverage) return true;
+  if (coverage === 'complete') return pct === 100;
+  if (coverage === 'started') return pct > 0 && pct < 100;
+  if (coverage === 'unstarted') return pct === 0;
+  return true;
+}
+
+function matchesVideoItem(
+  item: SavedTitle,
+  params: { type: string; genre: string; after: string; before: string; coverage: string },
+  pct: number,
+): boolean {
+  if (params.type) {
+    if (item.type === 'comic') return false;
+    const typeOk = params.type === 'anime' ? isAnime(item.originalLanguage, item.genreIds) : item.type === params.type;
+    if (!typeOk) return false;
+  }
+  if (params.genre && (item.type === 'comic' || item.genre !== params.genre)) return false;
+  if (params.after && item.added < Date.parse(`${params.after}T00:00:00`)) return false;
+  if (params.before && item.added > Date.parse(`${params.before}T23:59:59.999`)) return false;
+  return matchesCoverage(params.coverage, pct);
+}
+
+function formatRemainingMinutes(rem: number): string {
+  if (rem < 60) return `${rem} min left`;
+  const mins = rem % 60;
+  const minPart = mins ? `${mins} min ` : '';
+  return `${Math.floor(rem / 60)} hr ${minPart}left`;
+}
+
+function formatVideoTypeLabel(value: string): string {
+  if (value === 'tv') return 'TV Shows';
+  if (value === 'movie') return 'Movies';
+  if (value === 'anime') return 'Anime';
+  return '';
+}
+
+function formatGridMetaLine(
+  item: SavedTitle,
+  epInfo: { watched: number; total?: number } | null,
+  status: WatchStatus,
+): string {
+  if (item.type === 'comic') {
+    const formatName = comicFormats.find(([k]) => k === item.format)?.[1] || 'Manga';
+    return [item.year, formatName].filter(Boolean).join(' · ');
+  }
+  if (epInfo && epInfo.watched > 0 && status !== 'completed') {
+    const epLabel = epInfo.total ? `${epInfo.watched}/${epInfo.total} ep` : `${epInfo.watched} ep`;
+    return [item.year, epLabel].filter(Boolean).join(' · ');
+  }
+  return [item.year, item.genre || (item.type === 'tv' ? 'TV series' : 'Movie')].filter(Boolean).join(' · ');
+}
+
+function resolveLibraryPlayHref(item: VideoSaved, library: LibraryControls['library']): string {
+  const isArchive = Boolean(item.archiveId) || !Number.isSafeInteger(item.id) || !/^(movie|tv)-\d+$/.test(item.key);
+  if (isArchive) return playerHref(`edition/${encodeURIComponent(item.key)}/watch`);
+  if (item.type === 'tv') return playHref(item, resumeFor(library, item)?.episode ?? { season: 1, number: 1 });
+  return playHref(item);
+}
+
+function LibraryGridCard({
+  item,
+  status,
+  score,
+  pct,
+  epInfo,
+  itemFolders,
+  labels,
+  controls,
+  isSaving,
+  completionError,
+  onStatusChange,
+}: Readonly<{
+  item: SavedTitle;
+  status: WatchStatus;
+  score: number;
+  pct: number;
+  epInfo: { watched: number; total?: number } | null;
+  itemFolders: { id: string; name: string; color: string }[];
+  labels: Record<WatchStatus, string>;
+  controls: LibraryControls;
+  isSaving: boolean;
+  completionError: string;
+  onStatusChange: (item: SavedTitle, next: WatchStatus) => void;
+}>) {
+  const poster = item.type === 'comic' ? comicCover(item.poster) : item.poster;
+  const busy = !controls.ready || isSaving || controls.isPending(item.key);
+  const canEditStatus = item.type === 'comic' || (!item.archiveId && Number.isSafeInteger(item.id));
+  const metaLine = formatGridMetaLine(item, epInfo, status);
+
+  return (
+    <article className="af-lib-card">
+      <div className="af-lib-poster-wrap">
+        <a className="af-lib-card-link" href={libraryItemHref(item)} tabIndex={-1} aria-hidden="true">
+          <span className="af-poster">
+            <Artwork
+              src={item.type === 'comic' ? poster : tmdbImageSize(poster, 'w342')}
+              srcSet={item.type === 'comic' ? undefined : tmdbImageSet(poster, [185, 342, 500])}
+              sizes="(max-width: 640px) 44vw, 190px"
+              loading="lazy"
+              decoding="async"
+              fallback={<Icon name={item.type === 'comic' ? 'book' : 'film'} />}
+            />
+          </span>
+        </a>
+        {pct > 0 && pct < 100 && (
+          <progress className="af-progress af-card-progress" max={100} value={pct} aria-label={`${item.title} ${pct}% watched`} />
+        )}
+
+        {canEditStatus ? (
+          <StatusPillPopover
+            status={status}
+            labels={labels}
+            itemTitle={item.title}
+            disabled={busy}
+            onSelect={next => onStatusChange(item, next)}
+          />
+        ) : (
+          <span className={`af-poster-status is-${status}`}>
+            <span className={`af-status-dot is-${status}`} aria-hidden="true" />
+            <span>{labels[status]}</span>
+          </span>
+        )}
+
+        <div className="af-lib-poster-right">
+          {score > 0 && (
+            <span className="af-poster-rating-pill">
+              <span className="sr-only">Rated </span>
+              <span aria-hidden="true">★</span> {score}
+              <span className="sr-only"> out of 10</span>
+            </span>
+          )}
+          <CardQuickMenu
+            item={item}
+            status={status}
+            score={score}
+            labels={labels}
+            controls={controls}
+            disabled={busy}
+            canEditStatus={canEditStatus}
+            onChangeStatus={next => onStatusChange(item, next)}
+          />
+        </div>
+      </div>
+
+      <a className="af-lib-card-copy" href={libraryItemHref(item)}>
+        <strong title={item.title}>{item.title}</strong>
+        <span className="af-card-meta">
+          {metaLine}
+          {itemFolders.length > 0 && (
+            <span className="af-card-folder-dots" title={itemFolders.map(f => f.name).join(', ')}>
+              <span className="sr-only">Folders: {itemFolders.map(f => f.name).join(', ')}</span>
+              {itemFolders.slice(0, 3).map(f => (
+                <span key={f.id} className={`af-folder-dot is-${f.color}`} aria-hidden="true" />
+              ))}
+            </span>
+          )}
+        </span>
+      </a>
+      {isSaving && !controls.isPending(item.key) && <output className="af-meta">Updating…</output>}
+      {completionError && (
+        <p className="af-meta" role="alert">
+          {completionError}{' '}
+          <button type="button" className="af-text-link" onClick={() => onStatusChange(item, 'completed')}>Retry</button>
+        </p>
+      )}
+    </article>
+  );
+}
+
+function LibraryListRow({
+  item,
+  mode,
+  status,
+  score,
+  pct,
+  epInfo,
+  itemFolders,
+  labels,
+  statusOptions,
+  controls,
+  isSaving,
+  onSelectFolder,
+  onStatusChange,
+}: Readonly<{
+  item: SavedTitle;
+  mode: 'video' | 'reading';
+  status: WatchStatus;
+  score: number;
+  pct: number;
+  epInfo: { watched: number; total?: number } | null;
+  itemFolders: { id: string; name: string; color: string }[];
+  labels: Record<WatchStatus, string>;
+  statusOptions: readonly { value: WatchStatus; label: string }[];
+  controls: LibraryControls;
+  isSaving: boolean;
+  onSelectFolder: (folderId: string) => void;
+  onStatusChange: (item: SavedTitle, next: WatchStatus) => void;
+}>) {
+  const poster = item.type === 'comic' ? comicCover(item.poster) : item.poster;
+  const busy = !controls.ready || isSaving || controls.isPending(item.key);
+  const canEditStatus = item.type === 'comic' || (!item.archiveId && Number.isSafeInteger(item.id));
+  const rowMeta = item.type === 'comic'
+    ? [item.year, comicFormats.find(([k]) => k === item.format)?.[1] || 'Manga'].filter(Boolean).join(' · ')
+    : [item.year, item.genre || (item.type === 'tv' ? 'TV series' : 'Movie')].filter(Boolean).join(' · ');
+
+  return (
+    <li className="af-lib-row">
+      <a className="af-lib-row-art" href={libraryItemHref(item)} tabIndex={-1} aria-hidden="true">
+        <Artwork
+          src={item.type === 'comic' ? poster : tmdbImageSize(poster, 'w154')}
+          srcSet={item.type === 'comic' ? undefined : tmdbImageSet(poster, [154, 342])}
+          sizes="64px"
+          loading="lazy"
+          fallback={<Icon name={item.type === 'comic' ? 'book' : 'film'} />}
+        />
+      </a>
+      <div className="af-lib-row-main">
+        <div className="af-lib-row-title-wrap">
+          <a className="af-lib-row-title" href={libraryItemHref(item)}>{item.title}</a>
+          <span className="af-meta">{rowMeta}</span>
+        </div>
+        {itemFolders.length > 0 && (
+          <div className="af-lib-row-folders">
+            {itemFolders.map(folder => (
+              <button
+                key={folder.id}
+                type="button"
+                className="af-mini-folder-tag"
+                onClick={() => onSelectFolder(folder.id)}
+              >
+                <span className={`af-folder-dot is-${folder.color}`} aria-hidden="true" />
+                <span>{folder.name}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {item.type !== 'comic' && (pct > 0 || (epInfo && epInfo.watched > 0)) && (
+          <div className="af-lib-row-progress">
+            <progress className="af-progress" max={100} value={pct} aria-label={`${item.title} ${pct}%`} />
+            <span className="af-meta">
+              {epInfo?.total ? `${epInfo.watched}/${epInfo.total} ep` : `${pct}%`}
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div className="af-lib-row-controls">
+        {canEditStatus ? (
+          <AfSelect
+            className="af-lib-row-status"
+            ariaLabel={`Status for ${item.title}`}
+            value={status}
+            disabled={busy}
+            options={statusOptions}
+            onChange={value => onStatusChange(item, value as WatchStatus)}
+          />
+        ) : (
+          <span className="af-meta">{labels[status]}</span>
+        )}
+        <AfSelect
+          className="af-lib-row-rating"
+          ariaLabel={`Rating for ${item.title}`}
+          value={String(score)}
+          disabled={busy}
+          options={inlineRatingOptions}
+          onChange={value => void controls.rate(item, Number(value))}
+        />
+        <FolderPickerPopover itemKey={item.key} itemTitle={item.title} controls={controls} compact />
+        {item.type !== 'comic' && (
+          <a className="af-icon-button" href={resolveLibraryPlayHref(item, controls.library)} aria-label={`Play ${item.title}`} title="Play">
+            <Icon name="play" />
+          </a>
+        )}
+        <button
+          type="button"
+          className="af-icon-button af-lib-row-remove"
+          aria-label={`Remove ${item.title} from ${mode === 'reading' ? 'Reading' : 'Library'}`}
+          title="Remove"
+          disabled={busy}
+          onClick={() => void controls.toggleSaved(item)}
+        >
+          <Icon name="close" />
+        </button>
+      </div>
+    </li>
+  );
+}
+
 export function LibraryCollection({
   mode,
   controls,
   query: appliedQuery,
   forcedStatus,
-}: {
+}: Readonly<{
   mode: 'video' | 'reading';
   controls: LibraryControls;
   query: string;
   forcedStatus?: WatchStatus;
-}) {
+}>) {
   const { notify } = useToast();
   const route = mode === 'reading' ? 'reading' : 'watchlist';
   const filters = useMemo(() => {
@@ -276,28 +593,7 @@ export function LibraryCollection({
   }
 
   function applyLiveFilter(form: HTMLFormElement | null, replace = true, overrides?: Record<string, string>) {
-    const next = new URLSearchParams();
-    if (form) {
-      for (const [key, value] of new FormData(form)) {
-        if (typeof value === 'string' && value.trim() && !(key === 'sort' && value.trim() === 'recent')) {
-          next.set(key, value.trim());
-        }
-      }
-    } else {
-      for (const [key, value] of filters) next.set(key, value);
-    }
-    if (filters.get('status') && !overrides?.status && !(overrides && 'status' in overrides)) {
-      next.set('status', filters.get('status')!);
-    }
-    if (filters.get('folder') && !(overrides && 'folder' in overrides)) {
-      next.set('folder', filters.get('folder')!);
-    }
-    if (overrides) {
-      for (const [key, value] of Object.entries(overrides)) {
-        if (value.trim() && !(key === 'sort' && value.trim() === 'recent')) next.set(key, value.trim());
-        else next.delete(key);
-      }
-    }
+    const next = buildNextFilterParams(form, filters, overrides);
     const afterVal = next.get('after'), beforeVal = next.get('before');
     if (afterVal && beforeVal && afterVal > beforeVal) {
       setProblem('The first added date must come before the last added date.');
@@ -337,27 +633,15 @@ export function LibraryCollection({
     ['type', 'format', 'genre', 'rating', 'coverage', 'after', 'before', 'query', 'sort'].map(key => [key, lookup(key)]),
   );
   const requiredTitle = query.toLocaleLowerCase();
-  const genreNames = [...new Set(saved.flatMap(item => item.type !== 'comic' && item.genre ? [item.genre] : []))].sort();
+  const genreNames = [...new Set(saved.flatMap(item => item.type !== 'comic' && item.genre ? [item.genre] : []))]
+    .sort((a, b) => a.localeCompare(b));
 
   const items = pool.filter(item => {
     if (requiredTitle && !item.title.toLocaleLowerCase().includes(requiredTitle)) return false;
     if (activeStatus && statusMap.get(item.key) !== activeStatus) return false;
-    if (mode === 'video') {
-      if (type && (item.type === 'comic' || (type === 'anime' ? !isAnime(item.originalLanguage, item.genreIds) : item.type !== type))) return false;
-      if (genre && (item.type === 'comic' || item.genre !== genre)) return false;
-      if (after && item.added < Date.parse(`${after}T00:00:00`)) return false;
-      if (before && item.added > Date.parse(`${before}T23:59:59.999`)) return false;
-      if (coverage) {
-        const pct = progressMap.get(item.key) ?? 0;
-        if (coverage === 'complete' && pct !== 100) return false;
-        if (coverage === 'started' && (!pct || pct === 100)) return false;
-        if (coverage === 'unstarted' && pct > 0) return false;
-      }
-    } else if (format && (item.type !== 'comic' || item.format !== format)) {
-      return false;
-    }
-    if (rating && savedRating(library.ratings[item.key]) < Number(rating)) return false;
-    return true;
+    if (mode === 'video' && !matchesVideoItem(item, { type, genre, after, before, coverage }, progressMap.get(item.key) ?? 0)) return false;
+    if (mode === 'reading' && format && (item.type !== 'comic' || item.format !== format)) return false;
+    return !rating || savedRating(library.ratings[item.key]) >= Number(rating);
   });
 
   items.sort((a, b) => {
@@ -427,6 +711,63 @@ export function LibraryCollection({
     );
   }
 
+  let itemsContent;
+  if (items.length === 0) {
+    itemsContent = (
+      <div className="af-lib-empty-filtered">
+        <p className="af-state">
+          {activeFolder
+            ? `No titles in “${activeFolder.name}” match these filters yet.`
+            : 'No titles match these filters.'}
+        </p>
+      </div>
+    );
+  } else if (viewMode === 'grid') {
+    itemsContent = (
+      <div className="af-poster-grid">
+        {items.map(item => (
+          <LibraryGridCard
+            key={item.key}
+            item={item}
+            status={statusMap.get(item.key) ?? 'planned'}
+            score={savedRating(library.ratings[item.key])}
+            pct={progressMap.get(item.key) ?? 0}
+            epInfo={item.type === 'tv' ? watchedEpisodeCount(item, library) : null}
+            itemFolders={foldersForItem(item.key)}
+            labels={labels}
+            controls={controls}
+            isSaving={saving.includes(item.key)}
+            completionError={completionError[item.key] || ''}
+            onStatusChange={(target, next) => void handleStatusChange(target, next)}
+          />
+        ))}
+      </div>
+    );
+  } else {
+    itemsContent = (
+      <ul className="af-lib-list" aria-label="Library items">
+        {items.map(item => (
+          <LibraryListRow
+            key={item.key}
+            item={item}
+            mode={mode}
+            status={statusMap.get(item.key) ?? 'planned'}
+            score={savedRating(library.ratings[item.key])}
+            pct={progressMap.get(item.key) ?? 0}
+            epInfo={item.type === 'tv' ? watchedEpisodeCount(item, library) : null}
+            itemFolders={foldersForItem(item.key)}
+            labels={labels}
+            statusOptions={statusOptions}
+            controls={controls}
+            isSaving={saving.includes(item.key)}
+            onSelectFolder={folderId => applyLiveFilter(formRef.current, true, { folder: folderId })}
+            onStatusChange={(target, next) => void handleStatusChange(target, next)}
+          />
+        ))}
+      </ul>
+    );
+  }
+
   return (
     <div className="af-lib-section">
       <LibraryStats
@@ -450,7 +791,7 @@ export function LibraryCollection({
           {resumeList.map(([key, entry]) => {
             const ep = entry.episode;
             const rem = Math.ceil((entry.duration - entry.time) / 60);
-            const left = rem >= 60 ? `${Math.floor(rem / 60)} hr ${rem % 60 ? `${rem % 60} min ` : ''}left` : `${rem} min left`;
+            const left = formatRemainingMinutes(rem);
             return (
               <MediaCard
                 key={key}
@@ -493,7 +834,7 @@ export function LibraryCollection({
       )}
 
       <div className="af-lib-controls-row">
-        <div className="af-lib-status-pills" role="group" aria-label="Filter by status">
+        <fieldset className="af-lib-status-pills" aria-label="Filter by status">
           <button
             type="button"
             className={`af-status-pill ${!activeStatus ? 'is-active' : ''}`}
@@ -519,9 +860,9 @@ export function LibraryCollection({
               </button>
             );
           })}
-        </div>
+        </fieldset>
 
-        <div className="af-view-toggle" role="group" aria-label="View mode">
+        <fieldset className="af-view-toggle" aria-label="View mode">
           <button
             type="button"
             className={`af-icon-button ${viewMode === 'grid' ? 'is-active' : ''}`}
@@ -542,7 +883,7 @@ export function LibraryCollection({
           >
             <Icon name="list" />
           </button>
-        </div>
+        </fieldset>
       </div>
 
       <form
@@ -602,224 +943,13 @@ export function LibraryCollection({
         labels={{
           status: value => labels[value as WatchStatus] ?? '',
           folder: value => folders[value]?.name ? `Folder: ${folders[value].name}` : '',
-          type: value => value === 'tv' ? 'TV Shows' : value === 'movie' ? 'Movies' : value === 'anime' ? 'Anime' : '',
+          type: formatVideoTypeLabel,
           format: value => comicFormats.find(([key]) => key === value)?.[1] ?? '',
           sort: value => value !== 'recent' ? [...videoSorting, ...readingSorting].find(([key]) => key === value)?.[1] ?? '' : '',
         }}
       />
 
-      {items.length === 0 ? (
-        <div className="af-lib-empty-filtered">
-          <p className="af-state">
-            {activeFolder
-              ? `No titles in “${activeFolder.name}” match these filters yet.`
-              : 'No titles match these filters.'}
-          </p>
-        </div>
-      ) : viewMode === 'grid' ? (
-        <div className="af-poster-grid">
-          {items.map(item => {
-            const status = statusMap.get(item.key) ?? 'planned';
-            const score = savedRating(library.ratings[item.key]);
-            const pct = progressMap.get(item.key) ?? 0;
-            const epInfo = item.type === 'tv' ? watchedEpisodeCount(item, library) : null;
-            const itemFolders = foldersForItem(item.key);
-            const poster = item.type === 'comic' ? comicCover(item.poster) : item.poster;
-            const busy = !controls.ready || saving.includes(item.key) || controls.isPending(item.key);
-            const canEditStatus = item.type === 'comic' || (!item.archiveId && Number.isSafeInteger(item.id));
-            const metaLine = item.type === 'comic'
-              ? [item.year, comicFormats.find(([k]) => k === item.format)?.[1] || 'Manga'].filter(Boolean).join(' · ')
-              : epInfo && epInfo.watched > 0 && status !== 'completed'
-                ? [item.year, epInfo.total ? `${epInfo.watched}/${epInfo.total} ep` : `${epInfo.watched} ep`].filter(Boolean).join(' · ')
-                : [item.year, item.genre || (item.type === 'tv' ? 'TV series' : 'Movie')].filter(Boolean).join(' · ');
-
-            return (
-              <article className="af-lib-card" key={item.key}>
-                <div className="af-lib-poster-wrap">
-                  <a className="af-lib-card-link" href={libraryItemHref(item)} tabIndex={-1} aria-hidden="true">
-                    <span className="af-poster">
-                      <Artwork
-                        src={item.type === 'comic' ? poster : tmdbImageSize(poster, 'w342')}
-                        srcSet={item.type === 'comic' ? undefined : tmdbImageSet(poster, [185, 342, 500])}
-                        sizes="(max-width: 640px) 44vw, 190px"
-                        loading="lazy"
-                        decoding="async"
-                        fallback={<Icon name={item.type === 'comic' ? 'book' : 'film'} />}
-                      />
-                    </span>
-                  </a>
-                  {pct > 0 && pct < 100 && (
-                    <progress className="af-progress af-card-progress" max={100} value={pct} aria-label={`${item.title} ${pct}% watched`} />
-                  )}
-
-                  {canEditStatus ? (
-                    <StatusPillPopover
-                      status={status}
-                      labels={labels}
-                      itemTitle={item.title}
-                      disabled={busy}
-                      onSelect={next => void handleStatusChange(item, next)}
-                    />
-                  ) : (
-                    <span className={`af-poster-status is-${status}`}>
-                      <span className={`af-status-dot is-${status}`} aria-hidden="true" />
-                      <span>{labels[status]}</span>
-                    </span>
-                  )}
-
-                  <div className="af-lib-poster-right">
-                    {score > 0 && (
-                      <span className="af-poster-rating-pill">
-                        <span className="sr-only">Rated </span>
-                        <span aria-hidden="true">★</span> {score}
-                        <span className="sr-only"> out of 10</span>
-                      </span>
-                    )}
-                    <CardQuickMenu
-                      item={item}
-                      status={status}
-                      score={score}
-                      labels={labels}
-                      controls={controls}
-                      disabled={busy}
-                      canEditStatus={canEditStatus}
-                      onChangeStatus={next => void handleStatusChange(item, next)}
-                    />
-                  </div>
-                </div>
-
-                <a className="af-lib-card-copy" href={libraryItemHref(item)}>
-                  <strong title={item.title}>{item.title}</strong>
-                  <span className="af-card-meta">
-                    {metaLine}
-                    {itemFolders.length > 0 && (
-                      <span className="af-card-folder-dots" title={itemFolders.map(f => f.name).join(', ')}>
-                        <span className="sr-only">Folders: {itemFolders.map(f => f.name).join(', ')}</span>
-                        {itemFolders.slice(0, 3).map(f => (
-                          <span key={f.id} className={`af-folder-dot is-${f.color}`} aria-hidden="true" />
-                        ))}
-                      </span>
-                    )}
-                  </span>
-                </a>
-                {saving.includes(item.key) && !controls.isPending(item.key) && <p className="af-meta" role="status">Updating…</p>}
-                {completionError[item.key] && (
-                  <p className="af-meta" role="alert">
-                    {completionError[item.key]}{' '}
-                    <button type="button" className="af-text-link" onClick={() => void handleStatusChange(item, 'completed')}>Retry</button>
-                  </p>
-                )}
-              </article>
-            );
-          })}
-        </div>
-      ) : (
-        <div className="af-lib-list" role="list" aria-label="Library items">
-          {items.map(item => {
-            const status = statusMap.get(item.key) ?? 'planned';
-            const score = savedRating(library.ratings[item.key]);
-            const pct = progressMap.get(item.key) ?? 0;
-            const epInfo = item.type === 'tv' ? watchedEpisodeCount(item, library) : null;
-            const itemFolders = foldersForItem(item.key);
-            const poster = item.type === 'comic' ? comicCover(item.poster) : item.poster;
-            const busy = !controls.ready || saving.includes(item.key) || controls.isPending(item.key);
-            const canEditStatus = item.type === 'comic' || (!item.archiveId && Number.isSafeInteger(item.id));
-            return (
-              <article className="af-lib-row" role="listitem" key={item.key}>
-                <a className="af-lib-row-art" href={libraryItemHref(item)} tabIndex={-1} aria-hidden="true">
-                  <Artwork
-                    src={item.type === 'comic' ? poster : tmdbImageSize(poster, 'w154')}
-                    srcSet={item.type === 'comic' ? undefined : tmdbImageSet(poster, [154, 342])}
-                    sizes="64px"
-                    loading="lazy"
-                    fallback={<Icon name={item.type === 'comic' ? 'book' : 'film'} />}
-                  />
-                </a>
-                <div className="af-lib-row-main">
-                  <div className="af-lib-row-title-wrap">
-                    <a className="af-lib-row-title" href={libraryItemHref(item)}>{item.title}</a>
-                    <span className="af-meta">
-                      {item.type === 'comic'
-                        ? [item.year, comicFormats.find(([k]) => k === item.format)?.[1] || 'Manga'].filter(Boolean).join(' · ')
-                        : [item.year, item.genre || (item.type === 'tv' ? 'TV series' : 'Movie')].filter(Boolean).join(' · ')}
-                    </span>
-                  </div>
-                  {itemFolders.length > 0 && (
-                    <div className="af-lib-row-folders">
-                      {itemFolders.map(folder => (
-                        <button
-                          key={folder.id}
-                          type="button"
-                          className="af-mini-folder-tag"
-                          onClick={() => applyLiveFilter(formRef.current, true, { folder: folder.id })}
-                        >
-                          <span className={`af-folder-dot is-${folder.color}`} aria-hidden="true" />
-                          <span>{folder.name}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  {item.type !== 'comic' && (pct > 0 || (epInfo && epInfo.watched > 0)) && (
-                    <div className="af-lib-row-progress">
-                      <progress className="af-progress" max={100} value={pct} aria-label={`${item.title} ${pct}%`} />
-                      <span className="af-meta">
-                        {epInfo && epInfo.total ? `${epInfo.watched}/${epInfo.total} ep` : `${pct}%`}
-                      </span>
-                    </div>
-                  )}
-                </div>
-
-                <div className="af-lib-row-controls">
-                  {canEditStatus ? (
-                    <AfSelect
-                      className="af-lib-row-status"
-                      ariaLabel={`Status for ${item.title}`}
-                      value={status}
-                      disabled={busy}
-                      options={statusOptions}
-                      onChange={value => void handleStatusChange(item, value as WatchStatus)}
-                    />
-                  ) : (
-                    <span className="af-meta">{labels[status]}</span>
-                  )}
-                  <AfSelect
-                    className="af-lib-row-rating"
-                    ariaLabel={`Rating for ${item.title}`}
-                    value={String(score)}
-                    disabled={busy}
-                    options={inlineRatingOptions}
-                    onChange={value => void controls.rate(item, Number(value))}
-                  />
-                  <FolderPickerPopover itemKey={item.key} itemTitle={item.title} controls={controls} compact />
-                  {item.type !== 'comic' && (() => {
-                    const isArchive = Boolean(item.archiveId) || !Number.isSafeInteger(item.id) || !/^(movie|tv)-\d+$/.test(item.key);
-                    const targetHref = isArchive
-                      ? playerHref(`edition/${encodeURIComponent(item.key)}/watch`)
-                      : item.type === 'tv'
-                        ? playHref(item, resumeFor(library, item)?.episode ?? { season: 1, number: 1 })
-                        : playHref(item);
-                    return (
-                      <a className="af-icon-button" href={targetHref} aria-label={`Play ${item.title}`} title="Play">
-                        <Icon name="play" />
-                      </a>
-                    );
-                  })()}
-                  <button
-                    type="button"
-                    className="af-icon-button af-lib-row-remove"
-                    aria-label={`Remove ${item.title} from ${mode === 'reading' ? 'Reading' : 'Library'}`}
-                    title="Remove"
-                    disabled={busy}
-                    onClick={() => void controls.toggleSaved(item)}
-                  >
-                    <Icon name="close" />
-                  </button>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      )}
+      {itemsContent}
     </div>
   );
 }

@@ -11,13 +11,13 @@ export interface ConfirmOptions {
 
 export type ConfirmFn = (options: ConfirmOptions) => Promise<boolean>;
 
-const ConfirmContext = createContext<ConfirmFn>(async () => true);
+const ConfirmContext = createContext<ConfirmFn>(() => Promise.resolve(true));
 
 export function useConfirm() {
   return useContext(ConfirmContext);
 }
 
-export function ConfirmProvider({ children }: { children: ReactNode }) {
+export function ConfirmProvider({ children }: Readonly<{ children: ReactNode }>) {
   const [request, setRequest] = useState<ConfirmOptions | null>(null);
   const resolver = useRef<((confirmed: boolean) => void) | null>(null);
   const invoker = useRef<HTMLElement | null>(null);

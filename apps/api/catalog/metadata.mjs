@@ -111,7 +111,12 @@ export async function imdbRating(id, strict = false) {
     const score = Number(data.imdbRating);
     const votes = Number(String(data.imdbVotes || '').replaceAll(',', ''));
     return score > 0 && score <= 10 && Number.isInteger(votes) && votes > 0 ? { score, votes } : null;
-  }).catch(error => { if (strict) throw error; return null; });
+  }).catch(error => {
+    if (strict) {
+      throw error;
+    }
+    return null;
+  });
 }
 
 function requestOmdb(key, id) {
@@ -143,9 +148,8 @@ export async function validateOmdbKey(key) {
   return { status: 502, error: 'OMDb could not verify the API key. Try again later.' };
 }
 
-export async function cachedRatings(keys) {
+function collectMemoryRatings(keys, now) {
   const ratings = {};
-  const now = Date.now();
   const missing = [];
   for (const key of keys) {
     const details = peekMetadata(`title:v2:${key}:`) || peekMetadata(`title:${key}:`) || peekMetadata(`basic:${key}:`);
@@ -158,6 +162,20 @@ export async function cachedRatings(keys) {
       missing.push(key);
     }
   }
+  return { ratings, missing };
+}
+
+function recordMissingRating(key, now) {
+  if (missingRatings.size >= missingRatingsLimit) {
+    const oldest = missingRatings.keys().next().value;
+    if (oldest) missingRatings.delete(oldest);
+  }
+  missingRatings.set(key, now + missingRatingsTtl);
+}
+
+export async function cachedRatings(keys) {
+  const now = Date.now();
+  const { ratings, missing } = collectMemoryRatings(keys, now);
   if (!missing.length) return ratings;
   const result = await dbQuery(`SELECT regexp_replace(t.cache_key, '^(?:title:v2:|title:|basic:)|:$', '', 'g') AS title, r.payload
     FROM afterframe_metadata t JOIN afterframe_metadata r ON r.cache_key =
@@ -166,18 +184,19 @@ export async function cachedRatings(keys) {
     ORDER BY t.expires_at`,
   [missing.flatMap(key => [`title:v2:${key}:`, `title:${key}:`, `basic:${key}:`])]);
   for (const row of result?.rows || []) ratings[row.title.replace(':', '-')] = row.payload;
-  if (result) {
-    for (const key of missing) {
-      if (!ratings[key.replace(':', '-')]) {
-        if (missingRatings.size >= missingRatingsLimit) {
-          const oldest = missingRatings.keys().next().value;
-          if (oldest) missingRatings.delete(oldest);
-        }
-        missingRatings.set(key, now + missingRatingsTtl);
-      }
-    }
+  if (!result) return ratings;
+  for (const key of missing) {
+    if (!ratings[key.replace(':', '-')]) recordMissingRating(key, now);
   }
   return ratings;
+}
+
+async function refreshMetadataRows(rows, refreshTitle, index = 0) {
+  if (index >= rows.length) return;
+  const key = rows[index].cache_key;
+  if (key.startsWith('imdb:')) await imdbRating(key.slice(5));
+  else await refreshTitle(key).catch(() => {});
+  await refreshMetadataRows(rows, refreshTitle, index + 1);
 }
 
 export function refreshMetadataPeriodically(refreshTitle) {
@@ -188,10 +207,7 @@ export function refreshMetadataPeriodically(refreshTitle) {
       WHERE (cache_key LIKE 'title:v2:%' OR cache_key LIKE 'imdb:%')
       AND expires_at <= now() AND expires_at >= $1
       ORDER BY expires_at LIMIT 12`, [new Date(Date.now() - refreshWindow)]);
-    for (const { cache_key: key } of result?.rows || []) {
-      if (key.startsWith('imdb:')) await imdbRating(key.slice(5));
-      else await refreshTitle(key).catch(() => {});
-    }
+    await refreshMetadataRows(result?.rows || [], refreshTitle);
   }, 30 * 60000);
   timer.unref();
   return () => clearInterval(timer);

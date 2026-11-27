@@ -5,8 +5,8 @@ import { weebIdSource } from '@afterframe/shared/comic-ids';
 const origin = 'https://weebcentral.com';
 const minute = 60_000;
 const imageHosts = new Set(['hot.planeptune.us', 'official.lowee.us']);
-const seriesLink = new RegExp(`href="(?:https://weebcentral\\.com)?/series/(${weebIdSource})(?:/[^"/]*)?"`, 'i');
-const chapterLink = new RegExp(`<a\\b[^>]*\\bhref="(?:https://weebcentral\\.com)?/chapters/(${weebIdSource})"[^>]*>([\\s\\S]*?)</a>`, 'gi');
+const seriesLink = new RegExp(String.raw`href="(?:https://weebcentral\.com)?/series/(${weebIdSource})(?:/[^"/]*)?"`, 'i');
+const chapterLink = new RegExp(String.raw`<a\b[^>]*\bhref="(?:https://weebcentral\.com)?/chapters/(${weebIdSource})"[^>]*>([\s\S]*?)</a>`, 'gi');
 const httpsImage = /^\/manga\/(?:[^/]+\/)+[^/]+\.(?:png|jpe?g|webp|gif|avif)$/i;
 let nextRequestAt = 0;
 
@@ -25,10 +25,10 @@ function searchSeries(query) {
     const params = new URLSearchParams({ text, adult: 'False', display_mode: 'Full Display', sort: 'Popularity', order: 'Descending', official: 'Any', offset: '0' });
     const result = await html(`/search/data?${params}`);
     return result.split(/<article\b[^>]*class="bg-base-300\b[^>]*>/i).slice(1).flatMap(card => {
-      const id = card.match(seriesLink)?.[1];
-      const title = card.match(/\balt="([^"]+?) cover"/i)?.[1];
-      const format = card.match(/<strong>Type:<\/strong>\s*<span>\s*(Manga|Manhwa|Manhua)\s*<\/span>/i)?.[1]?.toLowerCase();
-      const year = card.match(/<strong>Year:<\/strong>\s*<span>\s*(\d{4})\s*<\/span>/i)?.[1];
+      const id = seriesLink.exec(card)?.[1];
+      const title = /\balt="([^"]+?) cover"/i.exec(card)?.[1];
+      const format = /<strong>Type:<\/strong>\s*<span>\s*(Manga|Manhwa|Manhua)\s*<\/span>/i.exec(card)?.[1]?.toLowerCase();
+      const year = /<strong>Year:<\/strong>\s*<span>\s*(\d{4})\s*<\/span>/i.exec(card)?.[1];
       return id && title && format ? [{ id, title: decodeHtml(title), format, year: Number(year) || null }] : [];
     });
   });
@@ -52,20 +52,33 @@ function findSeries(item) {
   });
 }
 
+function parseChapterLabel(label) {
+  const prefix = /^(?:chapter|episode)\s+(\d+(?:\.\d+)?)/i.exec(label);
+  if (!prefix) return null;
+  const rest = label.slice(prefix[0].length);
+  if (!rest) return { number: prefix[1], title: '' };
+  const trimmed = rest.trimStart();
+  if (!trimmed.startsWith(':')) return null;
+  const title = trimmed.slice(1).trimStart();
+  if (/[\r\n]/.test(title)) return null;
+  return { number: prefix[1], title };
+}
+
 export async function weebChapters(item) {
   if (item.format === 'comic') return [];
   const series = await findSeries(item);
   if (!series) return [];
   return cacheMetadata(`comics:weeb:chapters:${series}`, 5 * minute, async () => {
     const result = await html(`/series/${series}/full-chapter-list`);
-    const chapters = Array.from(result.matchAll(chapterLink)).flatMap(([, id, row]) => {
-      const rawLabel = row.match(/<span\b[^>]*class="[^"]*\bgrow\s+flex\b[^"]*"[^>]*>\s*<span\b[^>]*>([^<]+)<\/span>/i)?.[1];
+    const matches = Array.from(result.matchAll(chapterLink));
+    const chapters = matches.flatMap(([, id, row]) => {
+      const rawLabel = /<span\b[^>]*class="[^"]*\bgrow\s+flex\b[^"]*"[^>]*>\s*<span\b[^>]*>([^<]+)<\/span>/i.exec(row)?.[1];
       if (!rawLabel) return [];
       const label = decodeHtml(rawLabel);
-      const numbered = label.match(/^(?:chapter|episode)\s+(\d+(?:\.\d+)?)(?:\s*:\s*(.*))?$/i);
-      return [{ id: `weeb-${id.toLowerCase()}`, label, number: numbered?.[1] ?? null, title: numbered?.[2] || '', language: 'en', groups: [] }];
+      const numbered = parseChapterLabel(label);
+      return [{ id: `weeb-${id.toLowerCase()}`, label, number: numbered?.number ?? null, title: numbered?.title || '', language: 'en', groups: [] }];
     });
-    if (!chapters.length && result.match(chapterLink)?.length) throw new Error('Weeb Central chapters are temporarily unavailable.');
+    if (!chapters.length && matches.length) throw new Error('Weeb Central chapters are temporarily unavailable.');
     return chapters.reverse();
   });
 }
@@ -76,7 +89,7 @@ export function weebPageList(chapterId) {
     const images = [];
     for (const [tag] of result.matchAll(/<img\b[^<>]{1,1000}>/gi)) {
       if (!/\balt="Page \d+"/i.test(tag)) continue;
-      const src = tag.match(/\bsrc="([^"]+)"/i)?.[1];
+      const src = /\bsrc="([^"]+)"/i.exec(tag)?.[1];
       if (!src) { images.push(null); continue; }
       const url = URL.parse(decodeHtml(src));
       images.push(url?.protocol === 'https:' && !url.port && !url.username && !url.password && !url.search && !url.hash

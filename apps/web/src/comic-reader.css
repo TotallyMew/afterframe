@@ -604,7 +604,22 @@
   -webkit-backdrop-filter: blur(16px);
   box-shadow: 0 24px 64px #000b;
   overflow: hidden;
-  animation: af-reader-modal-in 180ms cubic-bezier(.22, 1, .36, 1) both;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .af-reader-modal {
+    animation: af-reader-modal-in 180ms cubic-bezier(.22, 1, .36, 1) both;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .af-reader-modal-scrim {
+    animation: none;
+  }
+
+  .af-reader-float {
+    transition: none;
+  }
 }
 
 @keyframes af-reader-fade {

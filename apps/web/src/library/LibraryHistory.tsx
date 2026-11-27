@@ -20,7 +20,7 @@ function groupHeading(timestamp: number, now = Date.now()): string {
   return monthYear.format(date);
 }
 
-export function LibraryHistory({ controls }: { controls: LibraryControls }) {
+export function LibraryHistory({ controls }: Readonly<{ controls: LibraryControls }>) {
   const confirmAction = useConfirm();
   const { notify } = useToast();
   const [search, setSearch] = useState('');
@@ -110,13 +110,13 @@ export function LibraryHistory({ controls }: { controls: LibraryControls }) {
             onChange={event => setSearch(event.target.value)}
           />
         </label>
-        <div className="af-filters" role="group" aria-label="Filter history">
+        <fieldset className="af-filters" aria-label="Filter history">
           {([['all', 'All'], ['movie', 'Movies'], ['tv', 'TV Shows'], ['completed', 'Completed']] as const).map(([value, label]) => (
             <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)}>
               {label}
             </button>
           ))}
-        </div>
+        </fieldset>
         <button
           type="button"
           className="af-button af-secondary af-lib-clear-btn"

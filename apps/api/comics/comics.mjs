@@ -8,7 +8,7 @@ import { weebChapters, weebPageList } from './weebcentral.mjs';
 
 const comicIdPattern = new RegExp(`^${comicIdSource}$`, 'i');
 const mangaRoute = new RegExp(`^/api/comics/(${comicIdSource})(?:/(chapters|related)(?:/(${comicChapterIdSource}))?)?$`, 'i');
-const comicPagePath = new RegExp(`^/comic-page/(${comicIdSource})/(${comicChapterIdSource})/([1-9]\\d{0,3})$`);
+const comicPagePath = new RegExp(String.raw`^/comic-page/(${comicIdSource})/(${comicChapterIdSource})/([1-9]\d{0,3})$`);
 const chapterSources = [
   { language: 'en', prefix: 'weeb-', chapters: weebChapters, pages: (_item, id) => weebPageList(id) },
   { language: 'en', prefix: 'scans-', chapters: scansChapters, pages: scansPageList },
@@ -17,8 +17,8 @@ const chapterSources = [
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif']);
 const formatLanguages = { manga: ['ja'], manhwa: ['ko'], manhua: ['zh', 'zh-hk'] };
 const contentRatings = ['safe', 'suggestive'];
-const publicationStatuses = ['ongoing', 'completed', 'hiatus', 'cancelled'];
-const coverPath = new RegExp(`^/comic-cover/(${comicIdSource}/${comicIdSource}\\.(?:jpe?g|png|webp)\\.(?:256|512)\\.jpg)$`, 'i');
+const publicationStatuses = new Set(['ongoing', 'completed', 'hiatus', 'cancelled']);
+const coverPath = new RegExp(String.raw`^/comic-cover/(${comicIdSource}/${comicIdSource}\.(?:jpe?g|png|webp)\.(?:256|512)\.jpg)$`, 'i');
 const catalogSorts = {
   popular: ['followedCount', 'desc'],
   // MangaDex has no trending order, so rank the most-followed titles added in the trending window.
@@ -38,7 +38,9 @@ const chaptersPerPage = 50;
 const feedLimit = 500;
 const maxFeed = 10_000;
 const blockedGroups = new Set((process.env.MANGADEX_BLOCKED_GROUPS || '').toLowerCase().split(/[\s,]+/).filter(Boolean));
-const blockedGroupKey = [...blockedGroups].sort().join(',');
+const blockedGroupList = [...blockedGroups];
+blockedGroupList.sort((a, b) => a.localeCompare(b));
+const blockedGroupKey = blockedGroupList.join(',');
 const minute = 60_000;
 const pageManifests = new Map();
 const pendingManifests = new Map();
@@ -157,7 +159,8 @@ async function browse(search) {
   const params = catalogParams(['cover_art']);
   params.set('offset', String(pagination.offset));
   params.set('limit', String(pagination.limit));
-  const [order, direction] = Object.hasOwn(catalogSorts, sort) ? catalogSorts[sort] : query ? catalogSorts.relevance : catalogSorts.popular;
+  const defaultSort = query ? catalogSorts.relevance : catalogSorts.popular;
+  const [order, direction] = Object.hasOwn(catalogSorts, sort) ? catalogSorts[sort] : defaultSort;
   params.set(`order[${order}]`, direction);
   if (sort === 'trending') {
     // Round to the day so the cache key stays stable.
@@ -167,7 +170,7 @@ async function browse(search) {
   if (readableOnlySorts.has(sort)) params.set('hasAvailableChapters', 'true');
   if (query) params.set('title', query);
   if (new RegExp(`^${comicIdSource}$`, 'i').test(genre)) params.set('includedTags[]', genre);
-  if (publicationStatuses.includes(status)) params.set('status[]', status);
+  if (publicationStatuses.has(status)) params.set('status[]', status);
   for (const language of Object.hasOwn(formatLanguages, format) ? formatLanguages[format] : []) params.append('originalLanguage[]', language);
   const result = await cacheMetadata(`comics:browse:${params}`, 15 * minute, () => mangaDex('/manga', params));
   const latest = await latestChapters(result.data).catch(() => ({}));
@@ -194,7 +197,8 @@ function withLatest(item, release) {
 
 // One batched lookup resolves the release date and number of each title's newest chapter.
 async function latestChapters(entries) {
-  const ids = [...new Set(entries.map(entry => entry.attributes.latestUploadedChapter).filter(id => uuidPattern.test(id ?? '')))].sort();
+  const ids = [...new Set(entries.map(entry => entry.attributes.latestUploadedChapter).filter(id => uuidPattern.test(id ?? '')))];
+  ids.sort((a, b) => a.localeCompare(b));
   if (!ids.length) return {};
   return cacheMetadata(`comics:latest:${ids.join(',')}`, 10 * minute, async () => {
     const params = catalogParams([]);
@@ -247,18 +251,25 @@ async function details(id) {
   return { ...comic(result.data), aliases, romanized, spanish };
 }
 
+function trimTrailingZeros(value) {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '0') end--;
+  return value.slice(0, end);
+}
+
 function chapterNumber(value) {
   const number = /^(\d+)(?:\.(\d+))?$/.exec(value);
   if (!number) return value;
   const [, whole, fraction] = number;
   const integer = whole.replace(/^0+(?=\d)/, '');
-  const trimmedFraction = fraction ? fraction.replace(/0+$/, '') : '';
+  const trimmedFraction = fraction ? trimTrailingZeros(fraction) : '';
   return trimmedFraction ? `${integer}.${trimmedFraction}` : integer;
 }
 
 function chapter({ id, attributes, relationships }) {
   const groups = relationships.filter(entry => entry.type === 'scanlation_group');
-  if (attributes.externalUrl || !(attributes.pages > 0) || attributes.isUnavailable
+  const pages = Number(attributes.pages);
+  if (attributes.externalUrl || Number.isNaN(pages) || pages <= 0 || attributes.isUnavailable
     || groups.some(group => blockedGroups.has(group.id.toLowerCase()))) return null;
   const label = attributes.chapter == null ? attributes.title || 'Oneshot' : `Chapter ${attributes.chapter}`;
   const released = attributes.readableAt || attributes.publishAt;
@@ -295,10 +306,10 @@ function nativeChapters(id, language) {
     const pages = new Array(offsets.length);
     let cursor = 0;
     const worker = async () => {
-      while (cursor < offsets.length) {
-        const idx = cursor++;
-        pages[idx] = await nativeChapterFeed(id, language, offsets[idx]);
-      }
+      if (cursor >= offsets.length) return;
+      const idx = cursor++;
+      pages[idx] = await nativeChapterFeed(id, language, offsets[idx]);
+      return worker();
     };
     await Promise.all(Array.from({ length: Math.min(4, offsets.length) }, worker));
     for (const page of pages) {
@@ -338,17 +349,8 @@ async function chapterCollection(item, language) {
   };
 }
 
-async function chapters(item, search) {
-  const requested = search.get('lang');
-  const all = search.get('all') === '1';
-  let language = requested || 'en';
-  if (!languagePattern.test(language)) throw failure(400, 'Choose a valid chapter language.');
-  if (search.get('scope') === 'native') {
-    const { entries } = await nativeChapterFeed(item.id, language);
-    const combined = combineChapters(entries, []);
-    return { results: (all ? combined : combined.slice(0, chaptersPerPage)).flat(), totalChapters: combined.length, language, preview: true };
-  }
-  let { page } = paging(search, chaptersPerPage);
+async function resolveChapterCollection(item, requested, initialLanguage) {
+  let language = initialLanguage;
   let { groups, error } = await chapterCollection(item, language);
   if (!groups.length && !requested && item.languages.some(code => code !== language)) {
     const available = await sampleChapter(item.id);
@@ -358,29 +360,72 @@ async function chapters(item, search) {
     }
   }
   if (!groups.length && error) throw error;
-  const focus = search.get('chapter');
-  const focusedIndex = focus && comicChapterIdPattern.test(focus)
-    ? groups.findIndex(group => group.some(entry => entry.id === focus)) : -1;
-  const pageOf = index => Math.floor(index / chaptersPerPage) + 1;
-  if (focusedIndex >= 0) page = pageOf(focusedIndex);
-  const pageCount = Math.ceil(groups.length / chaptersPerPage);
-  page = Math.min(page, pageCount || 1);
-  const offset = (page - 1) * chaptersPerPage;
+  return { groups, language, error };
+}
+
+function chapterPageOf(index) {
+  return Math.floor(index / chaptersPerPage) + 1;
+}
+
+function buildChapterRanges(groups, pageCount, all) {
+  if (all) return [];
   const rangeLabel = ([entry]) => entry.number ?? entry.label;
-  const ranges = all ? [] : Array.from({ length: pageCount }, (_, index) => {
+  return Array.from({ length: pageCount }, (_, index) => {
     const first = index * chaptersPerPage;
     const last = Math.min(first + chaptersPerPage, groups.length) - 1;
     return { start: rangeLabel(groups[first]), end: rangeLabel(groups[last]) };
   });
-  const chapterLink = index => groups[index] ? { entry: groups[index][0], page: all ? 1 : pageOf(index) } : null;
+}
+
+function buildChapterNeighbors(groups, focusedIndex, all) {
+  if (focusedIndex < 0) return null;
+  const chapterLink = index => {
+    if (!groups[index]) return null;
+    return { entry: groups[index][0], page: all ? 1 : chapterPageOf(index) };
+  };
+  return { previous: chapterLink(focusedIndex - 1), next: chapterLink(focusedIndex + 1) };
+}
+
+function findFocusedChapterIndex(groups, focus) {
+  if (!focus || !comicChapterIdPattern.test(focus)) return -1;
+  return groups.findIndex(group => group.some(entry => entry.id === focus));
+}
+
+function formatChapterPage({ groups, language, error, requestedPage, focus, all }) {
+  const focusedIndex = findFocusedChapterIndex(groups, focus);
+  const pageCount = Math.ceil(groups.length / chaptersPerPage);
+  const activePage = focusedIndex >= 0 ? chapterPageOf(focusedIndex) : requestedPage;
+  const page = Math.min(activePage, pageCount || 1);
+  const offset = (page - 1) * chaptersPerPage;
+  const visibleGroups = all ? groups : groups.slice(offset, offset + chaptersPerPage);
   return {
-    results: (all ? groups : groups.slice(offset, offset + chaptersPerPage)).flat(),
-    language, page: all ? 1 : page, pageCount: all ? 1 : pageCount, ranges,
-    totalChapters: groups.length, nextPage: !all && page < pageCount ? page + 1 : null,
+    results: visibleGroups.flat(),
+    language,
+    page: all ? 1 : page,
+    pageCount: all ? 1 : pageCount,
+    ranges: buildChapterRanges(groups, pageCount, all),
+    totalChapters: groups.length,
+    nextPage: !all && page < pageCount ? page + 1 : null,
     mainChapters: groups.filter(([entry]) => /^\d+$/.test(entry.number ?? '')).length,
-    neighbors: focusedIndex >= 0 ? { previous: chapterLink(focusedIndex - 1), next: chapterLink(focusedIndex + 1) } : null,
+    neighbors: buildChapterNeighbors(groups, focusedIndex, all),
     partial: Boolean(error),
   };
+}
+
+async function chapters(item, search) {
+  const requested = search.get('lang');
+  const all = search.get('all') === '1';
+  const initialLanguage = requested || 'en';
+  if (!languagePattern.test(initialLanguage)) throw failure(400, 'Choose a valid chapter language.');
+  if (search.get('scope') === 'native') {
+    const { entries } = await nativeChapterFeed(item.id, initialLanguage);
+    const combined = combineChapters(entries, []);
+    const visible = all ? combined : combined.slice(0, chaptersPerPage);
+    return { results: visible.flat(), totalChapters: combined.length, language: initialLanguage, preview: true };
+  }
+  const { page } = paging(search, chaptersPerPage);
+  const { groups, language, error } = await resolveChapterCollection(item, requested, initialLanguage);
+  return formatChapterPage({ groups, language, error, requestedPage: page, focus: search.get('chapter'), all });
 }
 
 function chapterSource(id) {
@@ -533,20 +578,32 @@ async function relatedComics(item) {
   });
 }
 
+function parseChapterCandidate(entry, key) {
+  const candidate = typeof entry?.chapter === 'string' ? entry.chapter.trim() : key.trim();
+  if (!/^\d+(?:\.\d+)?$/.test(candidate)) return 0;
+  const numeric = Number(candidate);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function scanVolumeChapters(volume) {
+  if (!volume?.chapters || typeof volume.chapters !== 'object') return { entries: 0, maxChapter: 0 };
+  let maxChapter = 0;
+  const chapterEntries = Object.entries(volume.chapters);
+  for (const [key, entry] of chapterEntries) {
+    const numeric = parseChapterCandidate(entry, key);
+    if (numeric > maxChapter) maxChapter = numeric;
+  }
+  return { entries: chapterEntries.length, maxChapter };
+}
+
 function extractAggregateChapterCount(aggregate) {
   const volumes = aggregate?.volumes && typeof aggregate.volumes === 'object' ? Object.values(aggregate.volumes) : [];
   let maxChapter = 0;
   let chapterEntries = 0;
   for (const volume of volumes) {
-    const chapterMap = volume?.chapters && typeof volume.chapters === 'object' ? volume.chapters : null;
-    if (!chapterMap) continue;
-    for (const [key, entry] of Object.entries(chapterMap)) {
-      chapterEntries++;
-      const candidate = typeof entry?.chapter === 'string' ? entry.chapter.trim() : key.trim();
-      if (!/^\d+(?:\.\d+)?$/.test(candidate)) continue;
-      const numeric = Number(candidate);
-      if (Number.isFinite(numeric) && numeric > maxChapter) maxChapter = numeric;
-    }
+    const stats = scanVolumeChapters(volume);
+    chapterEntries += stats.entries;
+    if (stats.maxChapter > maxChapter) maxChapter = stats.maxChapter;
   }
   if (maxChapter >= 1) return String(Math.floor(maxChapter));
   return chapterEntries > 0 ? String(chapterEntries) : null;
@@ -569,18 +626,40 @@ async function chapterCounts(search) {
   let cursor = 0;
   let rateLimited = false;
   const worker = async () => {
-    while (cursor < ids.length && !rateLimited) {
-      const id = ids[cursor++];
-      try {
-        const count = await mangaChapterCount(id);
-        if (count) counts[id] = count;
-      } catch (error) {
-        if (error?.status === 429) rateLimited = true;
-      }
+    if (cursor >= ids.length || rateLimited) return;
+    const id = ids[cursor++];
+    try {
+      const count = await mangaChapterCount(id);
+      if (count) counts[id] = count;
+    } catch (error) {
+      if (error?.status === 429) rateLimited = true;
     }
+    return worker();
   };
   await Promise.all(Array.from({ length: Math.min(3, ids.length) }, worker));
   return { counts };
+}
+
+async function handleComicItemRoute(match, search) {
+  const [, id, subroute, chapterId] = match.map(value => value?.toLowerCase());
+  if (subroute === 'related' && chapterId) throw failure(404, 'Comics route unavailable.');
+  const source = chapterId && chapterSource(chapterId);
+  if (subroute === 'chapters' && chapterId && !source) {
+    const [, body] = await Promise.all([details(id), pages(id, chapterId)]);
+    return chapterPayload(id, chapterId, body);
+  }
+  const item = await details(id);
+  if (subroute === 'related') {
+    return { status: 200, body: { results: await relatedComics(item) } };
+  }
+  if (subroute === 'chapters' && chapterId) {
+    return chapterPayload(id, chapterId, await alternatePages(item, chapterId, source));
+  }
+  if (subroute === 'chapters') return { status: 200, body: await chapters(item, search) };
+  const { aliases, romanized, spanish, ...body } = item;
+  const languages = new Set(['en', ...body.languages]);
+  if (item.format !== 'comic') languages.add('es');
+  return { status: 200, body: { ...body, languages: [...languages], defaultLanguage: 'en' } };
 }
 
 export async function comicsApi(pathname, search) {
@@ -589,27 +668,9 @@ export async function comicsApi(pathname, search) {
     if (pathname === '/api/comics/genres') return { status: 200, body: { genres: await genres() } };
     if (pathname === '/api/comics/updates') return { status: 200, body: { results: await cacheMetadata(`comics:readable-updates:${blockedGroupKey}`, 5 * minute, recentComics) } };
     if (pathname === '/api/comics/counts') return { status: 200, body: await chapterCounts(search) };
-    const match = pathname.match(mangaRoute);
+    const match = mangaRoute.exec(pathname);
     if (!match) throw failure(404, 'Comics route unavailable.');
-    const [, id, subroute, chapterId] = match.map(value => value?.toLowerCase());
-    if (subroute === 'related' && chapterId) throw failure(404, 'Comics route unavailable.');
-    const source = chapterId && chapterSource(chapterId);
-    if (subroute === 'chapters' && chapterId && !source) {
-      const [, body] = await Promise.all([details(id), pages(id, chapterId)]);
-      return chapterPayload(id, chapterId, body);
-    }
-    const item = await details(id);
-    if (subroute === 'related') {
-      return { status: 200, body: { results: await relatedComics(item) } };
-    }
-    if (subroute === 'chapters' && chapterId) {
-      return chapterPayload(id, chapterId, await alternatePages(item, chapterId, source));
-    }
-    if (subroute === 'chapters') return { status: 200, body: await chapters(item, search) };
-    const { aliases, romanized, spanish, ...body } = item;
-    const languages = new Set(['en', ...body.languages]);
-    if (item.format !== 'comic') languages.add('es');
-    return { status: 200, body: { ...body, languages: [...languages], defaultLanguage: 'en' } };
+    return await handleComicItemRoute(match, search);
   } catch (error) {
     return { status: error.status || 502, body: { error: error.status ? error.message : 'The comic source is temporarily unavailable.' } };
   }

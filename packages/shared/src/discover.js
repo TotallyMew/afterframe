@@ -44,20 +44,16 @@ export function catalogFilters(params) {
   };
 }
 
-export function discoverParams(type, { category, decade, sort, from = 0, to = 0, runtime }, collection = '') {
-  const date = type === 'tv' ? 'first_air_date' : 'primary_release_date';
+function applyDateBounds(results, date, { decade, sort, from, to }) {
   const today = new Date().toISOString().slice(0, 10);
-  const results = {
-    sort_by: { popular: 'popularity.desc', top: 'vote_average.desc', newest: `${date}.desc`, oldest: `${date}.asc` }[sort],
-  };
-  if (sort === 'top') results['vote_count.gte'] = type === 'tv' ? '150' : '300';
   const lowerYear = Math.max(decade || 0, from);
   const upperYear = Math.min(decade ? decade + 9 : Infinity, to || Infinity);
   if (sort === 'oldest' || lowerYear) results[`${date}.gte`] = `${lowerYear || 1888}-01-01`;
-  if (category) results.with_genres = browseGenres[category].join('|');
-  if (category === 'Anime') results.with_original_language = 'ja';
   const upper = Number.isFinite(upperYear) ? `${upperYear}-12-31` : today;
   results[`${date}.lte`] = upper < today ? upper : today;
+}
+
+function applyCollectionParams(results, type, date, collection) {
   if (collection === 'new') {
     const start = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
     if (!results[`${date}.gte`] || results[`${date}.gte`] < start) results[`${date}.gte`] = start;
@@ -66,9 +62,25 @@ export function discoverParams(type, { category, decade, sort, from = 0, to = 0,
   if (collection === 'gems') {
     Object.assign(results, { sort_by: 'vote_average.desc', 'vote_count.gte': '250', 'vote_count.lte': '2500', 'vote_average.gte': '7' });
   }
+}
+
+function applyRuntimeParams(results, runtime) {
   const range = runtimeRanges[runtime];
   if (range?.min) results['with_runtime.gte'] = range.min;
   if (range?.max) results['with_runtime.lte'] = range.max;
+}
+
+export function discoverParams(type, { category, decade, sort, from = 0, to = 0, runtime }, collection = '') {
+  const date = type === 'tv' ? 'first_air_date' : 'primary_release_date';
+  const results = {
+    sort_by: { popular: 'popularity.desc', top: 'vote_average.desc', newest: `${date}.desc`, oldest: `${date}.asc` }[sort],
+  };
+  if (sort === 'top') results['vote_count.gte'] = type === 'tv' ? '150' : '300';
+  if (category) results.with_genres = browseGenres[category].join('|');
+  if (category === 'Anime') results.with_original_language = 'ja';
+  applyDateBounds(results, date, { decade, sort, from, to });
+  applyCollectionParams(results, type, date, collection);
+  applyRuntimeParams(results, runtime);
   return results;
 }
 

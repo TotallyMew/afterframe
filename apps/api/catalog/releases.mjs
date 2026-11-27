@@ -37,6 +37,44 @@ async function verifiedAnnouncements() {
   });
 }
 
+async function processAnnouncements(announcements, targets, index = 0) {
+  if (index >= announcements.length) return;
+  const { seriesId, season, source } = announcements[index];
+  const followers = targets.get(seriesId);
+  if (followers) {
+    await storeReleaseEvents(seriesId, followers, previous => ({
+      snapshot: previous,
+      events: [{
+        key: `verified-${seriesId}-s${season}`,
+        message: `Season ${season} was announced.`,
+        preference: 'notifySeasonSchedules',
+        source,
+      }],
+    }));
+  }
+  await processAnnouncements(announcements, targets, index + 1);
+}
+
+async function checkSeriesRelease(seriesId, followers, loadDetails, loadSeason) {
+  try {
+    const details = await loadDetails(seriesId);
+    const now = new Date();
+    const last = details.last_episode_to_air;
+    const baseline = await releaseSnapshot(seriesId);
+    const change = releaseEvents(seriesId, last, baseline, now);
+    const crossedMultiple = change.events.length && last.episode_number > (last.season_number === baseline.season ? baseline.episode + 1 : 1);
+    const confirmed = crossedMultiple ? (await loadSeason(seriesId, last.season_number).catch(() => null))?.episodes || [] : [];
+    await storeReleaseEvents(seriesId, followers, previous => releaseEvents(seriesId, last, previous, now, confirmed));
+  } catch { /* Keep the previous baseline on a provider failure. */ }
+}
+
+async function checkSeriesBatch(batch, targets, loadDetails, loadSeason, index = 0) {
+  if (index >= batch.length) return;
+  const seriesId = batch[index];
+  await checkSeriesRelease(seriesId, targets.get(seriesId), loadDetails, loadSeason);
+  await checkSeriesBatch(batch, targets, loadDetails, loadSeason, index + 1);
+}
+
 export function monitorReleases(loadDetails, canLoad, loadSeason) {
   let cursor = 0;
   let running = false;
@@ -50,31 +88,16 @@ export function monitorReleases(loadDetails, canLoad, loadSeason) {
         console.error('Unable to load the verified announcement feed.');
         return [];
       });
-      for (const { seriesId, season, source } of announcements) {
-        const followers = targets.get(seriesId);
-        if (!followers) continue;
-        await storeReleaseEvents(seriesId, followers, previous => ({ snapshot: previous, events: [
-          { key: `verified-${seriesId}-s${season}`, message: `Season ${season} was announced.`, preference: 'notifySeasonSchedules', source },
-        ] }));
-      }
+      await processAnnouncements(announcements, targets);
       if (!canLoad() || !series.length) return;
       if (cursor >= series.length) cursor = 0;
-      for (const seriesId of series.slice(cursor, cursor + 20)) {
-        try {
-          const details = await loadDetails(seriesId);
-          const now = new Date();
-          const last = details.last_episode_to_air;
-          const baseline = await releaseSnapshot(seriesId);
-          const change = releaseEvents(seriesId, last, baseline, now);
-          const crossedMultiple = change.events.length && last.episode_number > (last.season_number === baseline.season ? baseline.episode + 1 : 1);
-          const confirmed = crossedMultiple ? (await loadSeason(seriesId, last.season_number).catch(() => null))?.episodes || [] : [];
-          await storeReleaseEvents(seriesId, targets.get(seriesId), previous => releaseEvents(seriesId, last, previous, now, confirmed));
-        } catch { /* Keep the previous baseline on a provider failure. */ }
-      }
+      await checkSeriesBatch(series.slice(cursor, cursor + 20), targets, loadDetails, loadSeason);
       cursor += 20;
     } finally { running = false; }
   }
-  const run = () => check().catch(() => console.error('Unable to check followed series releases.'));
+  const run = () => {
+    void check().catch(() => console.error('Unable to check followed series releases.'));
+  };
   const timer = setInterval(run, checkInterval);
   timer.unref();
   run();

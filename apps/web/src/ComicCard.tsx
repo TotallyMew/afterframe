@@ -8,7 +8,7 @@ export const comicStatusOptions = [['ongoing', 'Ongoing'], ['completed', 'Comple
 const fullDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 
 export function releasedAgo(iso?: string, now = Date.now()) {
-  const time = iso ? Date.parse(iso) : NaN;
+  const time = iso ? Date.parse(iso) : Number.NaN;
   if (Number.isNaN(time)) return '';
   const minutes = Math.max(0, Math.round((now - time) / 60_000));
   if (minutes < 1) return 'just now';
@@ -22,12 +22,14 @@ export function releasedAgo(iso?: string, now = Date.now()) {
   return `${Math.round(days / 365)}y ago`;
 }
 
-function LatestRelease({ item }: { item: Comic }) {
+function LatestRelease({ item }: Readonly<{ item: Comic }>) {
   const ago = releasedAgo(item.latestAt);
   if (!ago) return null;
   const chapter = item.latestChapter ? `Ch. ${item.latestChapter}` : 'Updated';
+  const chapterTitle = item.latestChapter ? `Chapter ${item.latestChapter}` : 'Latest chapter';
+  const releasedAt = fullDate.format(new Date(item.latestAt!));
   return <time className="af-poster-airing af-poster-latest" dateTime={item.latestAt}
-    title={`${item.latestChapter ? `Chapter ${item.latestChapter}` : 'Latest chapter'} released ${fullDate.format(new Date(item.latestAt!))}`}>
+    title={`${chapterTitle} released ${releasedAt}`}>
     {chapter} · {ago}
   </time>;
 }
@@ -54,9 +56,9 @@ export function comicFacts(item: Comic, includeChapters = true) {
   return [format, chapterLabel || item.year, status].filter(Boolean).join(' · ');
 }
 
-export function ComicCard({ item, controls, href, context, eager, onDismiss }: {
+export function ComicCard({ item, controls, href, context, eager, onDismiss }: Readonly<{
   item: Comic; controls: LibraryControls; href?: string; context?: string; eager?: boolean; onDismiss?: () => void;
-}) {
+}>) {
   const cover = comicCover(item.poster);
   return <article className="af-media-card"><a href={href || comicHref(item)}>
     <span className="af-poster">

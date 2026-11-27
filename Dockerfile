@@ -6,7 +6,7 @@ COPY packages/shared/package.json packages/shared/
 COPY apps/api/package.json apps/api/
 COPY apps/web/package.json apps/web/
 COPY afterframe/package.json afterframe/
-RUN npm ci --workspace=@afterframe/shared --workspace=@afterframe/web
+RUN npm ci --ignore-scripts --workspace=@afterframe/shared --workspace=@afterframe/web
 COPY packages/shared/ packages/shared/
 COPY apps/web/ apps/web/
 COPY afterframe/public/art/ afterframe/public/art/

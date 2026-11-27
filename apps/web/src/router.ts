@@ -3,11 +3,25 @@ const safeBackPattern = /^\/?(?:home|movies|movie|tv|new|anime|comics|comic|mang
 const nonSpaPrefixes = ['/api/', '/art/', '/assets/', '/icons/', '/stream/', '/comic-cover/', '/comic-page/'];
 const nonSpaExact = new Set(['/manifest.webmanifest', '/sw.js']);
 
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end--;
+  return value.slice(0, end);
+}
+
+function trimSlashes(value: string): string {
+  let start = 0;
+  while (start < value.length && value[start] === '/') start++;
+  let end = value.length;
+  while (end > start && value[end - 1] === '/') end--;
+  return value.slice(start, end);
+}
+
 export function normalizeRouteString(raw: string): string {
   const trimmed = raw.replace(/^[#/\\]+/, '');
   if (!trimmed || trimmed === 'home') return 'home';
   const [rawPath, rawQuery = ''] = trimmed.split('?', 2);
-  const path = rawPath.replace(/\/+$/, '') || 'home';
+  const path = stripTrailingSlashes(rawPath) || 'home';
   if (path.startsWith('search=')) {
     const q = new URLSearchParams(path).get('search') || '';
     const params = new URLSearchParams(rawQuery);
@@ -37,7 +51,7 @@ export function searchHref(query: string, extra?: Record<string, string>): strin
 export function currentLocationHref(): string {
   const { pathname, search, hash } = window.location;
   if ((pathname === '/' || pathname === '') && hash && hash !== '#main' && hash.startsWith('#')) {
-    const match = hash.match(legacyHashPattern);
+    const match = legacyHashPattern.exec(hash);
     if (match) return webHref(match[1]);
   }
   const cleanPath = pathname === '/home' ? '/' : pathname || '/';
@@ -47,10 +61,10 @@ export function currentLocationHref(): string {
 export function routeSnapshot(): string {
   const { pathname, search, hash } = window.location;
   if ((pathname === '/' || pathname === '') && hash && hash !== '#main' && hash.startsWith('#')) {
-    const match = hash.match(legacyHashPattern);
+    const match = legacyHashPattern.exec(hash);
     if (match) return normalizeRouteString(match[1]);
   }
-  const cleanPath = pathname.replace(/^\/+|\/+$/g, '');
+  const cleanPath = trimSlashes(pathname);
   if (!cleanPath || cleanPath === 'home') return search ? `home${search}` : 'home';
   return normalizeRouteString(`${cleanPath}${search}`);
 }

@@ -21,18 +21,26 @@ function first(value) {
   return Array.isArray(value) ? value[0] : value;
 }
 
+const licenseUrlPattern = /^https?:\/\/(?:www\.)?creativecommons\.org\/(licenses\/publicdomain|publicdomain\/(?:zero|mark)\/1\.0|licenses\/(?:by|by-sa|by-nd|by-nc|by-nc-sa|by-nc-nd)\/\d\.\d(?:\/[a-z]{2})?)\/?$/i;
+
 function cleanText(value, maxLength) {
-  return String(first(value) || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+  return String(first(value) || '').replace(/<[^<>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+}
+
+function formatLicenseName(code, version, region) {
+  if (code === 'zero') return 'CC0 1.0';
+  if (code === 'mark' || code === 'publicdomain') return 'Public domain';
+  const regionSuffix = region ? ` ${region.toUpperCase()}` : '';
+  return `CC ${code.toUpperCase()} ${version}${regionSuffix}`;
 }
 
 function licenseFor(value) {
   const raw = first(value);
-  const match = typeof raw === 'string' && raw.trim().match(/^https?:\/\/(?:www\.)?creativecommons\.org\/(licenses\/publicdomain|publicdomain\/(?:zero|mark)\/1\.0|licenses\/(?:by|by-sa|by-nd|by-nc|by-nc-sa|by-nc-nd)\/\d\.\d(?:\/[a-z]{2})?)\/?$/i);
+  const match = typeof raw === 'string' ? licenseUrlPattern.exec(raw.trim()) : null;
   if (!match) return null;
   const path = match[1].toLowerCase();
   const [, code, version, region] = path.split('/');
-  const name = code === 'zero' ? 'CC0 1.0' : code === 'mark' || code === 'publicdomain'
-    ? 'Public domain' : `CC ${code.toUpperCase()} ${version}${region ? ` ${region.toUpperCase()}` : ''}`;
+  const name = formatLicenseName(code, version, region);
   return [name, `https://creativecommons.org/${code === 'publicdomain' ? 'publicdomain/mark/1.0' : path}/`];
 }
 
@@ -66,9 +74,9 @@ function toTitle(document, group) {
   const tv = document.collection?.includes('classic_tv') && !document.collection?.includes('open-film-trust');
   if (/\b(trailer|teaser|commercial|featurettes|preview|sampler)\b/i.test(title)) return null;
   const subjects = Array.isArray(document.subject) ? document.subject.join('; ') : String(document.subject || '');
-  const categories = Object.entries(archiveCategories).filter(([, words]) => words.some(word => new RegExp(`\\b${word}\\b`, 'i').test(subjects))).map(([name]) => name);
+  const categories = Object.entries(archiveCategories).filter(([, words]) => words.some(word => new RegExp(String.raw`\b${word}\b`, 'i').test(subjects))).map(([name]) => name);
   return {
-    key: `archive-${id}`, archiveId: id, title, year: String(first(document.year) || first(document.date) || '').match(/^\d{4}/)?.[0],
+    key: `archive-${id}`, archiveId: id, title, year: /^\d{4}/.exec(String(first(document.year) || first(document.date) || ''))?.[0],
     type: tv ? 'tv' : 'movie', credit: cleanText(document.creator, 240), license, categories,
     poster: `https://archive.org/services/img/${encodeURIComponent(id)}`,
   };
@@ -83,7 +91,10 @@ export function searchArchive({ group = 'all', query = '', page = 1, filters = {
     const terms = words.map(word => `title:"${word}"`);
     if (filters.decade) terms.push(`date:[${filters.decade}-01-01 TO ${filters.decade + 9}-12-31]`);
     const subjects = archiveCategories[filters.category];
-    if (subjects) terms.push(`(${subjects.map(word => `subject:"${word}"`).join(' OR ')})`);
+    if (subjects) {
+      const subjectClause = subjects.map(word => `subject:"${word}"`).join(' OR ');
+      terms.push(`(${subjectClause})`);
+    }
     const url = new URL('/advancedsearch.php', origin);
     url.searchParams.set('q', ['mediatype:movies', 'licenseurl:*', collections[scope], ...terms].join(' AND '));
     for (const field of ['identifier', 'title', 'year', 'date', 'creator', 'collection', 'licenseurl', 'subject']) url.searchParams.append('fl[]', field);

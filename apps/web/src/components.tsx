@@ -20,7 +20,7 @@ const glyphs = {
   clock: <><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></>,
   settings: <><circle cx="12" cy="12" r="3" /><path d="M10 3h4l.7 2.8 2 .9 2.5-.9 2 3.5-1.9 2v2.1l1.9 2-2 3.5-2.5-.9-2 .9L14 21h-4l-.7-2.1-2-.9-2.5.9-2-3.5 1.9-2v-2.1l-1.9-2 2-3.5 2.5.9 2-.9z" /></>,
   eye: <><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" /></>,
-  book: <><path d="M12 6v15M3 5a9 9 0 0 1 9 1 9 9 0 0 1 9-1v14a9 9 0 0 0-9 2 9 9 0 0 0-9-2z" /></>,
+  book: <path d="M12 6v15M3 5a9 9 0 0 1 9 1 9 9 0 0 1 9-1v14a9 9 0 0 0-9 2 9 9 0 0 0-9-2z" />,
   film: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 4v16M17 4v16M3 9h4m-4 6h4m10-6h4m-4 6h4" /></>,
   home: <path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5.5v-6.5h-5V21H4a1 1 0 0 1-1-1z" />,
   bell: <><path d="M6 9a6 6 0 1 1 12 0c0 5 2 6.5 2 6.5H4S6 14 6 9" /><path d="M10 19a2 2 0 0 0 4 0" /></>,
@@ -31,7 +31,7 @@ const glyphs = {
   trailer: <><rect x="2.5" y="4.5" width="19" height="15" rx="2.5" /><path d="m10 9 5 3-5 3z" fill="currentColor" stroke="none" /></>,
 } satisfies Record<string, ReactNode>;
 
-export function Icon({ name }: { name: keyof typeof glyphs }) {
+export function Icon({ name }: Readonly<{ name: keyof typeof glyphs }>) {
   return <svg className="af-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{glyphs[name]}</svg>;
 }
 
@@ -41,30 +41,34 @@ export function Artwork({ fallback, src, decoding = 'async', ...props }: Compone
 }
 
 export function tmdbImageSet(src: string | undefined, widths: readonly number[]) {
-  const path = src?.match(/^https:\/\/image\.tmdb\.org\/t\/p\/w\d+(\/[a-z0-9]+\.(?:jpg|png|webp))$/i)?.[1];
-  if (path) return widths.map(width => `${imagePath(path, `w${width}`)} ${width}w`).join(', ');
+  const path = src ? /^https:\/\/image\.tmdb\.org\/t\/p\/w\d+(\/[a-z0-9]+\.(?:jpg|png|webp))$/i.exec(src)?.[1] : undefined;
+  if (!path) return;
+  return widths.map(width => {
+    const url = imagePath(path, `w${width}`);
+    return `${url} ${width}w`;
+  }).join(', ');
 }
 
 export function tmdbImageSize(src: string | undefined, size: string) {
   return src ? src.replace(/^(https:\/\/image\.tmdb\.org\/t\/p\/)w\d+(\/)/i, `$1${size}$2`) : src;
 }
 
-export function HeroBackdrop({ src, sizes }: { src?: string; sizes: string }) {
+export function HeroBackdrop({ src, sizes }: Readonly<{ src?: string; sizes: string }>) {
   return <Artwork className="af-backdrop" src={src} srcSet={tmdbImageSet(src, [300, 780, 1280])}
     sizes={sizes} fetchPriority="high" />;
 }
 
-export function Loading({ label, shape = 'posters' }: { label: string; shape?: 'posters' | 'releases' | 'hero' | 'rows' | 'details' }) {
+export function Loading({ label, shape = 'posters' }: Readonly<{ label: string; shape?: 'posters' | 'releases' | 'hero' | 'rows' | 'details' }>) {
   const count = { posters: 6, releases: 3, hero: 1, rows: 3, details: 4 }[shape];
   return <div data-route-loading={shape === 'hero' || shape === 'details' ? true : undefined}>
-    {label && <p className="af-state" role="status">{label}</p>}
+    {label && <output className="af-state">{label}</output>}
     <div className={`af-placeholder af-placeholder-${shape}`} aria-hidden="true">
       {Array.from({ length: count }, (_, index) => <span key={index} />)}
     </div>
   </div>;
 }
 
-export function CatalogProblem({ error, retry }: { error: string; retry: () => void }) {
+export function CatalogProblem({ error, retry }: Readonly<{ error: string; retry: () => void }>) {
   const [managed, setManaged] = useState<boolean>();
   const openSettings = useSettings();
   const setup = /(?:connect the catalog|tmdb credential|film and tv catalog|catalog key|catalog rejected the api credential)/i.test(error);
@@ -110,16 +114,20 @@ export function CatalogProblem({ error, retry }: { error: string; retry: () => v
   </div>;
 }
 
-export function MutationStatus({ itemKey, controls, pending = 'Saving…' }: { itemKey: string; controls: LibraryControls; pending?: string }) {
-  return controls.problems[itemKey] ? <span className="af-mutation-message" role="alert">{controls.problems[itemKey]}</span>
-    : controls.isPending(itemKey) ? <span className="af-mutation-message" role="status">{controls.completing.includes(itemKey) ? 'Marking aired episodes…' : pending}</span> : null;
+export function MutationStatus({ itemKey, controls, pending = 'Saving…' }: Readonly<{ itemKey: string; controls: LibraryControls; pending?: string }>) {
+  if (controls.problems[itemKey]) {
+    return <span className="af-mutation-message" role="alert">{controls.problems[itemKey]}</span>;
+  }
+  if (!controls.isPending(itemKey)) return null;
+  const statusText = controls.completing.includes(itemKey) ? 'Marking aired episodes…' : pending;
+  return <output className="af-mutation-message">{statusText}</output>;
 }
 
-export function ActionLink({ href, primary = false, children, label }: { href: string; primary?: boolean; children: ReactNode; label?: string }) {
+export function ActionLink({ href, primary = false, children, label }: Readonly<{ href: string; primary?: boolean; children: ReactNode; label?: string }>) {
   return <a className={`af-button ${primary ? 'af-primary' : 'af-secondary'}`} href={href} aria-label={label}>{children}</a>;
 }
 
-export function SaveButton({ item, controls, compact = false }: { item: Title | Comic; controls: LibraryControls; compact?: boolean }) {
+export function SaveButton({ item, controls, compact = false }: Readonly<{ item: Title | Comic; controls: LibraryControls; compact?: boolean }>) {
   const saved = Boolean(controls.library.saved[item.key]);
   const list = item.type === 'comic' ? 'Reading' : 'Library';
   return <><button type="button" className={compact ? 'af-icon-button af-card-save' : 'af-button af-secondary'}
@@ -131,7 +139,7 @@ export function SaveButton({ item, controls, compact = false }: { item: Title | 
 
 export function useOptionalRating<T>(url?: string) {
   const [result, setResult] = useState<{ url: string; value?: T; failed?: boolean }>();
-  const [attempt, retry] = useState(0);
+  const [attempt, setAttempt] = useState(0);
   const [retrying, setRetrying] = useState(false);
   useEffect(() => {
     if (!url) return;
@@ -147,28 +155,29 @@ export function useOptionalRating<T>(url?: string) {
   const current = result?.url === url ? result : undefined;
   return { value: current?.value, failed: current?.failed, retrying, retry: () => {
     setRetrying(true);
-    retry(count => count + 1);
+    setAttempt(count => count + 1);
   } };
 }
 
-export function RatingProblem({ name, rating }: { name: string; rating: ReturnType<typeof useOptionalRating> }) {
+export function RatingProblem({ name, rating }: Readonly<{ name: string; rating: ReturnType<typeof useOptionalRating> }>) {
   if (!rating.failed && !rating.retrying) return null;
-  return <p className="af-meta" role="status">{rating.retrying ? `Checking ${name}…` : <>
+  return <output className="af-meta">{rating.retrying ? `Checking ${name}…` : <>
     {name} rating could not load. <button type="button" className="af-text-link" onClick={rating.retry}>Retry {name}</button>
-  </>}</p>;
+  </>}</output>;
 }
 
-export function Score({ rating, mal }: { rating?: CatalogRating; mal?: number }) {
+export function Score({ rating, mal }: Readonly<{ rating?: CatalogRating; mal?: number }>) {
   return <>
     {rating && rating.score > 0 && <span className="af-score" title={rating.votes ? `${rating.votes.toLocaleString()} IMDb votes` : undefined}><span aria-hidden="true">★</span> {rating.score.toFixed(1)} <small>IMDb</small></span>}
     {mal != null && mal > 0 && <span className="af-score">{mal.toFixed(2)} <small>MAL</small></span>}
   </>;
 }
 
-export const MediaCard = memo(function MediaCard({ item, controls, href, context, percent, landscape = false, eager, onDismiss }: {
+export const MediaCard = memo(function MediaCard({ item, controls, href, context, percent, landscape = false, eager, onDismiss }: Readonly<{
   item: Title; controls: LibraryControls; href?: string; context?: string; percent?: number; landscape?: boolean; eager?: boolean; onDismiss?: () => void;
-}) {
-  const label = [item.year, landscape ? item.type === 'tv' ? 'TV series' : 'Movie' : item.genre].filter(Boolean).join(' · ');
+}>) {
+  const mediaTypeLabel = item.type === 'tv' ? 'TV series' : 'Movie';
+  const label = [item.year, landscape ? mediaTypeLabel : item.genre].filter(Boolean).join(' · ');
   const art = landscape ? item.backdrop || item.poster : item.poster;
   const backdrop = landscape ? item.backdrop : undefined;
   const tmdbBackdrop = backdrop?.startsWith('https://image.tmdb.org/t/p/w1280/') ? backdrop : undefined;
@@ -193,9 +202,9 @@ export const MediaCard = memo(function MediaCard({ item, controls, href, context
   </article>;
 });
 
-export function Shelf({ title, children, href, hrefLabel = 'View all', actions, landscape = false }: {
+export function Shelf({ title, children, href, hrefLabel = 'View all', actions, landscape = false }: Readonly<{
   title: string; children: ReactNode; href?: string; hrefLabel?: string; actions?: ReactNode; landscape?: boolean;
-}) {
+}>) {
   const rail = useRef<HTMLDivElement>(null);
   const [edges, setEdges] = useState({ previous: false, next: false });
   const childCount = Children.count(children);
@@ -267,9 +276,113 @@ function saveRecentSearch(term: string) {
   } catch { /* Storage optional. */ }
 }
 
-function Search({ open, close, finalFocus, controls }: { open: boolean; close: () => void; finalFocus: () => HTMLElement | false | null; controls: LibraryControls }) {
+type VideoSearchEntry = Extract<SearchEntry, { kind: 'video' }>;
+type ComicSearchEntry = Extract<SearchEntry, { kind: 'comic' }>;
+type RemoteSearchEntry = VideoSearchEntry | ComicSearchEntry;
+
+function savedItemKindLabel(type: string) {
+  if (type === 'comic') return 'Manga';
+  return type === 'tv' ? 'TV series' : 'Movie';
+}
+
+function videoKindLabel(item: Title) {
+  if (isAnime(item.originalLanguage, item.genreIds)) return 'Anime';
+  return item.type === 'tv' ? 'TV series' : 'Movie';
+}
+
+function formatSearchSubtitle(kindLabel: string, year?: number | string) {
+  return year ? `${kindLabel} · ${year}` : kindLabel;
+}
+
+function mapVideoResults(results: Title[]): VideoSearchEntry[] {
+  return results.slice(0, 5).map(item => ({
+    kind: 'video',
+    key: item.key,
+    title: item.title,
+    subtitle: formatSearchSubtitle(videoKindLabel(item), item.year),
+    href: titleHref(item),
+    art: item.poster,
+    mediaType: item.type,
+    mediaId: item.id,
+    rating: item.rating,
+    mal: item.mal,
+  }));
+}
+
+function mapComicResults(results: Comic[]): ComicSearchEntry[] {
+  return results.slice(0, 3).map(item => ({
+    kind: 'comic',
+    key: item.key,
+    title: item.title,
+    subtitle: formatSearchSubtitle(comicFormatNames[item.format || ''] || 'Manga', item.year),
+    href: comicDetailsHref(item.id),
+    art: comicCover(item.poster),
+    malId: item.malId,
+    mal: item.mal,
+  }));
+}
+
+function applyVideoFacts(
+  entries: RemoteSearchEntry[],
+  facts: Record<string, { rating?: CatalogRating | null; mal?: number | null }>,
+): RemoteSearchEntry[] {
+  return entries.map(entry => {
+    if (entry.kind !== 'video') return entry;
+    const info = facts[entry.key];
+    return info ? { ...entry, rating: info.rating ?? entry.rating, mal: info.mal ?? entry.mal } : entry;
+  });
+}
+
+function applyComicRatings(
+  entries: RemoteSearchEntry[],
+  ratings: Record<string, number>,
+): RemoteSearchEntry[] {
+  return entries.map(entry => (
+    entry.kind === 'comic' && entry.malId && ratings[String(entry.malId)]
+      ? { ...entry, mal: ratings[String(entry.malId)] }
+      : entry
+  ));
+}
+
+async function enrichSearchVideoFacts(
+  videos: VideoSearchEntry[],
+  signal: AbortSignal,
+  updateResults: (updater: (current: RemoteSearchEntry[]) => RemoteSearchEntry[]) => void,
+) {
+  const videoKeys = videos.map(v => `${v.mediaType}:${v.mediaId}`);
+  if (!videoKeys.length) return;
+  try {
+    const { facts } = await request<{ facts: Record<string, { rating?: CatalogRating | null; mal?: number | null }> }>(
+      `/api/catalog/facts?titles=${videoKeys.join(',')}`,
+      { signal },
+    );
+    if (!signal.aborted && facts) {
+      updateResults(current => applyVideoFacts(current, facts));
+    }
+  } catch { /* Optional facts enrichment. */ }
+}
+
+async function enrichSearchComicRatings(
+  comics: ComicSearchEntry[],
+  signal: AbortSignal,
+  updateResults: (updater: (current: RemoteSearchEntry[]) => RemoteSearchEntry[]) => void,
+) {
+  const mangaIds = comics.flatMap(c => (c.malId ? [String(c.malId)] : []));
+  if (!mangaIds.length) return;
+  try {
+    const { ratings } = await request<{ ratings: Record<string, number> }>(
+      `/api/mal/manga/batch?ids=${mangaIds.join(',')}`,
+      { signal },
+    );
+    if (!signal.aborted && ratings) {
+      updateResults(current => applyComicRatings(current, ratings));
+    }
+  } catch { /* Optional rating enrichment. */ }
+}
+
+function Search({ open, close, finalFocus, controls }: Readonly<{ open: boolean; close: () => void; finalFocus: () => HTMLElement | false | null; controls: LibraryControls }>) {
   const [query, setQuery] = useState('');
-  const [remoteResults, setRemoteResults] = useState<Extract<SearchEntry, { kind: 'video' | 'comic' }>[]>([]);
+  const [remoteResults, setRemoteResults] = useState<RemoteSearchEntry[]>([]);
   const [recentSearches, setRecentSearches] = useState<string[]>(() => readRecentSearches());
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
@@ -322,7 +435,7 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
         kind: 'library',
         key: `lib-${item.key}`,
         title: item.title,
-        subtitle: `In Library · ${item.type === 'comic' ? 'Manga' : item.type === 'tv' ? 'TV series' : 'Movie'}`,
+        subtitle: `In Library · ${savedItemKindLabel(item.type)}`,
         href: libraryItemHref(item),
         art: item.type === 'comic' ? comicCover(item.poster) : item.poster,
         isComic: item.type === 'comic',
@@ -341,67 +454,32 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
   useEffect(() => {
     if (!open || !trimmed) return;
     const task = new AbortController();
-    const timer = setTimeout(() => {
-      Promise.allSettled([
-        request<TitleResults>(`/api/search?q=${encodeURIComponent(trimmed)}`, { signal: task.signal }),
-        request<{ results: Comic[] }>(`/api/comics?q=${encodeURIComponent(trimmed)}`, { signal: task.signal }),
-      ]).then(([videoRes, comicRes]) => {
+    const runSearch = async () => {
+      try {
+        const [videoRes, comicRes] = await Promise.allSettled([
+          request<TitleResults>(`/api/search?q=${encodeURIComponent(trimmed)}`, { signal: task.signal }),
+          request<{ results: Comic[] }>(`/api/comics?q=${encodeURIComponent(trimmed)}`, { signal: task.signal }),
+        ]);
         if (task.signal.aborted) return;
-        const videos: Extract<SearchEntry, { kind: 'video' }>[] = videoRes.status === 'fulfilled'
-          ? normalizeTitles(videoRes.value.results).slice(0, 5).map(item => ({
-            kind: 'video',
-            key: item.key,
-            title: item.title,
-            subtitle: `${isAnime(item.originalLanguage, item.genreIds) ? 'Anime' : item.type === 'tv' ? 'TV series' : 'Movie'}${item.year ? ` · ${item.year}` : ''}`,
-            href: titleHref(item),
-            art: item.poster,
-            mediaType: item.type,
-            mediaId: item.id,
-            rating: item.rating,
-            mal: item.mal,
-          }))
+        const videos = videoRes.status === 'fulfilled'
+          ? mapVideoResults(normalizeTitles(videoRes.value.results))
           : [];
-        const comics: Extract<SearchEntry, { kind: 'comic' }>[] = comicRes.status === 'fulfilled' && Array.isArray(comicRes.value.results)
-          ? comicRes.value.results.slice(0, 3).map(item => ({
-            kind: 'comic',
-            key: item.key,
-            title: item.title,
-            subtitle: `${comicFormatNames[item.format || ''] || 'Manga'}${item.year ? ` · ${item.year}` : ''}`,
-            href: comicDetailsHref(item.id),
-            art: comicCover(item.poster),
-            malId: item.malId,
-            mal: item.mal,
-          }))
+        const comics = comicRes.status === 'fulfilled' && Array.isArray(comicRes.value.results)
+          ? mapComicResults(comicRes.value.results)
           : [];
         if (videoRes.status === 'rejected' && comicRes.status === 'rejected') {
           setError(videoRes.reason instanceof Error ? videoRes.reason.message : 'Search is temporarily unavailable.');
-        } else {
-          setRemoteResults([...videos, ...comics]);
-          const videoKeys = videos.map(v => `${v.mediaType}:${v.mediaId}`);
-          if (videoKeys.length) {
-            request<{ facts: Record<string, { rating?: CatalogRating | null; mal?: number | null }> }>(`/api/catalog/facts?titles=${videoKeys.join(',')}`, { signal: task.signal })
-              .then(({ facts }) => {
-                if (task.signal.aborted || !facts) return;
-                setRemoteResults(current => current.map(entry => {
-                  if (entry.kind !== 'video') return entry;
-                  const info = facts[entry.key];
-                  return info ? { ...entry, rating: info.rating ?? entry.rating, mal: info.mal ?? entry.mal } : entry;
-                }));
-              }).catch(() => {});
-          }
-          const mangaIds = comics.flatMap(c => c.malId ? [String(c.malId)] : []);
-          if (mangaIds.length) {
-            request<{ ratings: Record<string, number> }>(`/api/mal/manga/batch?ids=${mangaIds.join(',')}`, { signal: task.signal })
-              .then(({ ratings }) => {
-                if (task.signal.aborted || !ratings) return;
-                setRemoteResults(current => current.map(entry => (
-                  entry.kind === 'comic' && entry.malId && ratings[String(entry.malId)]
-                    ? { ...entry, mal: ratings[String(entry.malId)] } : entry
-                )));
-              }).catch(() => {});
-          }
+          return;
         }
-      }).finally(() => { if (!task.signal.aborted) setPending(false); });
+        setRemoteResults([...videos, ...comics]);
+        enrichSearchVideoFacts(videos, task.signal, setRemoteResults).catch(() => {});
+        enrichSearchComicRatings(comics, task.signal, setRemoteResults).catch(() => {});
+      } finally {
+        if (!task.signal.aborted) setPending(false);
+      }
+    };
+    const timer = setTimeout(() => {
+      runSearch().catch(() => {});
     }, 220);
     return () => { clearTimeout(timer); task.abort(); };
   }, [open, trimmed, attempt]);
@@ -441,13 +519,21 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
     if (!results.length || !['ArrowDown', 'ArrowUp'].includes(event.key)) return;
     event.preventDefault();
     const direction = event.key === 'ArrowDown' ? 1 : -1;
-    setSelected(index => index < 0 ? (direction > 0 ? 0 : results.length - 1) : (index + direction + results.length) % results.length);
+    setSelected(index => {
+      if (index < 0) return direction > 0 ? 0 : results.length - 1;
+      return (index + direction + results.length) % results.length;
+    });
   }
 
   useEffect(() => {
     if (selected < 0) return;
     document.getElementById(`af-search-${selected}`)?.scrollIntoView({ block: 'nearest' });
   }, [selected]);
+
+  let searchStatus = '';
+  if (error) searchStatus = error;
+  else if (pending) searchStatus = 'Searching…';
+  else if (trimmed && !results.length) searchStatus = 'No titles found.';
 
   return <Dialog.Portal>
     <Dialog.Backdrop className="af-scrim" />
@@ -469,7 +555,7 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
             ))}
           </div>
         </div>}
-        <p className="af-search-status" role="status">{error || (pending ? 'Searching…' : trimmed && !results.length ? 'No titles found.' : '')}</p>
+        <output className="af-search-status">{searchStatus}</output>
         <div role="listbox" id="af-search-results" aria-label="Matching titles" hidden={!results.length}>
           {results.map((item, index) => item.kind === 'command' ? (
             <button
@@ -488,7 +574,7 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
             </button>
           ) : (
             <a role="option" aria-selected={index === selected} tabIndex={-1} id={`af-search-${index}`}
-              key={item.key} href={item.href} onClick={() => { if (trimmed) saveRecentSearch(trimmed); close(); }} className="af-search-result">
+              key={item.key} href={item.href} onClick={() => { if (trimmed) { saveRecentSearch(trimmed); } close(); }} className="af-search-result">
               <span className="af-result-art"><Artwork src={tmdbImageSize(item.art, 'w92')} fallback={<span className="af-result-art-fallback" aria-hidden="true"><Icon name={item.kind === 'comic' || (item.kind === 'library' && item.isComic) ? 'book' : 'film'} /></span>} /></span>
               <span className="af-search-result-copy"><strong>{item.title}</strong><small className="af-search-result-meta"><span>{item.subtitle}</span>{item.kind !== 'library' && ((item.kind === 'video' && item.rating && item.rating.score > 0) || (item.mal != null && item.mal > 0)) && <><span aria-hidden="true">·</span><Score rating={item.kind === 'video' ? item.rating : undefined} mal={item.mal} /></>}</small></span>
               <Icon name="right" />
@@ -510,10 +596,47 @@ function Search({ open, close, finalFocus, controls }: { open: boolean; close: (
   </Dialog.Portal>;
 }
 
-function NotificationsBell({ controls }: { controls: LibraryControls }) {
+function NotificationsBell({ controls }: Readonly<{ controls: LibraryControls }>) {
   const [open, setOpen] = useState(false);
   const entries = Object.entries(controls.library.notifications).sort(([, a], [, b]) => b.created - a.created);
   const unread = entries.filter(([, entry]) => !entry.read).length;
+
+  let popoverContent: ReactNode;
+  if (!controls.account) {
+    popoverContent = (
+      <div className="af-notif-empty">
+        <p className="af-meta">Sign in to follow new episodes and season premieres.</p>
+        <AccountButton className="af-button af-primary">Sign in</AccountButton>
+      </div>
+    );
+  } else if (entries.length === 0) {
+    popoverContent = <p className="af-meta af-notif-empty">All caught up. Release updates for followed series will appear here.</p>;
+  } else {
+    popoverContent = (
+      <ul className="af-notif-list">
+        {entries.slice(0, 6).map(([key, entry]) => (
+          <li key={key} className={`af-notif-item ${entry.read ? '' : 'is-unread'}`}>
+            <a href={webHref(`tv/${entry.seriesId}`)} onClick={() => setOpen(false)}>
+              <strong>{entry.title}</strong>
+              <span className="af-meta">{entry.message.replace(/ \(TMDb\)/gi, '')}</span>
+              <time className="af-meta">{formatDate(new Date(entry.created).toISOString())}</time>
+            </a>
+            {!entry.read && (
+              <button
+                type="button"
+                className="af-text-link af-notif-mark"
+                disabled={!controls.ready || controls.isPending(key)}
+                onClick={() => void controls.markNotification(key)}
+              >
+                Mark read
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger
@@ -543,36 +666,7 @@ function NotificationsBell({ controls }: { controls: LibraryControls }) {
                 <a className="af-text-link af-popover-done" href={webHref('notifications')} onClick={() => setOpen(false)}>View all</a>
               </div>
             </div>
-            {!controls.account ? (
-              <div className="af-notif-empty">
-                <p className="af-meta">Sign in to follow new episodes and season premieres.</p>
-                <AccountButton className="af-button af-primary">Sign in</AccountButton>
-              </div>
-            ) : !entries.length ? (
-              <p className="af-meta af-notif-empty">All caught up. Release updates for followed series will appear here.</p>
-            ) : (
-              <ul className="af-notif-list">
-                {entries.slice(0, 6).map(([key, entry]) => (
-                  <li key={key} className={`af-notif-item ${entry.read ? '' : 'is-unread'}`}>
-                    <a href={webHref(`tv/${entry.seriesId}`)} onClick={() => setOpen(false)}>
-                      <strong>{entry.title}</strong>
-                      <span className="af-meta">{entry.message.replace(/ \(TMDb\)/gi, '')}</span>
-                      <time className="af-meta">{formatDate(new Date(entry.created).toISOString())}</time>
-                    </a>
-                    {!entry.read && (
-                      <button
-                        type="button"
-                        className="af-text-link af-notif-mark"
-                        disabled={!controls.ready || controls.isPending(key)}
-                        onClick={() => void controls.markNotification(key)}
-                      >
-                        Mark read
-                      </button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
+            {popoverContent}
           </Popover.Popup>
         </Popover.Positioner>
       </Popover.Portal>
@@ -580,7 +674,7 @@ function NotificationsBell({ controls }: { controls: LibraryControls }) {
   );
 }
 
-export function Header({ controls, route }: { controls: LibraryControls; route: string }) {
+export function Header({ controls, route }: Readonly<{ controls: LibraryControls; route: string }>) {
   const [search, setSearch] = useState(false);
   const [browse, setBrowse] = useState(false);
   const [titleSection, setTitleSection] = useState<string>('');
@@ -669,6 +763,10 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
   }, [search, singleKeyEnabled]);
   const isLibraryActive = ['watchlist', 'watched', 'ratings', 'reading', 'history', 'notifications'].includes(path);
   const accountName = controls.account?.username;
+  const resolveSearchFinalFocus = () => {
+    if (searchNavigated.current) return false;
+    return searchReturn.current?.isConnected ? searchReturn.current : searchTrigger.current;
+  };
   return <header className="af-header">
     <a className="af-brand" href={webHref('home')}><img src="/art/favicon.svg" width={25} height={25} alt="" />afterframe</a>
     <nav ref={navRef} className={`af-nav ${pill.ready ? 'has-indicator' : ''}`} aria-label="Main navigation">
@@ -687,7 +785,7 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
       }}>
         <Dialog.Trigger ref={searchTrigger} className="af-icon-button af-search-trigger" aria-label="Search" aria-keyshortcuts="/ Control+K Meta+K" title="Search (/ or Ctrl/Command + K)"><Icon name="search" /><span>Search</span></Dialog.Trigger>
         <Search open={search} controls={controls} close={() => { searchNavigated.current = true; setSearch(false); }}
-          finalFocus={() => searchNavigated.current ? false : searchReturn.current?.isConnected ? searchReturn.current : searchTrigger.current} />
+          finalFocus={resolveSearchFinalFocus} />
       </Dialog.Root>
       <a
         className="af-icon-button af-header-library-link"
@@ -709,7 +807,7 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
           <span className="af-account-name">{accountName}</span>
         </> : 'Sign in'}
       </AccountButton>
-      <Dialog.Root open={browse} onOpenChange={open => { if (open) browseOpeningSettings.current = false; setBrowse(open); }}>
+      <Dialog.Root open={browse} onOpenChange={open => { if (open) { browseOpeningSettings.current = false; } setBrowse(open); }}>
         <Dialog.Trigger ref={browseTrigger} className="af-icon-button af-menu-trigger" aria-label="Browse"><Icon name="menu" /></Dialog.Trigger>
         <Dialog.Portal>
           <Dialog.Backdrop className="af-scrim" />
@@ -730,7 +828,7 @@ export function Header({ controls, route }: { controls: LibraryControls; route: 
   </header>;
 }
 
-export function MobileNav({ route }: { route: string }) {
+export function MobileNav({ route }: Readonly<{ route: string }>) {
   const path = route.split('?')[0];
   const isHome = path === 'home' || path === 'main';
   const isBrowse = ['movies', 'tv', 'anime', 'new', 'recommendations'].includes(path) || path.startsWith('movie/') || path.startsWith('tv/');

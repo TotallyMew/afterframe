@@ -1,5 +1,5 @@
 import { Dialog } from '@base-ui/react/dialog';
-import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { preferenceDefaults } from '@afterframe/shared/playback';
 import { AccountButton } from './Account';
 import { post, request } from './catalog';
@@ -14,14 +14,14 @@ function SegmentedTabs<T extends string>({
   onChange,
   label,
   className = '',
-}: {
+}: Readonly<{
   options: readonly (readonly [T, string])[];
   value: T;
   onChange: (next: T) => void;
   label: string;
   className?: string;
-}) {
-  const trackRef = useRef<HTMLDivElement>(null);
+}>) {
+  const trackRef = useRef<HTMLFieldSetElement>(null);
   const [pill, setPill] = useState<{ x: number; width: number; ready: boolean; animate: boolean }>({
     x: 0, width: 0, ready: false, animate: false,
   });
@@ -47,7 +47,7 @@ function SegmentedTabs<T extends string>({
   }, [value, options.length]);
 
   return (
-    <div ref={trackRef} role="group" aria-label={label} className={`af-segmented ${pill.ready ? 'has-indicator' : ''} ${className}`.trim()}>
+    <fieldset ref={trackRef} aria-label={label} className={`af-segmented ${pill.ready ? 'has-indicator' : ''} ${className}`.trim()}>
       {pill.ready && (
         <span
           className={`af-segmented-indicator ${pill.animate ? 'is-animated' : ''}`}
@@ -60,7 +60,7 @@ function SegmentedTabs<T extends string>({
           {text}
         </button>
       ))}
-    </div>
+    </fieldset>
   );
 }
 
@@ -69,7 +69,7 @@ type Section = typeof sections[number];
 const settingsTabs = [['general', 'General'], ['integrations', 'Integrations']] as const;
 const languages = ['English', 'French', 'German', 'Italian', 'Japanese', 'Korean', 'Lithuanian', 'Portuguese', 'Spanish'];
 
-function Toggle({ name, label, description, controls }: { name: BooleanPreference; label: string; description?: string; controls: LibraryControls }) {
+function Toggle({ name, label, description, controls }: Readonly<{ name: BooleanPreference; label: string; description?: string; controls: LibraryControls }>) {
   const value = controls.library.preferences[name] ?? preferenceDefaults[name];
   const key = `preference/${name}`;
   return <div className="af-settings-row">
@@ -81,9 +81,9 @@ function Toggle({ name, label, description, controls }: { name: BooleanPreferenc
   </div>;
 }
 
-function SettingSelect({ label, description, value, disabled, options, onChange }: {
+function SettingSelect({ label, description, value, disabled, options, onChange }: Readonly<{
   label: string; description?: string; value: string; disabled?: boolean; options: readonly SelectOption[]; onChange: (value: string) => void;
-}) {
+}>) {
   const labelId = useId();
   return <div className="af-settings-field">
     <span id={labelId}>{label}{description && <small>{description}</small>}</span>
@@ -91,7 +91,7 @@ function SettingSelect({ label, description, value, disabled, options, onChange 
   </div>;
 }
 
-function PlaybackSettings({ controls }: { controls: LibraryControls }) {
+function PlaybackSettings({ controls }: Readonly<{ controls: LibraryControls }>) {
   const preferences = controls.library.preferences;
   const subtitle = preferences.subtitleLanguage ?? (preferences.captions ? 'English' : '');
   const audio = preferences.audioLanguage ?? '';
@@ -160,7 +160,7 @@ function Credits() {
   </div>;
 }
 
-function GeneralSettings({ controls, onSectionChange }: { controls: LibraryControls; onSectionChange?: () => void }) {
+function GeneralSettings({ controls, onSectionChange }: Readonly<{ controls: LibraryControls; onSectionChange?: () => void }>) {
   const [section, setSection] = useState<Section>('Playback');
   const heading = useRef<HTMLHeadingElement>(null);
   return <>
@@ -177,7 +177,7 @@ function GeneralSettings({ controls, onSectionChange }: { controls: LibraryContr
     />
     <section id="af-settings-options" key={section} className="af-settings-panel-enter" aria-labelledby="af-settings-section">
       <h3 ref={heading} tabIndex={-1} id="af-settings-section">{section === 'Spoilers' ? 'Spoiler protection' : section}</h3>
-      {!controls.ready && <p className="af-meta" role="status">{controls.state === 'loading' ? 'Loading preferences…' : 'Reconnect your library to change preferences.'}</p>}
+      {!controls.ready && <output className="af-meta">{controls.state === 'loading' ? 'Loading preferences…' : 'Reconnect your library to change preferences.'}</output>}
       {section === 'Playback' && <PlaybackSettings controls={controls} />}
       {section === 'Spoilers' && <>
         <p className="af-meta af-settings-help">These preferences apply to unwatched episodes. You can reveal each item individually.</p>
@@ -212,9 +212,16 @@ const integrations = [
   { provider: 'omdb', title: 'IMDb ratings', description: 'Optional ratings for movies and series.', label: 'Ratings API key', action: 'Save ratings key', url: 'https://www.omdbapi.com/apikey.aspx', limit: 128 },
 ] as const;
 
-function Integration({ definition, connected, managed, open, onSaved }: {
+function connectionStatusText(pending: boolean, saved: boolean, connected: boolean, managed: boolean): string {
+  if (pending) return 'Checking key…';
+  if (saved) return 'Verified and saved';
+  if (connected) return 'Configured';
+  return managed ? 'Not configured' : 'Key needed';
+}
+
+function Integration({ definition, connected, managed, open, onSaved }: Readonly<{
   definition: typeof integrations[number]; connected: boolean; managed: boolean; open: boolean; onSaved: (status: ConnectionStatus) => void;
-}) {
+}>) {
   const [pending, setPending] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
@@ -222,7 +229,8 @@ function Integration({ definition, connected, managed, open, onSaved }: {
     event.preventDefault();
     if (pending) return;
     const form = event.currentTarget;
-    const credential = String(new FormData(form).get('credential') || '').trim();
+    const rawCredential = new FormData(form).get('credential');
+    const credential = (typeof rawCredential === 'string' ? rawCredential : '').trim();
     if (!credential) { setError('Enter the API credential.'); return; }
     setPending(true);
     setError('');
@@ -232,15 +240,15 @@ function Integration({ definition, connected, managed, open, onSaved }: {
       form.reset();
       setSaved(true);
       onSaved(result);
-    } catch (problem) {
-      setError(problem instanceof Error ? problem.message : 'Could not verify the credential. Try again.');
+    } catch (error_) {
+      setError(error_ instanceof Error ? error_.message : 'Could not verify the credential. Try again.');
     } finally { setPending(false); }
   }
   return <section className="af-settings-integration" aria-labelledby={`af-settings-${definition.provider}`}>
     <div className="af-settings-integration-heading"><h3 id={`af-settings-${definition.provider}`}>{definition.title}</h3>
-      <span className="af-meta af-settings-connection" data-connected={connected} role="status">
-        {pending ? 'Checking key…' : saved ? 'Verified and saved' : connected ? 'Configured' : managed ? 'Not configured' : 'Key needed'}
-      </span>
+      <output className="af-meta af-settings-connection" data-connected={connected}>
+        {connectionStatusText(pending, saved, connected, managed)}
+      </output>
     </div>
     <p className="af-meta">{definition.description}</p>
     {!managed && <details open={open || undefined}>
@@ -261,7 +269,7 @@ function Integration({ definition, connected, managed, open, onSaved }: {
   </section>;
 }
 
-function Integrations({ expandCatalog, afterCatalogSaved }: { expandCatalog: boolean; afterCatalogSaved?: () => void }) {
+function Integrations({ expandCatalog, afterCatalogSaved }: Readonly<{ expandCatalog: boolean; afterCatalogSaved?: () => void }>) {
   const [status, setStatus] = useState<ConnectionStatus>();
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
@@ -269,13 +277,13 @@ function Integrations({ expandCatalog, afterCatalogSaved }: { expandCatalog: boo
     const task = new AbortController();
     request<ConnectionStatus>('/api/status', { signal: task.signal })
       .then(result => { if (!task.signal.aborted) setStatus(result); })
-      .catch(problem => { if (!task.signal.aborted) setError(problem.message); });
+      .catch(error_ => { if (!task.signal.aborted) setError(error_.message); });
     return () => task.abort();
   }, [attempt]);
   if (error) return <div className="af-settings-help"><p role="alert">{error}</p>
     <button className="af-button af-secondary" type="button" onClick={() => { setError(''); setAttempt(value => value + 1); }}>Retry integrations</button>
   </div>;
-  if (!status) return <p className="af-meta" role="status">Checking integrations…</p>;
+  if (!status) return <output className="af-meta">Checking integrations…</output>;
   return <>
     <p className="af-meta af-settings-help">{status.managedIntegrations ? 'The server administrator manages these integrations.' : 'These credentials apply to every local profile.'}</p>
     {integrations.map(definition => <Integration key={definition.provider} definition={definition} managed={status.managedIntegrations}
@@ -287,7 +295,7 @@ function Integrations({ expandCatalog, afterCatalogSaved }: { expandCatalog: boo
   </>;
 }
 
-export function SettingsProvider({ controls, children }: { controls: LibraryControls; children: ReactNode }) {
+export function SettingsProvider({ controls, children }: Readonly<{ controls: LibraryControls; children: ReactNode }>) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<SettingsTab>('general');
   const [opening, setOpening] = useState(0);
@@ -298,14 +306,14 @@ export function SettingsProvider({ controls, children }: { controls: LibraryCont
   const entry = useRef<SettingsTab>('general');
   const afterCatalogSaved = useRef<(() => void) | undefined>(undefined);
   const resetScroll = () => { contentRef.current?.scrollTo({ top: 0 }); };
-  const openSettings: OpenSettings = (next, source, onSaved) => {
+  const openSettings: OpenSettings = useCallback((next, source, onSaved) => {
     invoker.current = source;
     entry.current = next;
     afterCatalogSaved.current = onSaved;
     setTab(next);
     setOpening(value => value + 1);
     setOpen(true);
-  };
+  }, []);
   return <SettingsContext.Provider value={openSettings}>
     {children}
     <Dialog.Root open={open} onOpenChange={setOpen}>

@@ -1,6 +1,6 @@
-import { currentLocationHref, currentSearchParams, navigate, normalizeBackParam, searchHref, webHref } from './router';
+import { currentLocationHref, currentSearchParams, normalizeBackParam, webHref } from './router';
 
-export { navigate, searchHref, webHref };
+export { navigate, searchHref, webHref } from './router';
 export type MediaType = 'movie' | 'tv';
 
 export interface CatalogRating {
@@ -184,11 +184,40 @@ export class RequestError extends Error {
   constructor(message: string, readonly status: number) { super(message); }
 }
 
+const apiOrigin = 'https://afterframe.invalid';
+const safePathSegment = /^[a-zA-Z0-9._~%-]+$/;
+const encodedTraversal = /%2e|%2f|%5c/i;
+
+function sanitizeSegment(segment: string): string {
+  if (!segment || segment === '.' || segment === '..' || !safePathSegment.test(segment) || encodedTraversal.test(segment)) {
+    throw new RequestError('Invalid API request path.', 400);
+  }
+  try {
+    return encodeURIComponent(decodeURIComponent(segment));
+  } catch {
+    throw new RequestError('Invalid API request path.', 400);
+  }
+}
+
+function sanitizeApiPath(path: string): string {
+  if (!path.startsWith('/api/') || path.startsWith('//') || path.includes('\\')) {
+    throw new RequestError('Invalid API request path.', 400);
+  }
+  const parsed = new URL(path, apiOrigin);
+  if (parsed.origin !== apiOrigin || !parsed.pathname.startsWith('/api/')) {
+    throw new RequestError('Invalid API request path.', 400);
+  }
+  const safeSegments = parsed.pathname.slice(1).split('/').map(sanitizeSegment);
+  const query = new URLSearchParams(parsed.search).toString();
+  return query ? `/${safeSegments.join('/')}?${query}` : `/${safeSegments.join('/')}`;
+}
+
 export async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const safePath = sanitizeApiPath(path);
   const deadline = AbortSignal.timeout(30000);
   const signal = options?.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
   let response: Response;
-  try { response = await fetch(path, { ...options, signal }); }
+  try { response = await fetch(safePath, { ...options, signal }); }
   catch (error) {
     if (deadline.aborted) throw new Error('The request took too long. Try again.');
     if (options?.signal?.aborted) throw error;
@@ -324,13 +353,15 @@ export function comicCover(poster?: string) {
 }
 
 export function playHref(item: Pick<Title, 'type' | 'id'>, episode?: EpisodePosition) {
-  return playerHref(`${item.type}/${item.id}/${episode ? `s${episode.season}e${episode.number}` : 'watch'}`);
+  const suffix = episode ? `s${episode.season}e${episode.number}` : 'watch';
+  return playerHref(`${item.type}/${item.id}/${suffix}`);
 }
 
 export function resumeHref(item: Title, key: string, episode?: EpisodePosition) {
   if (Number.isInteger(item.id) && /^(movie|tv)-\d+$/.test(item.key) && !item.archiveId && (item.type === 'movie' || episode)) return playHref(item, episode);
   const editionEpisode = key.startsWith(`${item.key}/`) ? key.slice(item.key.length + 1) : '';
-  return playerHref(`edition/${encodeURIComponent(item.key)}/watch${editionEpisode ? `/${encodeURIComponent(editionEpisode)}` : ''}`);
+  const episodeSegment = editionEpisode ? `/${encodeURIComponent(editionEpisode)}` : '';
+  return playerHref(`edition/${encodeURIComponent(item.key)}/watch${episodeSegment}`);
 }
 
 export function episodePosition(episode: Episode): EpisodePosition {

@@ -45,11 +45,11 @@ export function ShortcutsDialog({
   open,
   onOpenChange,
   singleKeyShortcuts = true,
-}: {
+}: Readonly<{
   open: boolean;
   onOpenChange: (next: boolean) => void;
   singleKeyShortcuts?: boolean;
-}) {
+}>) {
   const closeRef = useRef<HTMLButtonElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
 

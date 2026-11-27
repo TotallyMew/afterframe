@@ -9,13 +9,13 @@ export function EmptyState({
   description,
   actions,
   headingLevel = 2,
-}: {
+}: Readonly<{
   icon: EmptyEmblem;
   title: string;
   description: string;
   actions?: ReactNode;
   headingLevel?: 2 | 3;
-}) {
+}>) {
   const Heading = headingLevel === 3 ? 'h3' : 'h2';
   return <div className="af-empty-state">
     <span className="af-empty-emblem" aria-hidden="true">

@@ -1,5 +1,5 @@
 import { Popover } from '@base-ui/react/popover';
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Icon } from '../components';
 import { useConfirm } from '../ConfirmDialog';
 import { folderColors, type Folder, type FolderColor, type LibraryControls } from '../library';
@@ -10,12 +10,12 @@ export function FolderBar({
   activeFolderId,
   onSelectFolder,
   itemKeys,
-}: {
+}: Readonly<{
   controls: LibraryControls;
   activeFolderId: string;
   onSelectFolder: (id: string) => void;
   itemKeys: Set<string>;
-}) {
+}>) {
   const confirmAction = useConfirm();
   const { notify } = useToast();
   const [createOpen, setCreateOpen] = useState(false);
@@ -24,6 +24,11 @@ export function FolderBar({
   const [editing, setEditing] = useState<Folder | null>(null);
   const [editName, setEditName] = useState('');
   const [editColor, setEditColor] = useState<FolderColor>('ember');
+  const createInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (createOpen) createInputRef.current?.focus();
+  }, [createOpen]);
 
   const folders = Object.values(controls.library.folders ?? {}).sort((a, b) => a.created - b.created);
   const activeFolder = folders.find(f => f.id === activeFolderId);
@@ -61,7 +66,7 @@ export function FolderBar({
   }
 
   return (
-    <div className="af-folder-bar" role="region" aria-label="Custom folders">
+    <section className="af-folder-bar" aria-label="Custom folders">
       <div className="af-folder-chips">
         <button
           type="button"
@@ -106,11 +111,11 @@ export function FolderBar({
                   <label className="af-sr-field">
                     <span className="sr-only">Folder name</span>
                     <input
+                      ref={createInputRef}
                       type="text"
                       className="af-input"
                       placeholder="e.g. Favorites, Weekend Binge…"
                       maxLength={50}
-                      autoFocus
                       value={newName}
                       onChange={event => setNewName(event.target.value)}
                     />
@@ -223,6 +228,6 @@ export function FolderBar({
           </button>
         </div>
       )}
-    </div>
+    </section>
   );
 }

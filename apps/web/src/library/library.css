@@ -532,6 +532,9 @@ button.af-poster-status:hover {
 /* Compact List View */
 .af-lib-list {
   display: grid;
+  list-style: none;
+  margin: 0;
+  padding: 0;
   border: 1px solid var(--af-divider);
   border-radius: var(--af-radius-art);
   background: var(--af-panel);
@@ -735,7 +738,7 @@ button.af-poster-status:hover {
   font-weight: 650;
 }
 .af-status-chip.is-completed {
-  background: color-mix(in srgb, #4a7db3 24%, transparent);
+  background: #1f2d3c;
   color: #9dc4ec;
 }
 .af-status-chip.is-rewatch {

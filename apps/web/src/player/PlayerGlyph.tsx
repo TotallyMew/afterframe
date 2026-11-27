@@ -24,6 +24,6 @@ const paths: Record<PlayerGlyphName, ReactNode> = {
   pip: <><rect x="3" y="5" width="18" height="14" rx="2" /><rect x="11.5" y="11" width="7" height="5" rx="1" fill="currentColor" stroke="none" /></>,
 };
 
-export function PlayerGlyph({ name }: { name: PlayerGlyphName }) {
+export function PlayerGlyph({ name }: Readonly<{ name: PlayerGlyphName }>) {
   return <svg className="af-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }

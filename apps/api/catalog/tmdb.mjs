@@ -57,6 +57,37 @@ export function rawTitleMetadata(type, id, season, refresh = false) {
     }), refresh);
 }
 
+async function runWorkerQueue(items, concurrency, task) {
+  let cursor = 0;
+  async function runNext() {
+    if (cursor >= items.length) return;
+    const idx = cursor++;
+    await task(items[idx], idx);
+    await runNext();
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, runNext));
+}
+
+function isAnimeTitle(meta) {
+  return Boolean(meta && isAnime(meta.original_language, meta.genres?.map(genre => genre.id)));
+}
+
+async function fetchSeasonRatings(id, entry) {
+  try {
+    const data = await titleMetadata('tv', id, String(entry.season_number));
+    const episodes = (data?.episodes ?? []).map(ep => ({
+      episode_number: ep.episode_number,
+      name: ep.name || `Episode ${ep.episode_number}`,
+      vote_average: typeof ep.vote_average === 'number' && ep.vote_average > 0 ? Math.round(ep.vote_average * 10) / 10 : null,
+      vote_count: typeof ep.vote_count === 'number' ? ep.vote_count : 0,
+      air_date: ep.air_date || undefined,
+    }));
+    return { season_number: entry.season_number, name: entry.name || `Season ${entry.season_number}`, episodes };
+  } catch {
+    return { season_number: entry.season_number, name: entry.name || `Season ${entry.season_number}`, episodes: [] };
+  }
+}
+
 export async function tvRatingsMap(id) {
   return cacheMetadata(`ratings-map:v2:tv:${id}`, 12 * 3600000, async () => {
     const details = await titleMetadata('tv', id);
@@ -65,61 +96,50 @@ export async function tvRatingsMap(id) {
       .sort((a, b) => a.season_number - b.season_number)
       .slice(0, 30);
     const seasons = new Array(regular.length);
-    let cursor = 0;
-    async function worker() {
-      while (cursor < regular.length) {
-        const idx = cursor++;
-        const entry = regular[idx];
-        try {
-          const data = await titleMetadata('tv', id, String(entry.season_number));
-          const episodes = (data?.episodes ?? []).map(ep => ({
-            episode_number: ep.episode_number,
-            name: ep.name || `Episode ${ep.episode_number}`,
-            vote_average: typeof ep.vote_average === 'number' && ep.vote_average > 0 ? Math.round(ep.vote_average * 10) / 10 : null,
-            vote_count: typeof ep.vote_count === 'number' ? ep.vote_count : 0,
-            air_date: ep.air_date || undefined,
-          }));
-          seasons[idx] = { season_number: entry.season_number, name: entry.name || `Season ${entry.season_number}`, episodes };
-        } catch {
-          seasons[idx] = { season_number: entry.season_number, name: entry.name || `Season ${entry.season_number}`, episodes: [] };
-        }
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(4, regular.length) }, worker));
+    await runWorkerQueue(regular, 4, async (entry, idx) => {
+      seasons[idx] = await fetchSeasonRatings(id, entry);
+    });
     return { seasons: seasons.filter(Boolean) };
   });
+}
+
+async function loadVirtualAnimeSeason(id, seasonNumber, parent, refresh) {
+  const rawRegular = (parent?.seasons ?? []).filter(entry => entry.season_number > 0);
+  if (rawRegular.length !== 1 || rawRegular[0].season_number !== 1) return null;
+  const vPlan = await animeVirtualSeasonPlan(id).catch(() => null);
+  const vSeason = vPlan?.find(entry => entry.season === seasonNumber);
+  if (!vSeason) return null;
+  const rawS1 = await rawTitleMetadata('tv', id, '1', refresh);
+  const sliced = sliceVirtualSeason(rawS1, vSeason);
+  return enrichAnimeSeason(id, seasonNumber, sliced, new Date(), {
+    sourceSeason: 1,
+    episodeOffset: vSeason.start - 1,
+  }).catch(() => sliced);
+}
+
+async function loadTvSeasonMetadata(id, season, refresh) {
+  const seasonNumber = Number(season);
+  if (!Number.isSafeInteger(seasonNumber) || seasonNumber < 1) {
+    return rawTitleMetadata('tv', id, season, refresh);
+  }
+  const parent = peekMetadata(`title:v2:tv:${id}:`) ?? peekMetadata(`basic:tv:${id}:`)
+    ?? await basicTitle('tv', id).catch(() => null);
+  if (!isAnimeTitle(parent)) {
+    return rawTitleMetadata('tv', id, season, refresh);
+  }
+  const virtualSeason = await loadVirtualAnimeSeason(id, seasonNumber, parent, refresh);
+  if (virtualSeason) return virtualSeason;
+  const data = await rawTitleMetadata('tv', id, season, refresh);
+  return enrichAnimeSeason(id, seasonNumber, data).catch(() => data);
 }
 
 export async function titleMetadata(type, id, season, refresh = false) {
   const hasSeason = season !== undefined && season !== null && season !== '';
   if (type === 'tv' && hasSeason) {
-    const seasonNumber = Number(season);
-    if (Number.isSafeInteger(seasonNumber) && seasonNumber >= 1) {
-      const parent = peekMetadata(`title:v2:tv:${id}:`) ?? peekMetadata(`basic:tv:${id}:`)
-        ?? await basicTitle('tv', id).catch(() => null);
-      if (isAnime(parent?.original_language, parent?.genres?.map(genre => genre.id))) {
-        const rawRegular = (parent?.seasons ?? []).filter(entry => entry.season_number > 0);
-        if (rawRegular.length === 1 && rawRegular[0].season_number === 1) {
-          const vPlan = await animeVirtualSeasonPlan(id).catch(() => null);
-          const vSeason = vPlan?.find(entry => entry.season === seasonNumber);
-          if (vSeason) {
-            const rawS1 = await rawTitleMetadata('tv', id, '1', refresh);
-            const sliced = sliceVirtualSeason(rawS1, vSeason);
-            return enrichAnimeSeason(id, seasonNumber, sliced, new Date(), {
-              sourceSeason: 1,
-              episodeOffset: vSeason.start - 1,
-            }).catch(() => sliced);
-          }
-        }
-        const data = await rawTitleMetadata(type, id, season, refresh);
-        return enrichAnimeSeason(id, seasonNumber, data).catch(() => data);
-      }
-    }
-    return rawTitleMetadata(type, id, season, refresh);
+    return loadTvSeasonMetadata(id, season, refresh);
   }
   const data = await rawTitleMetadata(type, id, season, refresh);
-  if (type !== 'tv') return data;
-  if (!isAnime(data?.original_language, data?.genres?.map(genre => genre.id))) return data;
+  if (type !== 'tv' || !isAnimeTitle(data)) return data;
   return enrichAnimeDetails(id, data, seasonNumber => rawTitleMetadata('tv', id, String(seasonNumber))).catch(() => data);
 }
 
@@ -128,42 +148,54 @@ export function basicTitle(type, id) {
     () => tmdb(`/${type}/${id}`, { language: 'en-US', ...(type === 'tv' ? { append_to_response: 'external_ids' } : {}) }));
 }
 
+async function resolveFactDetails(key, type, id, hasCachedRating, hasMal) {
+  const peeked = peekMetadata(`title:v2:${key}:`) ?? peekMetadata(`basic:${key}:`);
+  const peekedIsNonAnimeMovie = type === 'movie' && Boolean(peeked) && !isAnimeTitle(peeked);
+  const needOmdb = !hasCachedRating && hasOmdbKey();
+  const needMal = hasMal && !peekedIsNonAnimeMovie;
+  if (type !== 'tv' && !needOmdb && !needMal) return null;
+  return peeked ?? basicTitle(type, id);
+}
+
+function fetchFactSignals(type, id, details, cachedRating, hasMal) {
+  const external = details?.external_ids?.imdb_id || details?.imdb_id;
+  const anime = isAnimeTitle(details);
+  const ratingPromise = cachedRating ? Promise.resolve(cachedRating) : imdbRating(external);
+  const malPromise = anime && hasMal ? catalogAnimeRating(type, id, 1).catch(() => null) : Promise.resolve(null);
+  const vPlanPromise = anime && type === 'tv' && details?.number_of_seasons === 1
+    ? animeVirtualSeasonPlan(id).catch(() => null)
+    : Promise.resolve(null);
+  return Promise.all([ratingPromise, malPromise, vPlanPromise]);
+}
+
+function countVirtualSeasons(vPlan, details) {
+  if (!vPlan || !details?.number_of_episodes) return 0;
+  return vPlan.filter(entry => details.number_of_episodes >= entry.start).length;
+}
+
+async function loadFactForKey(key, cached, hasMal) {
+  const [type, id] = key.split(':');
+  const cardKey = `${type}-${id}`;
+  try {
+    const details = await resolveFactDetails(key, type, id, Boolean(cached[cardKey]), hasMal);
+    const [rating, mal, vPlan] = await fetchFactSignals(type, id, details, cached[cardKey], hasMal);
+    const virtualCount = countVirtualSeasons(vPlan, details);
+    const seasons = virtualCount >= 2 ? virtualCount : details?.number_of_seasons;
+    return [cardKey, { rating, ...(mal ? { mal } : {}), seasons, status: details?.status }];
+  } catch {
+    if (cached[cardKey]) return [cardKey, { rating: cached[cardKey] }];
+    return null;
+  }
+}
+
 export async function catalogFacts(keys) {
   const cached = await cachedRatings(keys);
   const facts = {};
   const hasMal = Boolean(process.env.MAL_CLIENT_ID?.trim());
-  let index = 0;
-  async function loadFacts() {
-    while (index < keys.length) {
-      const key = keys[index++];
-      const [type, id] = key.split(':');
-      const cardKey = `${type}-${id}`;
-      try {
-        const peeked = peekMetadata(`title:v2:${key}:`) ?? peekMetadata(`basic:${key}:`);
-        const peekedIsNonAnimeMovie = type === 'movie' && peeked && !isAnime(peeked.original_language, peeked.genres?.map(genre => genre.id));
-        const needDetails = type === 'tv' || (!cached[cardKey] && hasOmdbKey()) || (hasMal && !peekedIsNonAnimeMovie);
-        const details = needDetails ? (peeked ?? await basicTitle(type, id)) : null;
-        const external = details?.external_ids?.imdb_id || details?.imdb_id;
-        const anime = details && isAnime(details.original_language, details.genres?.map(genre => genre.id));
-        const [rating, mal, vPlan] = await Promise.all([
-          cached[cardKey] ? Promise.resolve(cached[cardKey]) : imdbRating(external),
-          anime && hasMal ? catalogAnimeRating(type, id, 1).catch(() => null) : Promise.resolve(null),
-          anime && type === 'tv' && details?.number_of_seasons === 1 ? animeVirtualSeasonPlan(id).catch(() => null) : Promise.resolve(null),
-        ]);
-        const virtualCount = vPlan && details?.number_of_episodes
-          ? vPlan.filter(entry => details.number_of_episodes >= entry.start).length
-          : 0;
-        facts[cardKey] = {
-          rating,
-          ...(mal ? { mal } : {}),
-          seasons: virtualCount >= 2 ? virtualCount : details?.number_of_seasons, status: details?.status,
-        };
-      } catch {
-        if (cached[cardKey]) facts[cardKey] = { rating: cached[cardKey] };
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(5, keys.length) }, loadFacts));
+  await runWorkerQueue(keys, 5, async key => {
+    const entry = await loadFactForKey(key, cached, hasMal);
+    if (entry) facts[entry[0]] = entry[1];
+  });
   return facts;
 }
 

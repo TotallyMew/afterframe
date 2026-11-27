@@ -13,7 +13,7 @@ const archiveRatingOptions = [
   ...Array.from({ length: 10 }, (_, index) => ({ value: String(index + 1), label: `${index + 1} / 10` })),
 ];
 
-export function ArchiveEditionView({ entry, backHref, controls }: { entry: ArchiveTitle; backHref: string; controls: LibraryControls }) {
+export function ArchiveEditionView({ entry, backHref, controls }: Readonly<{ entry: ArchiveTitle; backHref: string; controls: LibraryControls }>) {
   const item = useMemo(() => archiveToTitle(entry), [entry]);
   const saved = controls.library.saved[item.key];
   const marked = Boolean(controls.library.watched[item.key]);

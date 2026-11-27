@@ -1,7 +1,7 @@
 import { webHref } from './catalog';
 import { useSettings } from './settings-context';
 
-export function Footer({ onOpenShortcuts }: { onOpenShortcuts: () => void }) {
+export function Footer({ onOpenShortcuts }: Readonly<{ onOpenShortcuts: () => void }>) {
   const openSettings = useSettings();
   return <footer className="af-footer">
     <div className="af-wrap af-footer-inner">

@@ -10,7 +10,7 @@ export function EmbedNoticeBar({
   onSwitchProvider,
   onToggleProviderControls,
   onReload,
-}: {
+}: Readonly<{
   provider: AnimeProvider;
   providerControls: boolean;
   animeEligible: boolean;
@@ -20,7 +20,7 @@ export function EmbedNoticeBar({
   onSwitchProvider: (next: AnimeProvider) => void;
   onToggleProviderControls: () => void;
   onReload: () => void;
-}) {
+}>) {
   const isExternalControls = provider === 'cinesrc' && providerControls;
   const modeLabel = isExternalControls ? 'External controls' : (streamMeta || 'Afterframe controls');
   const detail = (embedStatus.canRetry ? embedStatus.message : '')
@@ -37,7 +37,7 @@ export function EmbedNoticeBar({
       <span className="af-source-badge" data-external={isExternalControls || undefined}>
         {animePlayers[provider].label} · {modeLabel}
       </span>
-      <span role="status" className="af-embed-notice-text">{detail}</span>
+      <output className="af-embed-notice-text">{detail}</output>
     </div>
     <div className="af-actions af-source-actions">
       {animeEligible && <button type="button" className="af-button af-secondary af-source-btn" onClick={() => onSwitchProvider(animePlayers[provider].next)}>

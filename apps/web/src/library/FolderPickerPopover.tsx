@@ -10,13 +10,13 @@ export function FolderPickerPopover({
   controls,
   compact = false,
   label = 'Folders',
-}: {
+}: Readonly<{
   itemKey: string;
   itemTitle: string;
   controls: LibraryControls;
   compact?: boolean;
   label?: string;
-}) {
+}>) {
   const { notify } = useToast();
   const [open, setOpen] = useState(false);
   const [newName, setNewName] = useState('');
@@ -36,14 +36,19 @@ export function FolderPickerPopover({
     }
   }
 
+  const baseTriggerClass = compact
+    ? 'af-icon-button af-folder-trigger-compact'
+    : 'af-button af-secondary af-folder-trigger';
+  const triggerClass = assignedCount > 0 ? `${baseTriggerClass} has-folders` : baseTriggerClass;
+  const folderNoun = assignedCount === 1 ? 'folder' : 'folders';
+  const triggerTitle = assignedCount > 0 ? `In ${assignedCount} ${folderNoun}` : 'Add to folder';
+
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger
-        className={compact
-          ? `af-icon-button af-folder-trigger-compact ${assignedCount > 0 ? 'has-folders' : ''}`
-          : `af-button af-secondary af-folder-trigger ${assignedCount > 0 ? 'has-folders' : ''}`}
+        className={triggerClass}
         aria-label={assignedCount > 0 ? `Manage folders for ${itemTitle} (${assignedCount} assigned)` : `Add ${itemTitle} to a folder`}
-        title={assignedCount > 0 ? `In ${assignedCount} ${assignedCount === 1 ? 'folder' : 'folders'}` : 'Add to folder'}
+        title={triggerTitle}
         disabled={!controls.ready}
       >
         <Icon name="folder" />

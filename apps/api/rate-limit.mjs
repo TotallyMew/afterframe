@@ -2,6 +2,17 @@
 const buckets = new Map();
 const MAX_KEYS = 10_000;
 
+function evictExpiredOrOldest(now) {
+  if (buckets.size < MAX_KEYS) return;
+  for (const [entryKey, entry] of buckets) {
+    if (now >= entry.resetAt) buckets.delete(entryKey);
+  }
+  if (buckets.size >= MAX_KEYS) {
+    const oldest = buckets.keys().next().value;
+    if (oldest) buckets.delete(oldest);
+  }
+}
+
 /**
  * @param {string} scope
  * @param {string} clientIp
@@ -16,15 +27,7 @@ export function checkRateLimit(scope, clientIp, policy, now = Date.now()) {
   const key = `${scope}:${clientIp || 'unknown'}`;
   const existing = buckets.get(key);
   if (!existing || now >= existing.resetAt) {
-    if (buckets.size >= MAX_KEYS) {
-      for (const [entryKey, entry] of buckets) {
-        if (now >= entry.resetAt) buckets.delete(entryKey);
-      }
-      if (buckets.size >= MAX_KEYS) {
-        const oldest = buckets.keys().next().value;
-        if (oldest) buckets.delete(oldest);
-      }
-    }
+    evictExpiredOrOldest(now);
     buckets.set(key, { count: 1, resetAt: now + policy.windowMs });
     return { allowed: true, remaining: Math.max(0, policy.limit - 1), retryAfterSeconds: 0 };
   }

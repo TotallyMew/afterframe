@@ -6,7 +6,31 @@ import { LibraryNotifications } from './library/LibraryNotifications';
 import { LibraryRatings } from './library/LibraryRatings';
 import './library/library.css';
 
-export function LibraryPage({ path, query, controls }: { path: string; query: string; controls: LibraryControls }) {
+function renderLibrarySection(path: string, query: string, controls: LibraryControls) {
+  if (controls.state === 'loading') {
+    return (
+      <output className="af-state">
+        {controls.error ? 'Your library is unavailable.' : 'Loading your library…'}
+      </output>
+    );
+  }
+  if (path === 'notifications') return <LibraryNotifications controls={controls} />;
+  if (path === 'watchlist' || path === 'watched') {
+    return (
+      <LibraryCollection
+        mode="video"
+        controls={controls}
+        query={query}
+        forcedStatus={path === 'watched' ? 'completed' : undefined}
+      />
+    );
+  }
+  if (path === 'reading') return <LibraryCollection mode="reading" controls={controls} query={query} />;
+  if (path === 'ratings') return <LibraryRatings controls={controls} />;
+  return <LibraryHistory controls={controls} />;
+}
+
+export function LibraryPage({ path, query, controls }: Readonly<{ path: string; query: string; controls: LibraryControls }>) {
   const { library } = controls;
   const savedAll = Object.values(library.saved);
   const videoCount = savedAll.filter(item => item.type !== 'comic').length;
@@ -28,26 +52,7 @@ export function LibraryPage({ path, query, controls }: { path: string; query: st
     <div className="af-wrap af-directory">
       <PageHeading title={isNotifications ? 'Notifications' : 'Library'} />
       {!isNotifications && <RouteTabs label="Library sections" active={activeTab} tabs={tabs} />}
-      {controls.state === 'loading' ? (
-        <p className="af-state" role="status">
-          {controls.error ? 'Your library is unavailable.' : 'Loading your library…'}
-        </p>
-      ) : isNotifications ? (
-        <LibraryNotifications controls={controls} />
-      ) : path === 'watchlist' || path === 'watched' ? (
-        <LibraryCollection
-          mode="video"
-          controls={controls}
-          query={query}
-          forcedStatus={path === 'watched' ? 'completed' : undefined}
-        />
-      ) : path === 'reading' ? (
-        <LibraryCollection mode="reading" controls={controls} query={query} />
-      ) : path === 'ratings' ? (
-        <LibraryRatings controls={controls} />
-      ) : (
-        <LibraryHistory controls={controls} />
-      )}
+      {renderLibrarySection(path, query, controls)}
     </div>
   );
 }

@@ -62,16 +62,21 @@ export async function readTextWithLimit(response, maxBytes) {
   const reader = response.body.getReader();
   const chunks = [];
   let total = 0;
+  let exceeded = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
       if (total > maxBytes) {
-        await reader.cancel();
-        throw new Error('Upstream response exceeded size limit.');
+        exceeded = true;
+        break;
       }
       chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+    }
+    if (exceeded) {
+      await reader.cancel();
+      throw new Error('Upstream response exceeded size limit.');
     }
   } finally {
     reader.releaseLock();
@@ -91,6 +96,55 @@ function parseRetryAfter(header) {
   return Number.isFinite(dateMs) && dateMs > 0 ? Math.min(5000, dateMs) : null;
 }
 
+function assertCircuitClosed(hostKey) {
+  if (!hostKey) return;
+  const state = circuits.get(hostKey);
+  if (state && Date.now() < state.openUntil) {
+    throw Object.assign(new Error(`${hostKey} is temporarily unavailable.`), { circuitOpen: true });
+  }
+}
+
+function updateCircuitFromResponse(response, config) {
+  if (!config.hostKey) return;
+  if (response.ok || response.status < 500) {
+    circuits.delete(config.hostKey);
+  } else {
+    recordFailure(config.hostKey, config.circuitThreshold, config.circuitCooldownMs);
+  }
+}
+
+function backoffDelay(baseDelayMs, attempt) {
+  return Math.round(baseDelayMs * (2 ** attempt) + Math.random() * 120);
+}
+
+function delayMs(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function attemptFetch(url, init, config, attempt) {
+  const deadline = AbortSignal.timeout(config.timeoutMs);
+  const signal = init.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
+  try {
+    const response = await fetch(url, { redirect: 'error', ...init, signal });
+    if (RETRYABLE_STATUSES.has(response.status) && attempt < config.retries) {
+      const delay = parseRetryAfter(response.headers.get('retry-after')) ?? backoffDelay(config.baseDelayMs, attempt);
+      await response.body?.cancel();
+      await delayMs(delay);
+      return attemptFetch(url, init, config, attempt + 1);
+    }
+    updateCircuitFromResponse(response, config);
+    return response;
+  } catch (error) {
+    if (init.signal?.aborted) throw error;
+    if (attempt < config.retries) {
+      await delayMs(backoffDelay(config.baseDelayMs, attempt));
+      return attemptFetch(url, init, config, attempt + 1);
+    }
+    if (config.hostKey) recordFailure(config.hostKey, config.circuitThreshold, config.circuitCooldownMs);
+    throw error;
+  }
+}
+
 /**
  * @param {string | URL} url
  * @param {RequestInit} [init]
@@ -105,55 +159,16 @@ function parseRetryAfter(header) {
  * @returns {Promise<Response>}
  */
 export async function fetchWithRetry(url, init = {}, options = {}) {
-  const {
-    timeoutMs = 10_000,
-    retries = 1,
-    baseDelayMs = 250,
-    hostKey,
-    circuitThreshold = 4,
-    circuitCooldownMs = 60_000,
-  } = options;
-
-  if (hostKey) {
-    const state = circuits.get(hostKey);
-    if (state && Date.now() < state.openUntil) {
-      throw Object.assign(new Error(`${hostKey} is temporarily unavailable.`), { circuitOpen: true });
-    }
-  }
-
-  let lastError;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const deadline = AbortSignal.timeout(timeoutMs);
-    const signal = init.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
-    try {
-      const response = await fetch(url, { redirect: 'error', ...init, signal });
-      if (RETRYABLE_STATUSES.has(response.status) && attempt < retries) {
-        const delay = parseRetryAfter(response.headers.get('retry-after')) ?? Math.round(baseDelayMs * (2 ** attempt) + Math.random() * 120);
-        await response.body?.cancel();
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
-      if (hostKey) {
-        if (response.ok || response.status < 500) {
-          circuits.delete(hostKey);
-        } else {
-          recordFailure(hostKey, circuitThreshold, circuitCooldownMs);
-        }
-      }
-      return response;
-    } catch (error) {
-      lastError = error;
-      if (init.signal?.aborted) throw error;
-      if (attempt < retries) {
-        const delay = Math.round(baseDelayMs * (2 ** attempt) + Math.random() * 120);
-        await new Promise(resolve => setTimeout(resolve, delay));
-        continue;
-      }
-      if (hostKey) recordFailure(hostKey, circuitThreshold, circuitCooldownMs);
-      throw lastError;
-    }
-  }
-  throw lastError;
+  const config = {
+    timeoutMs: options.timeoutMs ?? 10_000,
+    retries: options.retries ?? 1,
+    baseDelayMs: options.baseDelayMs ?? 250,
+    hostKey: options.hostKey,
+    circuitThreshold: options.circuitThreshold ?? 4,
+    circuitCooldownMs: options.circuitCooldownMs ?? 60_000,
+  };
+  assertCircuitClosed(config.hostKey);
+  return attemptFetch(url, init, config, 0);
 }
 
 /**

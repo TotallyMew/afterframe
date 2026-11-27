@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Icon } from './components';
 import './Toast.css';
 
@@ -42,10 +42,10 @@ let counter = 0;
 export function ToastProvider({
   children,
   libraryFeedback,
-}: {
+}: Readonly<{
   children: ReactNode;
   libraryFeedback?: { message: string; onUndo?: () => void };
-}) {
+}>) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [politeAnnouncement, setPoliteAnnouncement] = useState('');
   const [alertAnnouncement, setAlertAnnouncement] = useState('');
@@ -139,13 +139,14 @@ export function ToastProvider({
     });
   };
 
-  return <ToastContext.Provider value={{ notify, dismiss }}>
+  const contextValue = useMemo(() => ({ notify, dismiss }), [notify, dismiss]);
+
+  return <ToastContext.Provider value={contextValue}>
     {children}
-    <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{politeAnnouncement}</div>
+    <output className="sr-only" aria-live="polite" aria-atomic="true">{politeAnnouncement}</output>
     <div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true">{alertAnnouncement}</div>
-    <div
+    <section
       className="af-toast-region"
-      role="region"
       aria-label="Notifications"
       hidden={toasts.length === 0}
       onMouseEnter={handlePause}
@@ -183,6 +184,6 @@ export function ToastProvider({
           </div>
         </div>
       ))}
-    </div>
+    </section>
   </ToastContext.Provider>;
 }

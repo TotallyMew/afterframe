@@ -2,7 +2,7 @@ import { isAnime } from '@afterframe/shared/discover';
 import { withGuestLibraryLock, writeGuestRecords } from '@afterframe/shared/guest-storage';
 import { watchedSeconds, type preferenceDefaults } from '@afterframe/shared/playback';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { canMarkCompleted, episodeKey, isAired, post, request, RequestError, type Comic, type Details, type Episode, type EpisodePosition, type Title } from './catalog';
+import { canMarkCompleted, episodeKey, isAired, post, request, RequestError, type Comic, type Details, type Episode, type EpisodePosition, type Season, type Title } from './catalog';
 import type { ConfirmFn } from './ConfirmDialog';
 
 export const watchStatuses = {
@@ -49,9 +49,15 @@ export type Progress = {
 
 export type BooleanPreference = keyof typeof preferenceDefaults;
 export type Preferences = Partial<
-  Record<BooleanPreference | 'captions' | 'muted', boolean>
-  & Record<'subtitleLanguage' | 'audioLanguage' | 'quality', string>
-  & { level: number }
+  Record<BooleanPreference, boolean>
+  & {
+    captions: boolean;
+    muted: boolean;
+    subtitleLanguage: string;
+    audioLanguage: string;
+    quality: string;
+    level: number;
+  }
 >;
 export type Reading = { item: Comic; chapter: string; label: string; page: number; language: string; listPage: number; updated: number };
 export type History = {
@@ -199,7 +205,8 @@ function guestChange(update: (library: Library) => Library, keys: (keyof Library
 }
 
 export function savedRating(entry?: PersonalRating) {
-  return entry ? entry.score * (entry.scale === 10 ? 1 : 2) : 0;
+  if (!entry) return 0;
+  return entry.score * (entry.scale === 10 ? 1 : 2);
 }
 
 export function resumeEntries(library: Library) {
@@ -238,9 +245,11 @@ export function effectiveWatchStatus(item: SavedTitle, library: Library): WatchS
   return item.watchStatus ?? 'planned';
 }
 
+export type LibraryMediaFilter = '' | 'movie' | 'tv' | 'anime';
+
 export interface LibraryStatsData {
   mode: 'video' | 'reading';
-  mediaType: '' | 'movie' | 'tv' | 'anime';
+  mediaType: LibraryMediaFilter;
   days: number;
   meanScore: number | null;
   ratedCount: number;
@@ -251,37 +260,82 @@ export interface LibraryStatsData {
   activeReads: number;
 }
 
-function matchesVideoType(item: Title | undefined, mediaType: '' | 'movie' | 'tv' | 'anime'): boolean {
+function matchesVideoType(item: Title | undefined, mediaType: LibraryMediaFilter): boolean {
   if (!item || item.type === ('comic' as string)) return false;
   if (!mediaType) return true;
   if (mediaType === 'anime') return isAnime(item.originalLanguage, item.genreIds);
   return item.type === mediaType;
 }
 
+function matchesStatsFilter(item: Title | Comic, mode: 'video' | 'reading', mediaType: LibraryMediaFilter): boolean {
+  if (mode === 'reading') return item.type === 'comic';
+  return item.type !== 'comic' && matchesVideoType(item, mediaType);
+}
+
+function computeHistoryWatchTotals(history: Library['history'], mediaType: LibraryMediaFilter) {
+  const historyList = Object.entries(history)
+    .filter(([, entry]) => matchesVideoType(entry.item, mediaType))
+    .sort(([, a], [, b]) => b.updated - a.updated);
+  let rewatched = 0;
+  const completedKeys = new Set<string>();
+  const coveredMediaKeys = new Set<string>();
+  let totalSeconds = 0;
+  for (let i = historyList.length - 1; i >= 0; i--) {
+    const [, entry] = historyList[i];
+    if (entry.completed) {
+      if (completedKeys.has(entry.mediaKey)) rewatched++;
+      else completedKeys.add(entry.mediaKey);
+    }
+    const watchedPart = Math.min(entry.duration || 0, Math.max(0, entry.coverage || entry.time || 0));
+    totalSeconds += watchedPart;
+    coveredMediaKeys.add(entry.mediaKey);
+  }
+  return { rewatched, totalSeconds, coveredMediaKeys };
+}
+
+function estimatedEpisodeSeconds(item: Title | undefined): number {
+  return (isAnime(item?.originalLanguage, item?.genreIds) ? 24 : 42) * 60;
+}
+
+function computeWatchedTotals(watched: Library['watched'], mediaType: LibraryMediaFilter, coveredMediaKeys: Set<string>) {
+  let episodes = 0;
+  let extraSeconds = 0;
+  for (const [key, entry] of Object.entries(watched)) {
+    if (!matchesVideoType(entry.item, mediaType)) continue;
+    if (key.includes('/')) {
+      episodes++;
+      if (!coveredMediaKeys.has(key)) extraSeconds += estimatedEpisodeSeconds(entry.item);
+    } else if (!coveredMediaKeys.has(key)) {
+      extraSeconds += (entry.item?.duration || 110) * 60;
+    }
+  }
+  return { episodes, extraSeconds };
+}
+
+function computeUnrecordedCompletedMovieSeconds(entries: SavedTitle[], library: Library, coveredMediaKeys: Set<string>): number {
+  let extraSeconds = 0;
+  for (const item of entries) {
+    if (item.type === 'movie' && item.watchStatus === 'completed' && !library.watched[item.key] && !coveredMediaKeys.has(item.key)) {
+      extraSeconds += (item.duration || 110) * 60;
+    }
+  }
+  return extraSeconds;
+}
+
 export function computeLibraryStats(
   library: Library,
   mode: 'video' | 'reading',
-  mediaType: '' | 'movie' | 'tv' | 'anime' = '',
+  mediaType: LibraryMediaFilter = '',
 ): LibraryStatsData {
   const counts: Record<WatchStatus, number> = { watching: 0, completed: 0, hold: 0, dropped: 0, planned: 0 };
-  const allSaved = Object.values(library.saved);
-  const entries = allSaved.filter(item => (
-    mode === 'reading'
-      ? item.type === 'comic'
-      : item.type !== 'comic' && matchesVideoType(item, mediaType)
-  ));
+  const entries = Object.values(library.saved).filter(item => matchesStatsFilter(item, mode, mediaType));
   for (const item of entries) {
-    const st = effectiveWatchStatus(item, library);
-    counts[st]++;
+    counts[effectiveWatchStatus(item, library)]++;
   }
   const totalEntries = entries.length;
 
   const ratedScores = Object.values(library.ratings)
-    .filter(entry => (
-      mode === 'reading'
-        ? entry.item.type === 'comic'
-        : entry.item.type !== 'comic' && matchesVideoType(entry.item, mediaType)
-    ))
+    .filter(entry => matchesStatsFilter(entry.item, mode, mediaType))
     .map(entry => savedRating(entry))
     .filter(score => score > 0);
   const meanScore = ratedScores.length
@@ -303,44 +357,10 @@ export function computeLibraryStats(
     };
   }
 
-  const historyList = Object.entries(library.history)
-    .filter(([, entry]) => matchesVideoType(entry.item, mediaType))
-    .sort(([, a], [, b]) => b.updated - a.updated);
-  let rewatched = 0;
-  const completedKeys = new Set<string>();
-  const coveredMediaKeys = new Set<string>();
-  let totalSeconds = 0;
-  for (let i = historyList.length - 1; i >= 0; i--) {
-    const [, entry] = historyList[i];
-    if (entry.completed) {
-      if (completedKeys.has(entry.mediaKey)) rewatched++;
-      else completedKeys.add(entry.mediaKey);
-    }
-    const watchedPart = Math.min(entry.duration || 0, Math.max(0, entry.coverage || entry.time || 0));
-    totalSeconds += watchedPart;
-    coveredMediaKeys.add(entry.mediaKey);
-  }
-
-  let episodes = 0;
-  for (const [key, entry] of Object.entries(library.watched)) {
-    if (!matchesVideoType(entry.item, mediaType)) continue;
-    if (key.includes('/')) {
-      episodes++;
-      if (!coveredMediaKeys.has(key)) {
-        const isJaAnim = isAnime(entry.item?.originalLanguage, entry.item?.genreIds);
-        totalSeconds += (isJaAnim ? 24 : 42) * 60;
-      }
-    } else if (!coveredMediaKeys.has(key)) {
-      totalSeconds += (entry.item?.duration || 110) * 60;
-    }
-  }
-
-  // Also include manually completed saved movies that have no watched/history entries yet
-  for (const item of entries) {
-    if (item.type === 'movie' && item.watchStatus === 'completed' && !library.watched[item.key] && !coveredMediaKeys.has(item.key)) {
-      totalSeconds += (item.duration || 110) * 60;
-    }
-  }
+  const historyTotals = computeHistoryWatchTotals(library.history, mediaType);
+  const watchedTotals = computeWatchedTotals(library.watched, mediaType, historyTotals.coveredMediaKeys);
+  const movieSeconds = computeUnrecordedCompletedMovieSeconds(entries, library, historyTotals.coveredMediaKeys);
+  const totalSeconds = historyTotals.totalSeconds + watchedTotals.extraSeconds + movieSeconds;
 
   return {
     mode,
@@ -350,8 +370,8 @@ export function computeLibraryStats(
     ratedCount: ratedScores.length,
     counts,
     totalEntries,
-    rewatched,
-    episodes,
+    rewatched: historyTotals.rewatched,
+    episodes: watchedTotals.episodes,
     activeReads: 0,
   };
 }
@@ -365,7 +385,11 @@ export function titleCoverage(item: Title, library: Library) {
   const partial = latest ? progressPercent(latest) : 0;
   const total = item.totalEpisodes;
   if (item.type === 'tv' && total && (completeEpisodes || partial)) return Math.max(1, Math.min(100, Math.floor((completeEpisodes + partial / 100) / total * 100)));
-  return partial ? Math.min(item.type === 'tv' ? 99 : 100, partial) : completeEpisodes ? 1 : 0;
+  if (partial) {
+    const cap = item.type === 'tv' ? 99 : 100;
+    return Math.min(cap, partial);
+  }
+  return completeEpisodes ? 1 : 0;
 }
 
 export function guestRecommendations(library: Library) {
@@ -458,6 +482,136 @@ function deferredPost(edit: DeferredEdit) {
 
 const defaultConfirm: ConfirmFn = async () => true;
 
+function pendingServerTimestamp(fullLibrary: Library, kind: string, key: string): number {
+  if (kind === 'saved') {
+    return (fullLibrary.saved[key]?.completedAt ?? fullLibrary.saved[key]?.added) || 0;
+  }
+  if (kind === 'progress' || kind === 'history') {
+    return fullLibrary[kind][key]?.updated || 0;
+  }
+  return Infinity;
+}
+
+function watchedLabel(item: Title, key: string, nextMarked: boolean): string {
+  if (key === item.key) {
+    return nextMarked ? `Completed “${item.title}”` : `Unmarked “${item.title}”`;
+  }
+  return nextMarked ? `Marked episode watched · ${item.title}` : `Marked episode unwatched · ${item.title}`;
+}
+
+function unwatchConfirmPrompt(item: Title, key: string) {
+  if (item.type === 'movie' && key === item.key) {
+    return {
+      title: 'Mark as not completed?',
+      message: `Remove completed status from “${item.title}”?`,
+      confirmLabel: 'Remove completed',
+    };
+  }
+  return {
+    title: 'Mark as unwatched?',
+    message: `Mark “${item.title}” as unwatched?`,
+    confirmLabel: 'Mark unwatched',
+  };
+}
+
+async function fetchAiredEpisodesInBatches(
+  itemId: number,
+  seasons: Season[],
+  lastEpisode: Episode | null | undefined,
+  offset = 0,
+  acc: Episode[] = [],
+): Promise<Episode[]> {
+  if (offset >= seasons.length) return acc;
+  const batch = await Promise.all(seasons.slice(offset, offset + 5).map(season => getSeason(itemId, season.season_number)));
+  const matched = batch.flat().filter(episode => canMarkCompleted(episode, lastEpisode));
+  return fetchAiredEpisodesInBatches(itemId, seasons, lastEpisode, offset + 5, [...acc, ...matched]);
+}
+
+async function resolveSeriesMediaKeys(item: Title, details: Details, archiveEpisodeKeys?: string[]): Promise<string[]> {
+  if (archiveEpisodeKeys?.length) {
+    return archiveEpisodeKeys.map(ep => `${item.key}/${ep}`);
+  }
+  const seasons = (details.seasons || []).filter(season => season.season_number > 0 && season.episode_count > 0 && isAired(season));
+  const aired = await fetchAiredEpisodesInBatches(item.id, seasons, details.last_episode_to_air);
+  return aired.map(episode => episodeKey(item, episode));
+}
+
+function applyCompletedSeries(library: Library, item: Title, completed: SavedTitle, updated: number, mediaKeys: string[]): Library {
+  const next = {
+    ...library,
+    saved: { ...library.saved, [item.key]: completed },
+    watched: { ...library.watched },
+    progress: { ...library.progress },
+  };
+  for (const key of mediaKeys) {
+    next.watched[key] ??= { item, updated };
+    delete next.progress[key];
+  }
+  return next;
+}
+
+const forbiddenImportKeys = new Set(['__proto__', 'constructor', 'prototype']);
+const importBucketKinds = ['saved', 'watched', 'ratings', 'progress', 'reading', 'history', 'folders'] as const;
+
+function mergeImportBucket(
+  target: Record<string, { updated?: number; added?: number }>,
+  bucket: unknown,
+): { imported: number; skipped: number } {
+  if (!bucket || typeof bucket !== 'object') return { imported: 0, skipped: 0 };
+  let imported = 0;
+  let skipped = 0;
+  for (const [key, val] of Object.entries(bucket as Record<string, { updated?: number; added?: number }>)) {
+    if (forbiddenImportKeys.has(key) || !val || typeof val !== 'object') {
+      skipped++;
+      continue;
+    }
+    const existing = Object.hasOwn(target, key) ? target[key] : undefined;
+    const inTs = Number(val.updated ?? val.added ?? 0);
+    const curTs = Number(existing?.updated ?? existing?.added ?? 0);
+    if (existing && inTs <= curTs) {
+      skipped++;
+      continue;
+    }
+    target[key] = val;
+    imported++;
+  }
+  return { imported, skipped };
+}
+
+function mergeImportPreferences(target: Preferences, incomingPrefs: unknown): number {
+  if (!incomingPrefs || typeof incomingPrefs !== 'object') return 0;
+  let imported = 0;
+  for (const [k, v] of Object.entries(incomingPrefs)) {
+    if (forbiddenImportKeys.has(k) || Object.hasOwn(target, k) || v === undefined) continue;
+    (target as Record<string, unknown>)[k] = v;
+    imported++;
+  }
+  return imported;
+}
+
+function mergeGuestLibraryImport(current: Library, incoming: Partial<Library>) {
+  const next: Library = {
+    ...current,
+    saved: { ...current.saved },
+    watched: { ...current.watched },
+    ratings: { ...current.ratings },
+    progress: { ...current.progress },
+    reading: { ...current.reading },
+    history: { ...current.history },
+    folders: { ...current.folders },
+    preferences: { ...current.preferences },
+  };
+  let totalImported = 0;
+  let skipped = 0;
+  for (const kind of importBucketKinds) {
+    const stats = mergeImportBucket(next[kind] as Record<string, { updated?: number; added?: number }>, incoming[kind]);
+    totalImported += stats.imported;
+    skipped += stats.skipped;
+  }
+  totalImported += mergeImportPreferences(next.preferences, incoming.preferences);
+  return { next, totalImported, skipped };
+}
+
 export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
   const [session, setSession] = useState<Session>(() => ({ account: null, library: guestLibrary() }));
   const [state, setState] = useState<'loading' | 'guest' | 'account' | 'expired' | 'unavailable'>('loading');
@@ -493,9 +647,7 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
       const separator = recordKey.indexOf('/');
       const kind = recordKey.slice(0, separator);
       const key = recordKey.slice(separator + 1);
-      const serverTs = kind === 'saved'
-        ? ((fullLibrary.saved[key]?.completedAt ?? fullLibrary.saved[key]?.added) || 0)
-        : (kind === 'progress' || kind === 'history' ? ((fullLibrary[kind][key]?.updated) || 0) : Infinity);
+      const serverTs = pendingServerTimestamp(fullLibrary, kind, key);
       if ((kind === 'progress' || kind === 'history' || kind === 'saved') && entry?.at >= serverTs) {
         retries.push([kind, key, entry.value, entry.at]);
       } else {
@@ -618,17 +770,17 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
       const update = await operation(owner, edit => { attempted = edit; return deferredPost(edit); });
       if (identity.current === (owner?.id ?? null)) setSession(current => ({ ...current, library: update(current.library) }));
       return true;
-    } catch (problem) {
-      const message = problem instanceof Error ? problem.message : 'Could not save this change.';
-      if (owner && problem instanceof RequestError && problem.status === 401) {
+    } catch (error_) {
+      const message = error_ instanceof Error ? error_.message : 'Could not save this change.';
+      if (owner && error_ instanceof RequestError && error_.status === 401) {
         expiredIdentity.current = owner.id;
         if (attempted) holdEdit(attempted);
         setState('expired');
         setError(`Your session expired. Sign back in as ${owner.username} to recover your change.`);
         setSession(current => ({ ...current, account: null }));
       }
-      if (owner && attempted && (!(problem instanceof RequestError) || problem.status >= 500 || problem.status === 429)) holdEdit(attempted);
-      setProblems(current => ({ ...current, [key]: problem instanceof RequestError && problem.status === 403
+      if (owner && attempted && (!(error_ instanceof RequestError) || error_.status >= 500 || error_.status === 429)) holdEdit(attempted);
+      setProblems(current => ({ ...current, [key]: error_ instanceof RequestError && error_.status === 403
         ? 'This account does not have permission to make the change.' : message }));
       return false;
     } finally {
@@ -735,8 +887,8 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
           delete queued[recordKey];
           writeRaw(pendingKey, queued);
         }
-      } catch (problem) {
-        if (problem instanceof RequestError && problem.status === 401) {
+      } catch (error_) {
+        if (error_ instanceof RequestError && error_.status === 401) {
           expiredIdentity.current = owner.id;
           setState('expired');
           setError(`Your session expired. Sign back in as ${owner.username} to keep saving progress.`);
@@ -773,6 +925,46 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
     recordPlaybackEntry('history', id, value, at);
   }
 
+  async function persistReadingStep(
+    account: Account | null,
+    send: (edit: DeferredEdit) => ReturnType<typeof deferredPost>,
+    key: string,
+    accountId: number | null,
+    value: Reading,
+  ) {
+    const update = (library: Library, stored: Reading | null = value) => ({ ...library, reading: replaceEntry(library.reading, key, stored) });
+    if (!account) {
+      await guestChange(library => ((library.reading[key]?.updated ?? 0) > value.updated ? library : update(library)), ['reading']);
+      if (identity.current === null && expiredIdentity.current === null) {
+        setSession(current => ({ ...current, library: guestLibrary() }));
+      }
+      return;
+    }
+    const result = await send({ accountId: account.id, key, kind: 'reading', value, label: `Save reading position for ${value.item.title}`, at: value.updated });
+    let stored: Reading | null = value;
+    if (result.stale) {
+      const latest = await request<ApiAccount>('/api/account');
+      if (latest.account?.id !== account.id || !latest.library) throw new RequestError('Your session changed.', 401);
+      stored = latest.library.reading?.[key] ?? null;
+    }
+    if (identity.current === accountId) {
+      setSession(current => ({ ...current, library: update(current.library, stored) }));
+    }
+  }
+
+  async function drainQueuedReading(
+    account: Account | null,
+    send: (edit: DeferredEdit) => ReturnType<typeof deferredPost>,
+    key: string,
+    accountId: number | null,
+  ): Promise<void> {
+    const next = queuedReading.current.get(key);
+    if (next?.accountId !== accountId || identity.current !== accountId) return;
+    queuedReading.current.delete(key);
+    await persistReadingStep(account, send, key, accountId, next.entry);
+    return drainQueuedReading(account, send, key, accountId);
+  }
+
   function recordReading(entry: Reading) {
     if (!readyRef.current || replayingRef.current) return;
     const key = entry.item.key;
@@ -782,24 +974,7 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
     if (running.current.has(mutationKey)) return;
     return change(mutationKey, async (account, send) => {
       try {
-        for (let next = queuedReading.current.get(key); next?.accountId === accountId && identity.current === accountId; next = queuedReading.current.get(key)) {
-          queuedReading.current.delete(key);
-          const value = next.entry;
-          const update = (library: Library, stored: Reading | null = value) => ({ ...library, reading: replaceEntry(library.reading, key, stored) });
-          if (!account) {
-            await guestChange(library => (library.reading[key]?.updated ?? 0) > value.updated ? library : update(library), ['reading']);
-            if (identity.current === null && expiredIdentity.current === null) setSession(current => ({ ...current, library: guestLibrary() }));
-            continue;
-          }
-          const result = await send({ accountId: account.id, key, kind: 'reading', value, label: `Save reading position for ${value.item.title}`, at: value.updated });
-          let stored: Reading | null = value;
-          if (result.stale) {
-            const latest = await request<ApiAccount>('/api/account');
-            if (latest.account?.id !== account.id || !latest.library) throw new RequestError('Your session changed.', 401);
-            stored = latest.library.reading?.[key] ?? null;
-          }
-          if (identity.current === accountId) setSession(current => ({ ...current, library: update(current.library, stored) }));
-        }
+        await drainQueuedReading(account, send, key, accountId);
       } finally {
         if (queuedReading.current.get(key)?.accountId === accountId) queuedReading.current.delete(key);
       }
@@ -924,53 +1099,53 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
     );
   }
 
+  function attachCompanionUndo(secondOk: boolean, firstUndo: UndoableEdit | undefined) {
+    if (secondOk && firstUndo && lastUndoableRef.current) {
+      setUndoable({ ...lastUndoableRef.current, companion: firstUndo });
+    }
+  }
+
+  async function syncMovieSavedOnWatched(item: Title, nextMarked: boolean, firstUndo: UndoableEdit | undefined) {
+    const currentSaved = sessionRef.current.library.saved[item.key];
+    if (nextMarked) {
+      if (currentSaved?.watchStatus === 'completed') return;
+      const now = Date.now();
+      const updatedSaved: SavedTitle = currentSaved
+        ? { ...currentSaved, watchStatus: 'completed', completedAt: now }
+        : { ...item, added: now, watchStatus: 'completed', completedAt: now };
+      const secondOk = await edit('saved', item.key, updatedSaved, `Completed “${item.title}”`);
+      attachCompanionUndo(secondOk, firstUndo);
+      return;
+    }
+    if (currentSaved && currentSaved.type !== 'comic' && currentSaved.watchStatus === 'completed') {
+      const secondOk = await edit('saved', item.key, { ...currentSaved, watchStatus: 'planned' }, `Moved “${item.title}” to Plan to Watch`);
+      attachCompanionUndo(secondOk, firstUndo);
+    }
+  }
+
+  async function syncTvSavedOnEpisodeWatched(item: Title) {
+    const currentSaved = sessionRef.current.library.saved[item.key];
+    const autoAdd = sessionRef.current.library.preferences.autoAddWatching !== false;
+    if (!currentSaved && autoAdd) {
+      await edit('saved', item.key, { ...item, added: Date.now(), watchStatus: 'watching' as const }, `Added “${item.title}” · Watching`);
+    } else if (currentSaved && currentSaved.type !== 'comic' && (!currentSaved.watchStatus || currentSaved.watchStatus === 'planned')) {
+      await edit('saved', item.key, { ...currentSaved, watchStatus: 'watching' }, `${item.title} · Watching`);
+    }
+  }
+
   async function toggleWatched(item: Title, key = item.key, options?: { force?: boolean; skipConfirm?: boolean }) {
     const currentlyWatched = Boolean(sessionRef.current.library.watched[key]);
     const nextMarked = options?.force ?? !currentlyWatched;
     if (nextMarked === currentlyWatched) return;
-    if (!nextMarked && !options?.skipConfirm && sessionRef.current.library.preferences.confirmRemoval !== false) {
-      const ok = await confirmAction({
-        title: item.type === 'movie' && key === item.key ? 'Mark as not completed?' : 'Mark as unwatched?',
-        message: item.type === 'movie' && key === item.key
-          ? `Remove completed status from “${item.title}”?`
-          : `Mark “${item.title}” as unwatched?`,
-        confirmLabel: item.type === 'movie' && key === item.key ? 'Remove completed' : 'Mark unwatched',
-      });
-      if (!ok) return;
-    }
-    const label = key === item.key
-      ? (nextMarked ? `Completed “${item.title}”` : `Unmarked “${item.title}”`)
-      : (nextMarked ? `Marked episode watched · ${item.title}` : `Marked episode unwatched · ${item.title}`);
+    const needsConfirm = !nextMarked && !options?.skipConfirm && sessionRef.current.library.preferences.confirmRemoval !== false;
+    if (needsConfirm && !(await confirmAction(unwatchConfirmPrompt(item, key)))) return;
+    const label = watchedLabel(item, key, nextMarked);
     const firstOk = await edit('watched', key, nextMarked ? { item, updated: Date.now() } : null, label);
     if (!firstOk) return;
-    const firstUndo = lastUndoableRef.current;
-
-    // Keep Movie status and TV Watching status seamlessly in sync with watched records
-    const currentSaved = sessionRef.current.library.saved[item.key];
     if (item.type === 'movie' && key === item.key) {
-      if (nextMarked) {
-        const updatedSaved: SavedTitle = currentSaved
-          ? { ...currentSaved, watchStatus: 'completed', completedAt: Date.now() }
-          : { ...item, added: Date.now(), watchStatus: 'completed', completedAt: Date.now() };
-        if (currentSaved?.watchStatus !== 'completed') {
-          const secondOk = await edit('saved', item.key, updatedSaved, `Completed “${item.title}”`);
-          if (secondOk && firstUndo && lastUndoableRef.current) {
-            setUndoable({ ...lastUndoableRef.current, companion: firstUndo });
-          }
-        }
-      } else if (currentSaved && currentSaved.type !== 'comic' && currentSaved.watchStatus === 'completed') {
-        const secondOk = await edit('saved', item.key, { ...currentSaved, watchStatus: 'planned' }, `Moved “${item.title}” to Plan to Watch`);
-        if (secondOk && firstUndo && lastUndoableRef.current) {
-          setUndoable({ ...lastUndoableRef.current, companion: firstUndo });
-        }
-      }
+      await syncMovieSavedOnWatched(item, nextMarked, lastUndoableRef.current);
     } else if (item.type === 'tv' && key !== item.key && nextMarked) {
-      const autoAdd = sessionRef.current.library.preferences.autoAddWatching !== false;
-      if (!currentSaved && autoAdd) {
-        await edit('saved', item.key, { ...item, added: Date.now(), watchStatus: 'watching' as const }, `Added “${item.title}” · Watching`);
-      } else if (currentSaved && currentSaved.type !== 'comic' && (!currentSaved.watchStatus || currentSaved.watchStatus === 'planned')) {
-        await edit('saved', item.key, { ...currentSaved, watchStatus: 'watching' }, `${item.title} · Watching`);
-      }
+      await syncTvSavedOnEpisodeWatched(item);
     }
   }
 
@@ -993,82 +1168,58 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
 
   function setComicStatus(item: Comic, value: WatchStatus) {
     const saved = sessionRef.current.library.saved[item.key];
-    if (!saved || saved.type !== 'comic') return;
+    if (saved?.type !== 'comic') return;
     return edit('saved', item.key, { ...saved, watchStatus: value }, `${item.title} · ${readingStatuses[value]}`);
   }
 
-  async function setStatus(item: Title, value: WatchStatus, details: Details, archiveEpisodeKeys?: string[]) {
-    const saved = sessionRef.current.library.saved[item.key];
-    if (!saved || saved.type === 'comic') return;
-    if (item.type !== 'tv' || value !== 'completed') {
-      const nextSaved: SavedTitle = {
-        ...saved,
-        totalEpisodes: item.totalEpisodes ?? saved.totalEpisodes,
-        watchStatus: value,
-        ...(value === 'completed' ? { completedAt: Date.now() } : {}),
-      };
-      const firstOk = await edit('saved', item.key, nextSaved, `${item.title} · ${watchStatuses[value]}`);
-      if (!firstOk) return;
-      const firstUndo = lastUndoableRef.current;
-      // Keep movie `watched` record synchronized with Completed status
-      if (item.type === 'movie') {
-        const isWatched = Boolean(sessionRef.current.library.watched[item.key]);
-        if (value === 'completed' && !isWatched) {
-          const secondOk = await edit('watched', item.key, { item, updated: Date.now() }, `${item.title} · Completed`);
-          if (secondOk && firstUndo && lastUndoableRef.current) {
-            setUndoable({ ...lastUndoableRef.current, companion: firstUndo });
-          }
-        } else if (value !== 'completed' && isWatched) {
-          const secondOk = await edit('watched', item.key, null, `${item.title} · ${watchStatuses[value]}`);
-          if (secondOk && firstUndo && lastUndoableRef.current) {
-            setUndoable({ ...lastUndoableRef.current, companion: firstUndo });
-          }
-        }
-      }
-      return;
+  async function syncMovieWatchedOnStatus(item: Title, value: WatchStatus, firstUndo: UndoableEdit | undefined) {
+    if (item.type !== 'movie') return;
+    const isWatched = Boolean(sessionRef.current.library.watched[item.key]);
+    if (value === 'completed' && !isWatched) {
+      const secondOk = await edit('watched', item.key, { item, updated: Date.now() }, `${item.title} · Completed`);
+      attachCompanionUndo(secondOk, firstUndo);
+    } else if (value !== 'completed' && isWatched) {
+      const secondOk = await edit('watched', item.key, null, `${item.title} · ${watchStatuses[value]}`);
+      attachCompanionUndo(secondOk, firstUndo);
     }
+  }
+
+  async function completeSeriesStatus(item: Title, saved: SavedTitle & Title, details: Details, archiveEpisodeKeys?: string[]) {
     setUndoable(undefined);
     setMutationMessage('');
     setCompleting(current => [...current, item.key]);
     return change(item.key, async (account, send) => {
-      let mediaKeys: string[];
-      if (archiveEpisodeKeys?.length) {
-        mediaKeys = archiveEpisodeKeys.map(ep => `${item.key}/${ep}`);
-      } else {
-        const seasons = (details.seasons || []).filter(season => season.season_number > 0 && season.episode_count > 0 && isAired(season));
-        const aired: Episode[] = [];
-        for (let offset = 0; offset < seasons.length; offset += 5) {
-          const batch = await Promise.all(seasons.slice(offset, offset + 5).map(season => getSeason(item.id, season.season_number)));
-          aired.push(...batch.flat().filter(episode => canMarkCompleted(episode, details.last_episode_to_air)));
-        }
-        mediaKeys = aired.map(episode => episodeKey(item, episode));
-      }
+      const mediaKeys = await resolveSeriesMediaKeys(item, details, archiveEpisodeKeys);
       if (!mediaKeys.length) throw new Error('No aired episodes are available to mark watched.');
       const positions = mediaKeys.filter(key => sessionRef.current.library.progress[key]).length;
+      const epWord = mediaKeys.length === 1 ? 'episode' : 'episodes';
+      const posWord = positions === 1 ? 'position' : 'positions';
       const ok = await confirmAction({
         title: `Complete “${item.title}”?`,
-        message: `Mark ${mediaKeys.length} aired ${mediaKeys.length === 1 ? 'episode' : 'episodes'} of “${item.title}” as watched and clear ${positions} saved playback ${positions === 1 ? 'position' : 'positions'}?`,
+        message: `Mark ${mediaKeys.length} aired ${epWord} of “${item.title}” as watched and clear ${positions} saved playback ${posWord}?`,
         confirmLabel: 'Mark completed',
       });
       if (!ok) return library => library;
       const now = Date.now();
-      const result = account ? await send({ accountId: account.id, key: item.key, kind: 'complete-series', label: `Complete ${item.title}`, at: now, value: {
-        item: { key: item.key, type: item.type, totalEpisodes: item.totalEpisodes },
-        episodes: mediaKeys.map(key => key.slice(item.key.length + 1)),
-      } }) : {
-        saved: { ...saved, totalEpisodes: item.totalEpisodes ?? saved.totalEpisodes, watchStatus: 'completed' as const, completedAt: now },
-        updated: now,
-      };
+      const result = account
+        ? await send({
+            accountId: account.id,
+            key: item.key,
+            kind: 'complete-series',
+            label: `Complete ${item.title}`,
+            at: now,
+            value: {
+              item: { key: item.key, type: item.type, totalEpisodes: item.totalEpisodes },
+              episodes: mediaKeys.map(key => key.slice(item.key.length + 1)),
+            },
+          })
+        : {
+            saved: { ...saved, totalEpisodes: item.totalEpisodes ?? saved.totalEpisodes, watchStatus: 'completed' as const, completedAt: now },
+            updated: now,
+          };
       if (!('saved' in result) || !result.saved || !result.updated) throw new Error('The series could not be marked complete.');
       const { saved: completed, updated } = result;
-      const update = (library: Library) => {
-        const next = { ...library, saved: { ...library.saved, [item.key]: completed }, watched: { ...library.watched }, progress: { ...library.progress } };
-        for (const key of mediaKeys) {
-          next.watched[key] ??= { item, updated };
-          delete next.progress[key];
-        }
-        return next;
-      };
+      const update = (library: Library) => applyCompletedSeries(library, item, completed, updated, mediaKeys);
       if (account) return update;
       await guestChange(library => {
         if (!library.saved[item.key]) throw new Error('Save the series before completing it.');
@@ -1076,6 +1227,23 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
       }, ['saved', 'watched', 'progress']);
       return guestLibrary;
     }).finally(() => setCompleting(current => current.filter(key => key !== item.key)));
+  }
+
+  async function setStatus(item: Title, value: WatchStatus, details: Details, archiveEpisodeKeys?: string[]) {
+    const saved = sessionRef.current.library.saved[item.key];
+    if (!saved || saved.type === 'comic') return;
+    if (item.type === 'tv' && value === 'completed') {
+      return completeSeriesStatus(item, saved, details, archiveEpisodeKeys);
+    }
+    const nextSaved: SavedTitle = {
+      ...saved,
+      totalEpisodes: item.totalEpisodes ?? saved.totalEpisodes,
+      watchStatus: value,
+      ...(value === 'completed' ? { completedAt: Date.now() } : {}),
+    };
+    const firstOk = await edit('saved', item.key, nextSaved, `${item.title} · ${watchStatuses[value]}`);
+    if (!firstOk) return;
+    await syncMovieWatchedOnStatus(item, value, lastUndoableRef.current);
   }
 
   function markNotification(key: string) {
@@ -1104,8 +1272,8 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
       const result = await deferredPost(editItem);
       removeDeferred(editItem);
       setRecoveryStatus(result.stale ? 'A newer change is already saved.' : 'Your change was saved.');
-    } catch (problem) {
-      const status = problem instanceof RequestError ? problem.status : 0;
+    } catch (error_) {
+      const status = error_ instanceof RequestError ? error_.status : 0;
       if (status === 401) {
         expiredIdentity.current = editItem.accountId;
         setState('expired');
@@ -1162,46 +1330,13 @@ export function useLibrary(confirmAction: ConfirmFn = defaultConfirm) {
       return { totalImported: result.totalImported, skipped: result.skipped };
     }
 
-    const kinds = ['saved', 'watched', 'ratings', 'progress', 'reading', 'history', 'folders'] as const;
     let totalImported = 0;
     let skipped = 0;
     await guestChange(current => {
-      const next: Library = {
-        ...current,
-        saved: { ...current.saved },
-        watched: { ...current.watched },
-        ratings: { ...current.ratings },
-        progress: { ...current.progress },
-        reading: { ...current.reading },
-        history: { ...current.history },
-        folders: { ...(current.folders ?? {}) },
-        preferences: { ...current.preferences },
-      };
-      const forbiddenKeys = new Set(['__proto__', 'constructor', 'prototype']);
-      for (const kind of kinds) {
-        const bucket = incoming[kind];
-        if (!bucket || typeof bucket !== 'object') continue;
-        const target = next[kind] as Record<string, { updated?: number; added?: number }>;
-        for (const [key, val] of Object.entries(bucket as Record<string, { updated?: number; added?: number }>)) {
-          if (forbiddenKeys.has(key) || !val || typeof val !== 'object') { skipped++; continue; }
-          const existing = Object.hasOwn(target, key) ? target[key] : undefined;
-          const inTs = Number(val.updated ?? val.added ?? 0);
-          const curTs = Number(existing?.updated ?? existing?.added ?? 0);
-          if (existing && inTs <= curTs) { skipped++; continue; }
-          target[key] = val;
-          totalImported++;
-        }
-      }
-      if (incoming.preferences && typeof incoming.preferences === 'object') {
-        for (const [k, v] of Object.entries(incoming.preferences)) {
-          if (forbiddenKeys.has(k)) continue;
-          if (!Object.hasOwn(next.preferences, k) && v !== undefined) {
-            (next.preferences as Record<string, unknown>)[k] = v;
-            totalImported++;
-          }
-        }
-      }
-      return next;
+      const merged = mergeGuestLibraryImport(current, incoming);
+      totalImported = merged.totalImported;
+      skipped = merged.skipped;
+      return merged.next;
     }, ['saved', 'watched', 'ratings', 'progress', 'reading', 'history', 'folders', 'preferences']);
     if (identity.current === null) {
       setSession(current => ({ ...current, library: guestLibrary() }));

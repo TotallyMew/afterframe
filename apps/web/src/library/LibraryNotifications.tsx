@@ -6,7 +6,7 @@ import { EmptyState } from '../EmptyState';
 import type { LibraryControls } from '../library';
 import { useToast } from '../Toast';
 
-export function LibraryNotifications({ controls }: { controls: LibraryControls }) {
+export function LibraryNotifications({ controls }: Readonly<{ controls: LibraryControls }>) {
   const { notify } = useToast();
   const [filter, setFilter] = useState<'all' | 'unread'>('all');
   const entries = Object.entries(controls.library.notifications).sort(([, a], [, b]) => b.created - a.created);
@@ -38,14 +38,14 @@ export function LibraryNotifications({ controls }: { controls: LibraryControls }
   return (
     <section className="af-lib-section" aria-label="Release notifications">
       <div className="af-lib-toolbar">
-        <div className="af-filters" role="group" aria-label="Filter notifications">
+        <fieldset className="af-filters" aria-label="Filter notifications">
           <button type="button" aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>
             All ({entries.length})
           </button>
           <button type="button" aria-pressed={filter === 'unread'} onClick={() => setFilter('unread')}>
             Unread ({unreadCount})
           </button>
-        </div>
+        </fieldset>
         {unreadCount > 0 && (
           <button
             type="button"

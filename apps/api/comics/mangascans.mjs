@@ -16,9 +16,9 @@ function search(query) {
 function listing(slug) {
   return cacheMetadata(`comics:scans:listing:${slug}`, 10 * minute, async () => {
     const result = await sourceHtml(`${origin}/manga/${slug}/`, 'Manga Scans');
-    const title = decodeHtml(result.match(/<h1\b[^>]*class="entry-title"[^>]*>([^<]+)<\/h1>/i)?.[1] || '');
-    const format = result.match(/href="https:\/\/manga-scans\.com\/comic-type\/(manga|manhwa|manhua)\/"/i)?.[1]?.toLowerCase();
-    const links = new RegExp(`href="(?:https://manga-scans\\.com)?/chapter/${slug}-chapter-(${chapterNumberSource})/"`, 'gi');
+    const title = decodeHtml(/<h1\b[^>]*class="entry-title"[^>]*>([^<]+)<\/h1>/i.exec(result)?.[1] || '');
+    const format = /href="https:\/\/manga-scans\.com\/comic-type\/(manga|manhwa|manhua)\/"/i.exec(result)?.[1]?.toLowerCase();
+    const links = new RegExp(String.raw`href="(?:https://manga-scans\.com)?/chapter/${slug}-chapter-(${chapterNumberSource})/"`, 'gi');
     const numbers = [...new Set(Array.from(result.matchAll(links), ([, number]) => number))];
     return { slug, title, format, numbers };
   });
@@ -61,7 +61,7 @@ export async function scansPageList(item, chapterId) {
     const images = Array.from(result.matchAll(/<img\b[^>]*\ssrc="([^"]+)"/gi), ([, src]) => URL.parse(decodeHtml(src)))
       .filter(url => {
         if (url?.origin !== 'https://cdn.black-clover.org' || url.username || url.password || url.search || url.hash) return false;
-        const path = url.pathname.match(/^\/file\/[a-z\d-]+(\/.*)$/i)?.[1];
+        const path = /^\/file\/[a-z\d-]+(\/.*)$/i.exec(url.pathname)?.[1];
         return path?.startsWith(directory) && /^\d+\.(?:png|jpe?g|webp)$/i.test(path.slice(directory.length));
       })
       .map(url => url.href);

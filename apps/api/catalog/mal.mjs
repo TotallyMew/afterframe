@@ -15,12 +15,22 @@ export async function malRating(type, id, strict = false) {
     }
     const { mean } = await response.json();
     return Number.isFinite(mean) && mean > 0 && mean <= 10 ? mean : null;
-  }).catch(error => { if (strict) throw error; return null; });
+  }).catch(error => {
+    if (strict) {
+      throw error;
+    }
+    return null;
+  });
 }
 
 export async function catalogAnimeRating(type, id, season, strict = false) {
   if (!process.env.MAL_CLIENT_ID?.trim()) return null;
-  const source = await animeMalSource(type, id, season, 1).catch(error => { if (strict) throw error; return null; });
+  const source = await animeMalSource(type, id, season, 1).catch(error => {
+    if (strict) {
+      throw error;
+    }
+    return null;
+  });
   if (!source?.malId) return null;
   return malRating('anime', source.malId, strict);
 }

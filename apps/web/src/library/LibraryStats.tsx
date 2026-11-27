@@ -16,14 +16,14 @@ export function LibraryStats({
   activeStatus,
   onSelectStatus,
   onSelectType,
-}: {
+}: Readonly<{
   library: Library;
   mode: 'video' | 'reading';
   mediaType?: '' | 'movie' | 'tv' | 'anime';
   activeStatus: string;
   onSelectStatus: (status: WatchStatus | '') => void;
   onSelectType?: (type: '' | 'movie' | 'tv' | 'anime') => void;
-}) {
+}>) {
   const overall = useMemo(() => computeLibraryStats(library, mode, ''), [library, mode]);
   const stats = useMemo(
     () => (mediaType ? computeLibraryStats(library, mode, mediaType) : overall),
@@ -41,7 +41,7 @@ export function LibraryStats({
   return (
     <section className="af-lib-stats" aria-label={mode === 'reading' ? 'Reading statistics' : 'Library statistics'}>
       {mode === 'video' && onSelectType && (
-        <div className="af-lib-stats-scope" role="group" aria-label="Filter statistics by media type">
+        <fieldset className="af-lib-stats-scope" aria-label="Filter statistics by media type">
           {videoScopes.map(([value, label]) => (
             <button
               key={value || 'all'}
@@ -53,7 +53,7 @@ export function LibraryStats({
               {label}
             </button>
           ))}
-        </div>
+        </fieldset>
       )}
 
       <div className="af-lib-stats-top">
